@@ -1,0 +1,22 @@
+{
+  "name": "suipredict-ai",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "dev:web": "turbo dev --filter=@suipredict/web",
+    "dev:agents": "turbo dev --filter=@suipredict/agents",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "smoke-test": "pnpm --filter @suipredict/agents smoke-test",
+    "contracts:build": "pnpm --filter @suipredict/contracts build",
+    "contracts:test": "pnpm --filter @suipredict/contracts test"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
