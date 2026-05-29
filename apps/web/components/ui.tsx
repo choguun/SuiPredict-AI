@@ -9,7 +9,7 @@ export function Card({
 }) {
   return (
     <div
-      className={`rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 ${className}`}
+      className={`rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-md shadow-inner transition hover:border-white/20 ${className}`}
     >
       {title && (
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
@@ -24,8 +24,8 @@ export function Card({
 export function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-xs text-zinc-500">{label}</p>
-      <p className="text-lg font-semibold text-zinc-100">{value}</p>
+      <p className="text-xs uppercase tracking-wider text-zinc-400/80 mb-1">{label}</p>
+      <p className="text-2xl font-bold text-white drop-shadow-md">{value}</p>
     </div>
   );
 }
@@ -38,13 +38,13 @@ export function Badge({
   variant?: "default" | "success" | "warning";
 }) {
   const colors = {
-    default: "bg-zinc-800 text-zinc-300",
-    success: "bg-emerald-500/20 text-emerald-300",
-    warning: "bg-amber-500/20 text-amber-300",
+    default: "border border-white/10 bg-white/5 text-zinc-300 shadow-inner",
+    success: "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.15)]",
+    warning: "border border-amber-500/30 bg-amber-500/10 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.15)]",
   };
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[variant]}`}
+      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold tracking-wide ${colors[variant]}`}
     >
       {children}
     </span>
