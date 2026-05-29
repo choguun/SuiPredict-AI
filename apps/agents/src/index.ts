@@ -1,26 +1,30 @@
 import "dotenv/config";
 import { createServer } from "node:http";
 import { keypairFromPrivateKey } from "@suipredict/sdk";
-import { runMarketStrategist } from "./agents/market-strategist.js";
-import { runPLPManager } from "./agents/plp-manager.js";
-import { runRedeemKeeper } from "./agents/redeem-keeper.js";
+import { runMarketCreator } from "./agents/market-creator.js";
+import { runMarketMaker } from "./agents/market-maker.js";
+import { runMarketResolver } from "./agents/market-resolver.js";
 import { runRiskMonitor } from "./agents/risk-monitor.js";
+import { runMarketStrategist } from "./agents/legacy/market-strategist.js";
+import { runPLPManager } from "./agents/legacy/plp-manager.js";
+import { runRedeemKeeper } from "./agents/legacy/redeem-keeper.js";
 import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
+import { handleMarketsRoute } from "./markets/routes.js";
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
+const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
 
 function loadContext(): AgentContext | null {
   const pk = process.env.AGENT_PRIVATE_KEY;
-  const managerId = process.env.AGENT_MANAGER_ID;
-  if (!pk || !managerId) {
-    console.warn("[agents] AGENT_PRIVATE_KEY and AGENT_MANAGER_ID required");
+  if (!pk) {
+    console.warn("[agents] AGENT_PRIVATE_KEY required for on-chain agents");
     return null;
   }
   return {
     signer: keypairFromPrivateKey(pk),
-    managerId,
+    managerId: process.env.AGENT_MANAGER_ID ?? "",
     policyId: process.env.AGENT_POLICY_ID,
     maxBudgetUsdc: MAX_BUDGET,
   };
@@ -29,10 +33,13 @@ function loadContext(): AgentContext | null {
 async function runCycle(ctx: AgentContext) {
   console.log(`[agents] cycle @ ${new Date().toISOString()}`);
   const agents = [
+    runMarketResolver,
+    runMarketCreator,
+    runMarketMaker,
     runRiskMonitor,
-    runRedeemKeeper,
-    runPLPManager,
-    runMarketStrategist,
+    ...(LEGACY_PREDICT
+      ? [runRedeemKeeper, runPLPManager, runMarketStrategist]
+      : []),
   ] as const;
 
   for (const agent of agents) {
@@ -48,18 +55,26 @@ async function runCycle(ctx: AgentContext) {
 function startHealthServer() {
   const port = Number(process.env.PORT ?? 3001);
   createServer((req, res) => {
-    if (req.url === "/health") {
+    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    if (handleMarketsRoute(req, res, url)) return;
+    if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));
       return;
     }
-    if (req.url === "/decisions") {
-      res.writeHead(200, { "Content-Type": "application/json" });
+    if (url.pathname === "/decisions") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
       res.end(JSON.stringify(getRecentDecisions(100)));
       return;
     }
-    if (req.url === "/stats") {
-      res.writeHead(200, { "Content-Type": "application/json" });
+    if (url.pathname === "/stats") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
       res.end(JSON.stringify(getAgentStats()));
       return;
     }
@@ -76,8 +91,8 @@ async function main() {
     return;
   }
 
-  console.log(`[agents] Manager: ${ctx.managerId}`);
   console.log(`[agents] Agent address: ${ctx.signer.getPublicKey().toSuiAddress()}`);
+  if (LEGACY_PREDICT) console.log(`[agents] Legacy Predict agents enabled`);
 
   await runCycle(ctx);
   setInterval(() => runCycle(ctx), POLL_MS);

@@ -5,8 +5,8 @@ import {
   getVaultSummary,
   supplyPLP,
 } from "@suipredict/sdk";
-import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import type { AgentContext, AgentResult } from "../../lib.js";
+import { recordResult } from "../../lib.js";
 
 const DEFAULT_HIGH_UTIL = Number(process.env.PLP_HIGH_UTILIZATION ?? 0.001);
 const DEFAULT_LOW_UTIL = Number(process.env.PLP_LOW_UTILIZATION ?? 0.0005);

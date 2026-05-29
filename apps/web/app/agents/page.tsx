@@ -15,21 +15,27 @@ interface Decision {
 
 const AGENTS = [
   {
-    name: "MarketStrategist",
-    desc: "Trades BTC binaries against vol surface + LLM/rules",
+    name: "MarketCreator",
+    desc: "Proposes and creates binary markets (LLM + rules)",
   },
   {
-    name: "PLPManager",
-    desc: "Supplies dUSDC when vault utilization is high",
+    name: "MarketMaker",
+    desc: "Quotes YES bid/ask from vault allocation on CLOB",
   },
   {
-    name: "RedeemKeeper",
-    desc: "Auto-redeems settled positions permissionlessly",
+    name: "MarketResolver",
+    desc: "Resolves expired markets via oracle + LLM confidence",
   },
   {
     name: "RiskMonitor",
-    desc: "Pauses policy on critical vault utilization",
+    desc: "Pauses agent policy on critical utilization",
   },
+];
+
+const LEGACY = [
+  { name: "MarketStrategist", desc: "Legacy Predict BTC mints" },
+  { name: "PLPManager", desc: "Legacy dUSDC PLP supply" },
+  { name: "RedeemKeeper", desc: "Legacy permissionless redeem" },
 ];
 
 export default function AgentsPage() {
@@ -59,7 +65,8 @@ export default function AgentsPage() {
       <div>
         <h1 className="text-2xl font-bold">Agent Dashboard</h1>
         <p className="text-zinc-400">
-          Live autonomous agent activity on DeepBook Predict
+          Autonomous CLOB agents (creator, maker, resolver) plus optional legacy
+          DeepBook Predict agents
         </p>
       </div>
 
@@ -68,12 +75,26 @@ export default function AgentsPage() {
           <Card key={a.name}>
             <div className="flex items-center justify-between">
               <h3 className="font-medium text-cyan-300">{a.name}</h3>
-              <Badge variant="success">Active</Badge>
+              <Badge variant="success">Primary</Badge>
             </div>
             <p className="mt-2 text-sm text-zinc-400">{a.desc}</p>
           </Card>
         ))}
       </div>
+
+      <Card title="Legacy Predict agents (optional)">
+        <p className="text-xs text-zinc-500 mb-3">
+          Enable with ENABLE_LEGACY_PREDICT_AGENTS=true
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {LEGACY.map((a) => (
+            <div key={a.name} className="text-sm">
+              <span className="text-zinc-300">{a.name}</span>
+              <p className="text-zinc-500">{a.desc}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       <Card title="Recent Decisions">
         {error && <p className="text-sm text-amber-400">{error}</p>}

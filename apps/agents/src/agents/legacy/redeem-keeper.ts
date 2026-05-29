@@ -6,8 +6,8 @@ import {
   findSettledOraclesWithOpenPositions,
   strikeToDollars,
 } from "@suipredict/sdk";
-import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import type { AgentContext, AgentResult } from "../../lib.js";
+import { recordResult } from "../../lib.js";
 
 export async function runRedeemKeeper(ctx: AgentContext): Promise<AgentResult> {
   const client = createClient();

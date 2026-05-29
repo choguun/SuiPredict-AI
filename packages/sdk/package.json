@@ -16,6 +16,7 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
+    "@mysten/deepbook-v3": "^1.4.1",
     "@mysten/sui": "^2.17.0"
   },
   "devDependencies": {

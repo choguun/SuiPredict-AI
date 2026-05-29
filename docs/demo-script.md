@@ -1,58 +1,56 @@
-# Judge E2E Demo Script (2–3 min)
+# Judge E2E Demo Script (3 min + optional legacy)
 
 ## Setup
 
-1. Start agents: `pnpm dev:agents`
-2. Start frontend: `pnpm dev:web`
-3. Ensure wallet has testnet SUI + dUSDC
+1. `pnpm install && pnpm --filter @suipredict/sdk build`
+2. `pnpm dev:agents` — seeds demo markets + indexer API on :3001
+3. `pnpm dev:web` — http://localhost:3000
+4. Optional on-chain: publish Move package, set `MARKET_REGISTRY_ID`, `VAULT_OBJECT_ID`, wallet DBUSDC + SUI
 
-## Demo Flow
+## Primary: Polymarket CLOB (3 min)
 
-### 1. Home — Live Market Data (15s)
+### 1. Home (20s)
 
-- Open `http://localhost:3000`
-- Show predict-server status, vault value, BTC spot, active oracle
+- Active markets count, vault TVL, featured markets
+- Narrative: vault → agents → CLOB → resolve
 
-### 2. User Trade (30s)
+### 2. Markets list (20s)
 
-- Go to **Trade**
-- Connect wallet
-- Click **Create** PredictManager
-- Select active BTC oracle, UP direction, $1 quantity
-- **Mint Position** → show tx on Suiscan
-- After oracle settles, **Redeem** from Open Positions table
+- Open **Markets** — categories, expiry, status
+- Open a market (e.g. BTC $100k)
 
-### 3. PLP Vault (20s)
+### 3. Order book (60s)
 
-- Go to **Vault**
-- Show utilization + PLP supply metrics
-- Supply $1 dUSDC to PLP → show tx
-- Optionally **Withdraw PLP**
+- Show bids/asks, spread, implied NO = 1 − YES
+- Explain split: 1 DBUSDC → 1 YES + 1 NO
+- Demo mode: agent-fed book; live mode: place limit order on-chain
 
-### 4. Agent Activity (30s)
+### 4. Vault VLP (40s)
 
-- Go to **Agents**
-- Show four agent cards + live decision feed
-- Point to MarketStrategist mint / RedeemKeeper redeem tx hashes
+- **Vault** — TVL, MM allocation, deposit/withdraw VLP (DBUSDC)
 
-### 5. Leaderboard (15s)
+### 5. Agents (40s)
 
-- Show indexed mint/redeem volume from predict-server
+- **Agents** — Creator / Maker / Resolver decision feed
+- Point to quote or create_market tx on Suiscan (if on-chain)
 
-### 6. Policy Revocation (30s)
+### 6. Portfolio (20s)
 
-- Go to **Settings**
-- Create policy with agent address + $50 budget → copy **Policy Object ID**
-- Set `AGENT_POLICY_ID` in agents `.env`
-- **Revoke** policy → explain agent txs will fail
+- **Portfolio** — YES/NO balances per market
 
-## Talking Points
+## Optional: Legacy Predict (30s)
 
-- Integrates **existing** DeepBook Predict (not custom markets)
-- Four autonomous agents with on-chain policy objects
-- E2E: deposit → mint → PLP supply → settle → redeem
-- DeepBook idea bank: PLP vault (#2), Redeem Keeper (#8), gamified UI (#6)
+- **Legacy ▾** → `/legacy/predict/trade` — mint BTC binary with dUSDC
+- `/legacy/predict/vault` — PLP supply/withdraw
+
+## Talking points
+
+- Polymarket-style complement (YES + NO = $1) in Move `outcome_tokens`
+- On-chain CLOB avoids 500 DEEP per DeepBook pool for hackathon MVP
+- Three autonomous agents + user vault for MM capital
+- Legacy Predict shows DeepBook protocol breadth
 
 ## Backup
 
-If live agent fails, show pre-recorded `/agents` feed or SQLite `apps/agents/data/decisions.db`.
+- Demo markets in `apps/agents/data/markets.db` if chain unavailable
+- Pre-recorded agent feed from `/decisions`

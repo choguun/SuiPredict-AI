@@ -6,13 +6,13 @@ import {
   getDusdcBalance,
   mintPositionWithTopup,
 } from "@suipredict/sdk";
-import type { AgentContext, AgentResult } from "../lib.js";
+import type { AgentContext, AgentResult } from "../../lib.js";
 import {
   callLlm,
   getMarketContext,
   pickAtmStrike,
   recordResult,
-} from "../lib.js";
+} from "../../lib.js";
 
 const TRADE_SIZE = 1;
 const MIN_CONFIDENCE = 70;

@@ -1,0 +1,53 @@
+export interface MarketInfo {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  expiry_ms: number;
+  resolution_source: string;
+  status: "active" | "resolved" | "cancelled";
+  outcome?: "yes" | "no" | null;
+  pool_id?: string | null;
+  order_book_id?: string | null;
+  created_at_ms?: number;
+}
+
+export interface OrderBookLevel {
+  price: number;
+  price_bps: number;
+  quantity: number;
+  order_id?: string;
+}
+
+export interface OrderBookSnapshot {
+  market_id: string;
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+  spread_bps: number;
+  mid_price: number;
+}
+
+export interface TradeRecord {
+  market_id: string;
+  order_id: string;
+  price_bps: number;
+  quantity: number;
+  is_bid: boolean;
+  timestamp_ms: number;
+}
+
+export interface PortfolioPosition {
+  market_id: string;
+  title: string;
+  yes: number;
+  no: number;
+  status: string;
+  outcome?: string | null;
+}
+
+export interface VaultSummaryClob {
+  vault_id: string;
+  total_balance: number;
+  allocated: number;
+  available: number;
+}

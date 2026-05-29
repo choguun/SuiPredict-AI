@@ -1,3 +1,45 @@
+// Primary: Polymarket-style CLOB markets
+export {
+  MARKET_PACKAGE_ID,
+  DBUSDC_TYPE,
+  bpsToPrice,
+  priceToBps,
+  encodeUtf8,
+} from "./markets/constants.js";
+export * from "./markets/types.js";
+export * from "./markets/factory-client.js";
+export * from "./markets/indexer-client.js";
+export {
+  DEEPBOOK_PACKAGE_ID,
+  DEEPBOOK_REGISTRY_ID,
+  DEEP_TYPE,
+  VLP_TYPE,
+  POOL_SUI_DBUSDC,
+  POOL_DEEP_DBUSDC,
+  POOL_CREATION_FEE_DEEP,
+} from "./deepbook/constants.js";
+export { DBUSDC_TYPE as DEEPBOOK_DBUSDC_TYPE } from "./deepbook/constants.js";
+export * from "./deepbook/client.js";
+
+// Shared utilities from predict client
+export {
+  createClient,
+  executeTransaction,
+  keypairFromPrivateKey,
+  getDusdcBalance,
+  extractCreatedObjectId,
+  buildAuthorizeSpendTx,
+  buildPausePolicyTx,
+  buildCreatePolicyTx,
+  buildRevokePolicyTx,
+  getPolicyState,
+} from "./predict-client.js";
+export type { SuiClient, TxResult } from "./predict-client.js";
+
+// Legacy DeepBook Predict
+export * as predict from "./predict/index.js";
+
+// Backward-compatible re-exports
 export * from "./constants.js";
 export * from "./types.js";
 export * from "./predict-server.js";

@@ -6,10 +6,11 @@ import { ConnectButton } from "@mysten/dapp-kit-react/ui";
 
 const links = [
   { href: "/", label: "Home" },
-  { href: "/trade", label: "Trade" },
+  { href: "/markets", label: "Markets" },
   { href: "/vault", label: "Vault" },
+  { href: "/portfolio", label: "Portfolio" },
   { href: "/agents", label: "Agents" },
-  { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/legacy/predict/trade", label: "Legacy ▾" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -23,19 +24,25 @@ export function Nav() {
           SuiPredict<span className="text-zinc-400">.AI</span>
         </Link>
         <nav className="hidden md:flex gap-1">
-          {links.map((l) => (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                pathname === l.href
-                  ? "bg-cyan-500/20 text-cyan-300"
-                  : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-              }`}
-            >
-              {l.label}
-            </Link>
-          ))}
+          {links.map((l) => {
+            const active =
+              pathname === l.href ||
+              (l.href === "/markets" && pathname.startsWith("/markets/")) ||
+              (l.href.startsWith("/legacy") && pathname.startsWith("/legacy"));
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={`rounded-lg px-3 py-1.5 text-sm transition ${
+                  active
+                    ? "bg-cyan-500/20 text-cyan-300"
+                    : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                }`}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
         </nav>
         <ConnectButton />
       </div>

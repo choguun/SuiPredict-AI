@@ -1,97 +1,105 @@
 import Link from "next/link";
 import {
-  findNearestActiveOracle,
-  getSpotPrice,
-  getStatus,
-  getVaultSummary,
+  getVaultSummaryClob,
+  listMarkets,
 } from "@suipredict/sdk";
 import { Badge, Card, Stat } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [status, vault, oracle] = await Promise.all([
-    getStatus().catch(() => ({ status: "offline" })),
-    getVaultSummary().catch(() => null),
-    findNearestActiveOracle().catch(() => null),
+  const [markets, vault] = await Promise.all([
+    listMarkets().catch(() => []),
+    getVaultSummaryClob().catch(() => null),
   ]);
 
-  let spot: number | null = null;
-  if (oracle) {
-    spot = await getSpotPrice(oracle.oracle_id).catch(() => null);
-  }
+  const active = markets.filter((m) => m.status === "active").length;
 
   return (
     <div className="space-y-8">
       <section className="space-y-4">
-        <Badge variant="success">DeepBook Predict · Testnet</Badge>
+        <Badge variant="success">Polymarket CLOB · DeepBook V3</Badge>
         <h1 className="text-4xl font-bold tracking-tight md:text-5xl">
-          Autonomous prediction markets
-          <span className="block text-cyan-400">powered by AI agents</span>
+          Prediction markets on
+          <span className="block text-cyan-400">on-chain order books</span>
         </h1>
         <p className="max-w-2xl text-lg text-zinc-400">
-          SuiPredict-AI integrates DeepBook Predict with four specialized agents:
-          market strategist, PLP manager, redeem keeper, and risk monitor — all
-          governed by on-chain policy objects.
+          Deposit DBUSDC into a vault, split collateral into YES/NO tokens, and
+          trade on a CLOB — with autonomous agents creating markets, quoting
+          liquidity, and resolving outcomes. Legacy DeepBook Predict demo included.
         </p>
         <div className="flex flex-wrap gap-3 pt-2">
           <Link
-            href="/trade"
+            href="/markets"
             className="rounded-lg bg-cyan-500 px-5 py-2.5 text-sm font-medium text-zinc-950 hover:bg-cyan-400"
           >
-            Start Trading
+            Browse Markets
           </Link>
           <Link
-            href="/agents"
+            href="/vault"
             className="rounded-lg border border-zinc-700 px-5 py-2.5 text-sm font-medium text-zinc-200 hover:bg-zinc-800"
           >
-            View Agents
+            Vault (VLP)
+          </Link>
+          <Link
+            href="/legacy/predict/trade"
+            className="rounded-lg border border-zinc-800 px-5 py-2.5 text-sm text-zinc-400 hover:text-zinc-200"
+          >
+            Legacy Predict
           </Link>
         </div>
       </section>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
-          <Stat label="Predict Server" value={status.status} />
+          <Stat label="Active Markets" value={String(active)} />
         </Card>
         <Card>
           <Stat
-            label="Vault Value"
+            label="Vault TVL"
             value={
               vault
-                ? `$${(vault.vault_value / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                ? `$${(vault.total_balance / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
                 : "—"
             }
           />
         </Card>
         <Card>
           <Stat
-            label="Utilization"
+            label="MM Allocated"
             value={
-              vault ? `${((vault.utilization ?? 0) * 100).toFixed(1)}%` : "—"
+              vault
+                ? `$${(vault.allocated / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                : "—"
             }
           />
         </Card>
         <Card>
-          <Stat
-            label="BTC Spot"
-            value={spot ? `$${spot.toLocaleString()}` : "—"}
-          />
+          <Stat label="Agents" value="Creator · Maker · Resolver" />
         </Card>
       </div>
 
-      {oracle && (
-        <Card title="Nearest Active Oracle">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Stat label="Asset" value={oracle.underlying_asset} />
-            <Stat
-              label="Expiry"
-              value={new Date(oracle.expiry).toLocaleString()}
-            />
-            <Stat label="Status" value={oracle.status} />
-          </div>
-        </Card>
-      )}
+      <Card title="Featured markets">
+        <div className="space-y-3">
+          {markets.slice(0, 3).map((m) => (
+            <Link
+              key={m.id}
+              href={`/markets/${encodeURIComponent(m.id)}`}
+              className="block rounded-lg border border-zinc-800 px-4 py-3 hover:border-cyan-500/30"
+            >
+              <p className="font-medium text-zinc-100">{m.title}</p>
+              <p className="text-xs text-zinc-500">
+                {m.category} · expires {new Date(m.expiry_ms).toLocaleDateString()}
+              </p>
+            </Link>
+          ))}
+          {markets.length === 0 && (
+            <p className="text-sm text-zinc-500">
+              Start agents service to seed demo markets.
+            </p>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
