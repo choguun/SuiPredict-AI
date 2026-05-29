@@ -6,6 +6,7 @@ import {
   CLOCK_OBJECT_ID,
   DUSDC_TREASURY_CAP_ID,
   DUSDC_TYPE,
+  PLP_TYPE,
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   SUI_GRPC_URL,
@@ -341,6 +342,107 @@ export function buildPausePolicyTx(
     arguments: [tx.object(policyId)],
   });
   return tx;
+}
+
+export function buildAuthorizeSpendTx(
+  policyId: string,
+  amountDollars: number,
+  packageId = AGENT_POLICY_PACKAGE_ID,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::agent_policy::authorize_spend`,
+    arguments: [
+      tx.object(policyId),
+      tx.pure.u64(dollarsToDusdc(amountDollars)),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+export function buildLogActionTx(
+  policyId: string,
+  action: string,
+  packageId = AGENT_POLICY_PACKAGE_ID,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::agent_policy::log_action`,
+    arguments: [
+      tx.object(policyId),
+      tx.pure.vector("u8", Array.from(new TextEncoder().encode(action))),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+export async function getDusdcBalance(
+  client: SuiClient,
+  owner: string,
+): Promise<bigint> {
+  const { objects } = await client.core.listCoins({ owner, coinType: DUSDC_TYPE });
+  return objects.reduce((sum, c) => sum + BigInt(c.balance), 0n);
+}
+
+export async function getPlpCoins(client: SuiClient, owner: string) {
+  const { objects } = await client.core.listCoins({ owner, coinType: PLP_TYPE });
+  return objects;
+}
+
+export async function getPolicyState(
+  client: SuiClient,
+  policyId: string,
+  packageId = AGENT_POLICY_PACKAGE_ID,
+): Promise<import("./types.js").AgentPolicyState | null> {
+  try {
+    const { object } = await client.core.getObject({
+      objectId: policyId,
+      include: { json: true },
+    });
+    const fields = object.json;
+    if (!fields || !object.type.includes(`${packageId}::agent_policy::AgentPolicy`)) {
+      return null;
+    }
+    return {
+      policy_id: policyId,
+      owner: fields.owner as string,
+      agent: fields.agent as string,
+      max_budget: Number(fields.max_budget),
+      spent: Number(fields.spent),
+      expires_at: Number(fields.expires_at),
+      revoked: fields.revoked as boolean,
+      paused: fields.paused as boolean,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function extractCreatedObjectId(
+  client: SuiClient,
+  digest: string,
+  structSuffix: string,
+): Promise<string | null> {
+  const result = await client.waitForTransaction({
+    digest,
+    include: { effects: true, objectTypes: true },
+  });
+  if (result.$kind !== "Transaction") return null;
+  const effects = result.Transaction.effects;
+  const types = result.Transaction.objectTypes ?? {};
+  if (!effects) return null;
+
+  for (const change of effects.changedObjects) {
+    if (
+      change.idOperation === "Created" &&
+      types[change.objectId]?.includes(structSuffix)
+    ) {
+      return change.objectId;
+    }
+  }
+  return null;
 }
 
 export async function mintDusdcFromTreasury(

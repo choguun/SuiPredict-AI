@@ -54,7 +54,7 @@ public struct AgentPolicy has key, store {
     paused: bool,
 }
 
-/// Create a new agent policy. Transfers policy to owner.
+/// Create a new agent policy. Shared so both owner and agent can interact via PTBs.
 public fun create_policy(
     agent: address,
     max_budget: u64,
@@ -81,7 +81,7 @@ public fun create_policy(
         max_budget,
         expires_at,
     });
-    transfer::transfer(policy, owner);
+    transfer::share_object(policy);
 }
 
 /// Agent authorizes spend before executing a Predict transaction.

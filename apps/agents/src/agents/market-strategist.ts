@@ -1,11 +1,11 @@
 import {
-  AGENT_POLICY_PACKAGE_ID,
-  CLOCK_OBJECT_ID,
+  buildAuthorizeSpendTx,
   createClient,
+  dusdcToDollars,
   executeTransaction,
+  getDusdcBalance,
   mintPositionWithTopup,
 } from "@suipredict/sdk";
-import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
 import {
   callLlm,
@@ -16,6 +16,8 @@ import {
 
 const TRADE_SIZE = 1;
 const MIN_CONFIDENCE = 70;
+const MIN_DUSDC = TRADE_SIZE + 1;
+const DEMO_AUTO_TRADE = process.env.DEMO_AUTO_TRADE === "true";
 
 interface StrategistDecision {
   direction: "up" | "down";
@@ -61,14 +63,23 @@ Output JSON:
     }
   }
 
-  // Rule-based fallback: trade UP if spot available (demo-safe)
-  if (spot) {
+  if (spot && DEMO_AUTO_TRADE) {
     return {
       should_trade: true,
       direction: "up",
       quantity: TRADE_SIZE,
       confidence: 75,
-      reasoning: "Rule fallback: mint small UP position at ATM strike (LLM unavailable).",
+      reasoning: "Demo mode: mint small UP position at ATM strike.",
+    };
+  }
+
+  if (spot) {
+    return {
+      should_trade: false,
+      direction: "up",
+      quantity: TRADE_SIZE,
+      confidence: 0,
+      reasoning: "LLM unavailable — set DEMO_AUTO_TRADE=true for rule-based demo mints.",
     };
   }
 
@@ -91,6 +102,18 @@ export async function runMarketStrategist(ctx: AgentContext): Promise<AgentResul
   }
 
   const { oracle, state, vault } = market;
+  const client = createClient();
+  const address = ctx.signer.getPublicKey().toSuiAddress();
+  const dusdcBalance = await getDusdcBalance(client, address);
+  const dusdcDollars = dusdcToDollars(dusdcBalance);
+
+  if (dusdcDollars < MIN_DUSDC) {
+    return recordResult("MarketStrategist", {
+      action: "skip",
+      reasoning: `Insufficient dUSDC ($${dusdcDollars.toFixed(2)}). Need at least $${MIN_DUSDC} to mint.`,
+    });
+  }
+
   const decision = await decideTrade(state.spot, vault.utilization ?? 0);
 
   if (!decision.should_trade || decision.confidence < MIN_CONFIDENCE) {
@@ -109,19 +132,8 @@ export async function runMarketStrategist(ctx: AgentContext): Promise<AgentResul
       oracle.tick_size,
     ));
 
-  const client = createClient();
-
-  // Authorize spend on policy if configured
   if (ctx.policyId) {
-    const authTx = new Transaction();
-    authTx.moveCall({
-      target: `${AGENT_POLICY_PACKAGE_ID}::agent_policy::authorize_spend`,
-      arguments: [
-        authTx.object(ctx.policyId),
-        authTx.pure.u64(BigInt(decision.quantity) * 1_000_000n),
-        authTx.object(CLOCK_OBJECT_ID),
-      ],
-    });
+    const authTx = buildAuthorizeSpendTx(ctx.policyId, decision.quantity);
     await executeTransaction(client, authTx, ctx.signer);
   }
 

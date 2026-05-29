@@ -1,4 +1,5 @@
 import {
+  buildLogActionTx,
   buildRedeemTx,
   createClient,
   executeTransaction,
@@ -22,6 +23,11 @@ export async function runRedeemKeeper(ctx: AgentContext): Promise<AgentResult> {
   const pos = positions[0]!;
   const strikeDollars = strikeToDollars(BigInt(pos.strike));
   const quantityDollars = pos.quantity / 1e6;
+
+  if (ctx.policyId) {
+    const logTx = buildLogActionTx(ctx.policyId, "redeem_permissionless");
+    await executeTransaction(client, logTx, ctx.signer);
+  }
 
   const tx = buildRedeemTx({
     managerId: ctx.managerId,

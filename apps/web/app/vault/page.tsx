@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import {
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
+  PLP_TYPE,
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   getVaultSummary,
@@ -23,18 +24,38 @@ export default function VaultPage() {
   const dAppKit = useDAppKit();
   const [vault, setVault] = useState<VaultSummary | null>(null);
   const [amount, setAmount] = useState(1);
+  const [withdrawAmount, setWithdrawAmount] = useState(1);
+  const [plpBalance, setPlpBalance] = useState(0);
+  const [plpCoinId, setPlpCoinId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
 
+  async function refreshVault() {
+    const summary = await getVaultSummary();
+    setVault(summary);
+  }
+
+  async function refreshPlp() {
+    if (!account || !client) return;
+    const { objects } = await client.core.listCoins({
+      owner: account.address,
+      coinType: PLP_TYPE,
+    });
+    const total = objects.reduce((s, c) => s + Number(c.balance), 0);
+    setPlpBalance(total);
+    setPlpCoinId(objects[0]?.objectId ?? "");
+  }
+
   useEffect(() => {
-    getVaultSummary()
-      .then(setVault)
-      .catch(console.error);
-    const id = setInterval(() => {
-      getVaultSummary().then(setVault).catch(console.error);
-    }, 10000);
+    refreshVault().catch(console.error);
+    const id = setInterval(() => refreshVault().catch(console.error), 10000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!account || !client) return;
+    refreshPlp().catch(console.error);
+  }, [account, client]);
 
   async function supplyPLP() {
     if (!account || !client) return;
@@ -72,7 +93,40 @@ export default function VaultPage() {
           ? result.Transaction.digest
           : "unknown";
       setStatus(`Supplied $${amount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
-      getVaultSummary().then(setVault);
+      await Promise.all([refreshVault(), refreshPlp()]);
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function withdrawPLP() {
+    if (!account || !client || !plpCoinId) return;
+    setLoading(true);
+    setStatus("Withdrawing from PLP vault...");
+    try {
+      const tx = new Transaction();
+      const withdrawAmt = BigInt(withdrawAmount) * BigInt(1_000_000);
+      const plpCoin = tx.object(plpCoinId);
+      const [splitCoin] = tx.splitCoins(plpCoin, [tx.pure.u64(withdrawAmt)]);
+      tx.moveCall({
+        target: `${PREDICT_PACKAGE_ID}::predict::withdraw`,
+        typeArguments: [DUSDC_TYPE],
+        arguments: [
+          tx.object(PREDICT_OBJECT_ID),
+          splitCoin,
+          tx.object(CLOCK_OBJECT_ID),
+        ],
+      });
+      tx.transferObjects([plpCoin], tx.pure.address(account.address));
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest =
+        result.$kind === "Transaction"
+          ? result.Transaction.digest
+          : "unknown";
+      setStatus(`Withdrew $${withdrawAmount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
+      await Promise.all([refreshVault(), refreshPlp()]);
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -89,7 +143,7 @@ export default function VaultPage() {
         </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <Stat
             label="Vault Value"
@@ -104,7 +158,7 @@ export default function VaultPage() {
           <Stat
             label="Utilization"
             value={
-              vault ? `${((vault.utilization ?? 0) * 100).toFixed(1)}%` : "—"
+              vault ? `${((vault.utilization ?? 0) * 100).toFixed(2)}%` : "—"
             }
           />
         </Card>
@@ -114,6 +168,16 @@ export default function VaultPage() {
             value={
               vault
                 ? `$${(vault.plp_supply / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                : "—"
+            }
+          />
+        </Card>
+        <Card>
+          <Stat
+            label="Your PLP"
+            value={
+              account
+                ? `$${(plpBalance / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
                 : "—"
             }
           />
@@ -144,10 +208,39 @@ export default function VaultPage() {
             </button>
           </div>
         )}
-        {status && (
-          <p className="mt-3 text-xs font-mono text-zinc-400">{status}</p>
+      </Card>
+
+      <Card title="Withdraw Liquidity">
+        {!account ? (
+          <p className="text-zinc-400">Connect wallet to withdraw</p>
+        ) : !plpCoinId ? (
+          <p className="text-zinc-400">No PLP tokens in wallet</p>
+        ) : (
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-xs text-zinc-500">Withdraw (dUSDC face)</label>
+              <input
+                type="number"
+                min={1}
+                className="mt-1 block w-32 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(Number(e.target.value))}
+              />
+            </div>
+            <button
+              onClick={withdrawPLP}
+              disabled={loading}
+              className="rounded-lg border border-zinc-600 px-5 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {loading ? "Withdrawing..." : "Withdraw PLP"}
+            </button>
+          </div>
         )}
       </Card>
+
+      {status && (
+        <p className="text-xs font-mono text-zinc-400">{status}</p>
+      )}
     </div>
   );
 }

@@ -20,12 +20,14 @@
 - Click **Create** PredictManager
 - Select active BTC oracle, UP direction, $1 quantity
 - **Mint Position** → show tx on Suiscan
+- After oracle settles, **Redeem** from Open Positions table
 
 ### 3. PLP Vault (20s)
 
 - Go to **Vault**
-- Show utilization metrics
+- Show utilization + PLP supply metrics
 - Supply $1 dUSDC to PLP → show tx
+- Optionally **Withdraw PLP**
 
 ### 4. Agent Activity (30s)
 
@@ -40,8 +42,8 @@
 ### 6. Policy Revocation (30s)
 
 - Go to **Settings**
-- Show agent policy package ID
-- Create policy with agent address + $50 budget
+- Create policy with agent address + $50 budget → copy **Policy Object ID**
+- Set `AGENT_POLICY_ID` in agents `.env`
 - **Revoke** policy → explain agent txs will fail
 
 ## Talking Points

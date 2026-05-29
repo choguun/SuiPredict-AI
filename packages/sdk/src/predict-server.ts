@@ -7,9 +7,11 @@ import type {
   MintedPosition,
   OracleInfo,
   OracleState,
+  OracleStateResponse,
   PositionSummary,
   RedeemedPosition,
   VaultSummary,
+  VaultSummaryRaw,
 } from "./types.js";
 
 async function fetchJson<T>(path: string): Promise<T> {
@@ -18,6 +20,35 @@ async function fetchJson<T>(path: string): Promise<T> {
     throw new Error(`predict-server ${path}: ${res.status} ${await res.text()}`);
   }
   return res.json() as Promise<T>;
+}
+
+export function normalizeOracleState(raw: OracleStateResponse): OracleState {
+  const oracle = raw.oracle;
+  return {
+    oracle_id: oracle.oracle_id,
+    predict_id: oracle.predict_id,
+    underlying_asset: oracle.underlying_asset,
+    expiry: oracle.expiry,
+    status: oracle.status,
+    spot: raw.latest_price?.spot ?? null,
+    forward: raw.latest_price?.forward ?? null,
+    settlement_price: oracle.settlement_price,
+    min_strike: oracle.min_strike,
+    tick_size: oracle.tick_size,
+  };
+}
+
+export function normalizeVaultSummary(raw: VaultSummaryRaw): VaultSummary {
+  return {
+    predict_id: raw.predict_id,
+    vault_value: raw.vault_value,
+    utilization: raw.utilization,
+    plp_supply: raw.plp_total_supply,
+    quote_balance: raw.vault_balance,
+    max_payout_utilization: raw.max_payout_utilization,
+    plp_share_price: raw.plp_share_price,
+    available_liquidity: raw.available_liquidity,
+  };
 }
 
 export async function getStatus() {
@@ -34,11 +65,13 @@ export async function getActiveOracles(predictId = PREDICT_OBJECT_ID): Promise<O
 }
 
 export async function getOracleState(oracleId: string): Promise<OracleState> {
-  return fetchJson(`/oracles/${oracleId}/state`);
+  const raw = await fetchJson<OracleStateResponse>(`/oracles/${oracleId}/state`);
+  return normalizeOracleState(raw);
 }
 
 export async function getVaultSummary(predictId = PREDICT_OBJECT_ID): Promise<VaultSummary> {
-  return fetchJson(`/predicts/${predictId}/vault/summary`);
+  const raw = await fetchJson<VaultSummaryRaw>(`/predicts/${predictId}/vault/summary`);
+  return normalizeVaultSummary(raw);
 }
 
 export async function getManagers(): Promise<
@@ -61,10 +94,11 @@ export async function getManagerSummary(managerId: string): Promise<ManagerSumma
 }
 
 export async function getManagerPositions(managerId: string): Promise<PositionSummary[]> {
-  const data = await fetchJson<{ positions: PositionSummary[] }>(
+  const data = await fetchJson<{ positions: PositionSummary[] } | PositionSummary[]>(
     `/managers/${managerId}/positions/summary`,
   );
-  return data.positions ?? (data as unknown as PositionSummary[]);
+  if (Array.isArray(data)) return data;
+  return data.positions ?? [];
 }
 
 export async function getMintedPositions(limit = 50): Promise<MintedPosition[]> {
@@ -98,17 +132,13 @@ export async function findNearestActiveOracle(
 export async function findSettledOraclesWithOpenPositions(
   managerId: string,
 ): Promise<PositionSummary[]> {
-  const positions = await getManagerPositions(managerId);
-  const settled: PositionSummary[] = [];
-  for (const pos of positions) {
-    try {
-      const state = await getOracleState(pos.oracle_id);
-      if (state.status === "settled" && pos.quantity > 0) {
-        settled.push(pos);
-      }
-    } catch {
-      // skip
-    }
-  }
-  return settled;
+  const [positions, oracles] = await Promise.all([
+    getManagerPositions(managerId),
+    getOracles(),
+  ]);
+  const settledIds = new Set(
+    oracles.filter((o) => o.status === "settled").map((o) => o.oracle_id),
+  );
+
+  return positions.filter((pos) => settledIds.has(pos.oracle_id) && pos.quantity > 0);
 }

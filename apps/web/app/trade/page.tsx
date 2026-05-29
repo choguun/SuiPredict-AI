@@ -13,10 +13,15 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   buildCreateManagerTx,
+  buildRedeemTx,
   getManagerForOwner,
   getActiveOracles,
+  getManagerPositions,
+  getOracles,
   pickAtmStrike,
+  strikeToDollars,
   type OracleInfo,
+  type PositionSummary,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 
@@ -32,6 +37,22 @@ export default function TradePage() {
   const [managerId, setManagerId] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [positions, setPositions] = useState<PositionSummary[]>([]);
+  const [settledOracleIds, setSettledOracleIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!managerId) return;
+    getManagerPositions(managerId)
+      .then(setPositions)
+      .catch(console.error);
+    getOracles()
+      .then((list) =>
+        setSettledOracleIds(
+          new Set(list.filter((o) => o.status === "settled").map((o) => o.oracle_id)),
+        ),
+      )
+      .catch(console.error);
+  }, [managerId, status]);
 
   useEffect(() => {
     getActiveOracles()
@@ -144,6 +165,44 @@ export default function TradePage() {
     }
   }
 
+  async function redeemPosition(pos: PositionSummary) {
+    if (!account || !managerId) return;
+    setLoading(true);
+    setStatus("Redeeming settled position...");
+    try {
+      const strikeDollars = strikeToDollars(BigInt(pos.strike));
+      const quantityDollars = pos.quantity / 1e6;
+      const tx = buildRedeemTx({
+        managerId,
+        oracleId: pos.oracle_id,
+        expiry: BigInt(pos.expiry),
+        strikeDollars,
+        direction: pos.is_up ? "up" : "down",
+        quantityDollars,
+        permissionless: settledOracleIds.has(pos.oracle_id),
+      });
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest =
+        result.$kind === "Transaction"
+          ? result.Transaction.digest
+          : "unknown";
+      setStatus(`Redeemed! Tx: ${digest.slice(0, 16)}...`);
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!account) return;
+    getManagerForOwner(account.address)
+      .then((id) => {
+        if (id) setManagerId(id);
+      })
+      .catch(console.error);
+  }, [account]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -246,6 +305,50 @@ export default function TradePage() {
           </div>
         </Card>
       </div>
+
+      {managerId && positions.length > 0 && (
+        <Card title="Open Positions">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-zinc-500">
+                  <th className="pb-2 pr-4">Direction</th>
+                  <th className="pb-2 pr-4">Strike</th>
+                  <th className="pb-2 pr-4">Qty ($)</th>
+                  <th className="pb-2 pr-4">Expiry</th>
+                  <th className="pb-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map((pos) => {
+                  const settled = settledOracleIds.has(pos.oracle_id);
+                  return (
+                    <tr key={`${pos.oracle_id}-${pos.strike}-${pos.is_up}`} className="border-t border-zinc-800">
+                      <td className="py-2 pr-4">{pos.is_up ? "UP" : "DOWN"}</td>
+                      <td className="py-2 pr-4">${strikeToDollars(BigInt(pos.strike)).toLocaleString()}</td>
+                      <td className="py-2 pr-4">${(pos.quantity / 1e6).toFixed(2)}</td>
+                      <td className="py-2 pr-4">{new Date(pos.expiry).toLocaleString()}</td>
+                      <td className="py-2">
+                        {settled ? (
+                          <button
+                            onClick={() => redeemPosition(pos)}
+                            disabled={loading || !account}
+                            className="rounded bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50"
+                          >
+                            Redeem
+                          </button>
+                        ) : (
+                          <span className="text-xs text-zinc-500">Active</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

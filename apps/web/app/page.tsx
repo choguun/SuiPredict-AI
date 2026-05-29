@@ -1,7 +1,7 @@
 import Link from "next/link";
 import {
   findNearestActiveOracle,
-  getOracleState,
+  getSpotPrice,
   getStatus,
   getVaultSummary,
 } from "@suipredict/sdk";

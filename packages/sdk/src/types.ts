@@ -26,12 +26,34 @@ export interface OracleState {
   tick_size: number;
 }
 
+/** Raw predict-server oracle state response */
+export interface OracleStateResponse {
+  oracle: OracleInfo;
+  latest_price?: { spot?: number; forward?: number };
+  latest_svi?: unknown;
+}
+
 export interface VaultSummary {
   predict_id: string;
   vault_value: number;
   utilization: number;
   plp_supply: number;
   quote_balance: number;
+  max_payout_utilization?: number;
+  plp_share_price?: number;
+  available_liquidity?: number;
+}
+
+/** Raw predict-server vault summary response */
+export interface VaultSummaryRaw {
+  predict_id: string;
+  vault_value: number;
+  vault_balance: number;
+  utilization: number;
+  plp_total_supply: number;
+  max_payout_utilization?: number;
+  plp_share_price?: number;
+  available_liquidity?: number;
 }
 
 export interface ManagerSummary {
@@ -72,6 +94,17 @@ export interface RedeemedPosition {
   is_settled: boolean;
   checkpoint: number;
   timestamp_ms: number;
+}
+
+export interface AgentPolicyState {
+  policy_id: string;
+  owner: string;
+  agent: string;
+  max_budget: number;
+  spent: number;
+  expires_at: number;
+  revoked: boolean;
+  paused: boolean;
 }
 
 export interface AgentDecisionLog {

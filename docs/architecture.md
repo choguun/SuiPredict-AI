@@ -13,7 +13,7 @@
 ## Data Flow
 
 1. **User trade:** Wallet → deposit dUSDC → `predict::mint` via frontend PTB
-2. **PLP supply:** PLP Manager agent → `predict::supply` when utilization > 60%
+2. **PLP supply:** PLP Manager agent → `predict::supply` when utilization > 0.1% (configurable)
 3. **Strategist:** Reads oracle spot + vault → LLM/rules → `predict::mint` with policy authorize
 4. **Keeper:** Scans settled oracles → `predict::redeem_permissionless`
 5. **Risk:** Monitors utilization → `agent_policy::pause` if critical
