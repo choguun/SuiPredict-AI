@@ -7,16 +7,24 @@ import {
 } from "@mysten/dapp-kit-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  buildDeepBookCreateBalanceManagerTx,
+  buildDeepBookDepositTx,
+  buildDeepBookPlaceLimitOrderTx,
+  buildDeepBookWithdrawSettledTx,
   buildBuyNoLimitOrderTx,
   buildMergeCollateralTx,
   buildPlaceLimitOrderTx,
   buildRedeemWinnerTx,
   buildSplitCollateralTx,
+  createPredictionDeepBookClient,
   getMarket,
   getMarketOrderBook,
   getPortfolio,
+  PREDICT_BASE_COIN_KEY,
+  PREDICT_DEEPBOOK_POOL_KEY,
+  PREDICT_QUOTE_COIN_KEY,
   type MarketInfo,
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
@@ -69,6 +77,10 @@ export default function MarketDetailPage() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [position, setPosition] = useState({ yes: 0, no: 0 });
+  const [balanceManagerId, setBalanceManagerId] = useState("");
+  const [tradeCapId, setTradeCapId] = useState("");
+  const [depositAsset, setDepositAsset] = useState<"quote" | "base">("quote");
+  const [depositAmount, setDepositAmount] = useState(10);
   const initializedPrice = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -100,6 +112,27 @@ export default function MarketDetailPage() {
       .catch(() => {});
   }, [account, marketId, status]);
 
+  useEffect(() => {
+    if (!account) return;
+    const key = `suipredict.deepbook.${account.address}`;
+    setBalanceManagerId(window.localStorage.getItem(`${key}.manager`) ?? "");
+    setTradeCapId(window.localStorage.getItem(`${key}.tradeCap`) ?? "");
+  }, [account]);
+
+  useEffect(() => {
+    if (!account) return;
+    const key = `suipredict.deepbook.${account.address}`;
+    if (balanceManagerId) window.localStorage.setItem(`${key}.manager`, balanceManagerId);
+    else window.localStorage.removeItem(`${key}.manager`);
+  }, [account, balanceManagerId]);
+
+  useEffect(() => {
+    if (!account) return;
+    const key = `suipredict.deepbook.${account.address}`;
+    if (tradeCapId) window.localStorage.setItem(`${key}.tradeCap`, tradeCapId);
+    else window.localStorage.removeItem(`${key}.tradeCap`);
+  }, [account, tradeCapId]);
+
   const yesMid = book?.mid_price ?? 0.5;
   const impliedNo = 1 - yesMid;
   const displayedPrice = clampProbability(price);
@@ -107,6 +140,44 @@ export default function MarketDetailPage() {
   const priceBps = Math.round(clampProbability(yesLimitPrice) * 10_000);
   const isBid = side === "yes" ? orderSide === "buy" : orderSide === "sell";
   const isSyntheticBuyNo = side === "no" && orderSide === "buy";
+  const deepBookPoolKey =
+    market?.deepbook_pool_key ??
+    process.env.NEXT_PUBLIC_DEEPBOOK_POOL_KEY ??
+    PREDICT_DEEPBOOK_POOL_KEY;
+  const deepBookPoolId =
+    market?.deepbook_pool_id ?? process.env.NEXT_PUBLIC_DEEPBOOK_POOL_ID ?? "";
+  const deepBookBaseCoinType =
+    market?.deepbook_base_coin_type ??
+    process.env.NEXT_PUBLIC_DEEPBOOK_YES_COIN_TYPE ??
+    "";
+  const deepBookQuoteCoinType =
+    market?.deepbook_quote_coin_type ??
+    process.env.NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_TYPE ??
+    DBUSDC;
+  const deepBookMarket = useMemo(() => {
+    if (!deepBookPoolId || !deepBookBaseCoinType) return null;
+    return {
+      poolKey: deepBookPoolKey,
+      poolId: deepBookPoolId,
+      baseCoinType: deepBookBaseCoinType,
+      quoteCoinType: deepBookQuoteCoinType,
+      baseScalar:
+        market?.deepbook_base_scalar ??
+        Number(process.env.NEXT_PUBLIC_DEEPBOOK_YES_COIN_SCALAR ?? 1_000_000),
+      quoteScalar:
+        market?.deepbook_quote_scalar ??
+        Number(process.env.NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_SCALAR ?? 1_000_000),
+    };
+  }, [
+    deepBookBaseCoinType,
+    deepBookPoolId,
+    deepBookPoolKey,
+    deepBookQuoteCoinType,
+    market?.deepbook_base_scalar,
+    market?.deepbook_quote_scalar,
+  ]);
+  const hasDeepBookPool = Boolean(deepBookMarket);
+  const useDeepBookRoute = Boolean(deepBookMarket && balanceManagerId);
   const quantityAtoms = BigInt(Math.floor(qty * 1_000_000));
   const quoteAtoms = (quantityAtoms * BigInt(priceBps)) / BigInt(10_000);
   const estimatedCost = displayedPrice * qty;
@@ -115,7 +186,9 @@ export default function MarketDetailPage() {
   const potentialProfit = Math.max(0, payout - estimatedCost);
   const actionLabel = `${orderSide === "buy" ? "Buy" : "Sell"} ${side.toUpperCase()}`;
   const routeLabel =
-    isSyntheticBuyNo
+    useDeepBookRoute
+      ? `DeepBook V3 ${isBid ? "bid" : "ask"} YES at ${formatCents(yesLimitPrice)}`
+      : isSyntheticBuyNo
       ? `Split DBUSDC, keep NO, ask YES at ${formatCents(yesLimitPrice)}`
       : side === "yes"
       ? `${orderSide === "buy" ? "Bid" : "Ask"} YES at ${formatCents(displayedPrice)}`
@@ -166,54 +239,148 @@ export default function MarketDetailPage() {
   }
 
   async function placeOrder() {
-    if (!account || !client || !market?.order_book_id) return;
+    if (!account || !client || !market) return;
+    if (!useDeepBookRoute && !market.order_book_id) return;
+    const orderBookId = market.order_book_id;
     setLoading(true);
-    setStatus("Placing limit order…");
+    setStatus(
+      useDeepBookRoute
+        ? "Placing DeepBook V3 limit order..."
+        : "Placing limit order...",
+    );
     try {
       let tx;
-      const { objects } = await client.core.listCoins({
-        owner: account.address,
-        coinType: DBUSDC,
-      });
-      if (isSyntheticBuyNo) {
-        const coin = objects.find((c) => BigInt(c.balance) >= quantityAtoms);
-        if (!coin) {
-          throw new Error(
-            `Need ${(Number(quantityAtoms) / 1e6).toFixed(2)} DBUSDC to split collateral`,
-          );
-        }
-        tx = buildBuyNoLimitOrderTx({
-          marketId: market.id,
-          orderBookId: market.order_book_id,
-          collateralCoinId: coin.objectId,
-          yesPriceBps: priceBps,
-          quantity: quantityAtoms,
+      if (useDeepBookRoute && deepBookMarket) {
+        const dbClient = createPredictionDeepBookClient({
+          client,
+          address: account.address,
+          balanceManagerId,
+          tradeCapId: tradeCapId || undefined,
+          market: deepBookMarket,
+        });
+        tx = buildDeepBookPlaceLimitOrderTx(dbClient, {
+          poolKey: deepBookMarket.poolKey,
+          clientOrderId: String(Date.now()),
+          price: yesLimitPrice,
+          quantity: qty,
+          isBid,
         });
       } else {
-        let quoteCoinId: string | undefined;
-        if (isBid) {
-          const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
+        const { objects } = await client.core.listCoins({
+          owner: account.address,
+          coinType: DBUSDC,
+        });
+        if (!orderBookId) throw new Error("Missing local order book ID");
+        if (isSyntheticBuyNo) {
+          const coin = objects.find((c) => BigInt(c.balance) >= quantityAtoms);
           if (!coin) {
             throw new Error(
-              `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
+              `Need ${(Number(quantityAtoms) / 1e6).toFixed(2)} DBUSDC to split collateral`,
             );
           }
-          quoteCoinId = coin.objectId;
+          tx = buildBuyNoLimitOrderTx({
+            marketId: market.id,
+            orderBookId,
+            collateralCoinId: coin.objectId,
+            yesPriceBps: priceBps,
+            quantity: quantityAtoms,
+          });
+        } else {
+          let quoteCoinId: string | undefined;
+          if (isBid) {
+            const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
+            if (!coin) {
+              throw new Error(
+                `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
+              );
+            }
+            quoteCoinId = coin.objectId;
+          }
+          tx = buildPlaceLimitOrderTx({
+            marketId: market.id,
+            orderBookId,
+            isBid,
+            priceBps,
+            quantity: quantityAtoms,
+            quoteCoinId,
+          });
         }
-        tx = buildPlaceLimitOrderTx({
-          marketId: market.id,
-          orderBookId: market.order_book_id,
-          isBid,
-          priceBps,
-          quantity: quantityAtoms,
-          quoteCoinId,
-        });
       }
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setStatus(`Order placed: ${txDigest(r).slice(0, 16)}…`);
       await refresh();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : "Order failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createBalanceManager() {
+    if (!account || !client || !deepBookMarket) return;
+    setLoading(true);
+    setStatus("Creating DeepBook V3 BalanceManager...");
+    try {
+      const dbClient = createPredictionDeepBookClient({
+        client,
+        address: account.address,
+        market: deepBookMarket,
+      });
+      const tx = buildDeepBookCreateBalanceManagerTx(dbClient, account.address);
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      setStatus(
+        `BalanceManager created: ${txDigest(r).slice(0, 16)}... Paste its object ID below.`,
+      );
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "BalanceManager creation failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function depositToBalanceManager() {
+    if (!account || !client || !deepBookMarket || !balanceManagerId) return;
+    setLoading(true);
+    setStatus("Depositing to DeepBook V3 BalanceManager...");
+    try {
+      const dbClient = createPredictionDeepBookClient({
+        client,
+        address: account.address,
+        balanceManagerId,
+        tradeCapId: tradeCapId || undefined,
+        market: deepBookMarket,
+      });
+      const tx = buildDeepBookDepositTx(
+        dbClient,
+        depositAsset === "base" ? PREDICT_BASE_COIN_KEY : PREDICT_QUOTE_COIN_KEY,
+        depositAmount,
+      );
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      setStatus(`Deposit OK: ${txDigest(r).slice(0, 16)}...`);
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "Deposit failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function withdrawSettledDeepBook() {
+    if (!account || !client || !deepBookMarket || !balanceManagerId) return;
+    setLoading(true);
+    setStatus("Withdrawing settled DeepBook V3 balances...");
+    try {
+      const dbClient = createPredictionDeepBookClient({
+        client,
+        address: account.address,
+        balanceManagerId,
+        tradeCapId: tradeCapId || undefined,
+        market: deepBookMarket,
+      });
+      const tx = buildDeepBookWithdrawSettledTx(dbClient, deepBookMarket.poolKey);
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      setStatus(`Settled balances withdrawn: ${txDigest(r).slice(0, 16)}...`);
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "Withdraw settled failed");
     } finally {
       setLoading(false);
     }
@@ -427,13 +594,17 @@ export default function MarketDetailPage() {
               </span>
             </div>
             <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-500">
-              Order route: {routeLabel}. NO orders use the 1 - YES
-              complement on the same book.
+              Order route: {routeLabel}. NO orders use the 1 - YES complement on
+              the same YES book.
             </p>
           </div>
           <button
             type="button"
-            disabled={loading || !account || market.id.startsWith("demo-")}
+            disabled={
+              loading ||
+              !account ||
+              (!useDeepBookRoute && market.id.startsWith("demo-"))
+            }
             onClick={placeOrder}
             className={`min-h-12 w-full rounded-md text-sm font-semibold text-zinc-950 transition disabled:cursor-not-allowed disabled:opacity-50 ${
               orderSide === "buy"
@@ -445,13 +616,92 @@ export default function MarketDetailPage() {
           </button>
           {market.id.startsWith("demo-") && (
             <p className="mt-3 text-xs leading-5 text-amber-300/90">
-              Demo market — deploy contracts and set MARKET_REGISTRY_ID for on-chain orders.
+              Demo market — configure a DeepBook pool below or deploy contracts and set
+              MARKET_REGISTRY_ID for local on-chain orders.
             </p>
           )}
         </Card>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
+        <Card title="DeepBook V3">
+          <div className="space-y-3">
+            <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs leading-5 text-zinc-400">
+              {hasDeepBookPool ? (
+                <>
+                  <p className="text-zinc-300">Pool key: {deepBookPoolKey}</p>
+                  <p className="break-all">Pool ID: {deepBookPoolId}</p>
+                  <p className="break-all">YES coin: {deepBookBaseCoinType}</p>
+                </>
+              ) : (
+                <p>
+                  Set NEXT_PUBLIC_DEEPBOOK_POOL_ID and
+                  NEXT_PUBLIC_DEEPBOOK_YES_COIN_TYPE, or return these fields from
+                  the market indexer.
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              disabled={loading || !account || !deepBookMarket}
+              onClick={createBalanceManager}
+              className="min-h-11 w-full rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-50"
+            >
+              Create BalanceManager
+            </button>
+            <input
+              type="text"
+              value={balanceManagerId}
+              onChange={(e) => setBalanceManagerId(e.target.value.trim())}
+              placeholder="BalanceManager object ID"
+              className="w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
+            />
+            <input
+              type="text"
+              value={tradeCapId}
+              onChange={(e) => setTradeCapId(e.target.value.trim())}
+              placeholder="TradeCap ID (optional)"
+              className="w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
+            />
+            <div className="grid grid-cols-[1fr_120px] gap-2">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(Math.max(0, Number(e.target.value)))}
+                className="rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
+              />
+              <select
+                value={depositAsset}
+                onChange={(e) => setDepositAsset(e.target.value as "quote" | "base")}
+                className="rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
+              >
+                <option value="quote">DBUSDC</option>
+                <option value="base">YES</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                onClick={depositToBalanceManager}
+                className="min-h-11 rounded-md bg-emerald-400 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
+              >
+                Deposit
+              </button>
+              <button
+                type="button"
+                disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                onClick={withdrawSettledDeepBook}
+                className="min-h-11 rounded-md border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-50"
+              >
+                Settle
+              </button>
+            </div>
+          </div>
+        </Card>
+
         <Card title="Collateral">
           <p className="mb-4 text-sm leading-6 text-zinc-400">
             Split 1 DBUSDC → 1 YES + 1 NO. Merge pair back to DBUSDC.

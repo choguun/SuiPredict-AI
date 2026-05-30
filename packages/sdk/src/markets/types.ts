@@ -9,6 +9,12 @@ export interface MarketInfo {
   outcome?: "yes" | "no" | null;
   pool_id?: string | null;
   order_book_id?: string | null;
+  deepbook_pool_key?: string | null;
+  deepbook_pool_id?: string | null;
+  deepbook_base_coin_type?: string | null;
+  deepbook_quote_coin_type?: string | null;
+  deepbook_base_scalar?: number | null;
+  deepbook_quote_scalar?: number | null;
   created_at_ms?: number;
 }
 

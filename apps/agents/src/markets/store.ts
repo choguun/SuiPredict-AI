@@ -31,6 +31,12 @@ function getDb(): Database.Database {
         outcome TEXT,
         pool_id TEXT,
         order_book_id TEXT,
+        deepbook_pool_key TEXT,
+        deepbook_pool_id TEXT,
+        deepbook_base_coin_type TEXT,
+        deepbook_quote_coin_type TEXT,
+        deepbook_base_scalar INTEGER,
+        deepbook_quote_scalar INTEGER,
         created_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS orders (
@@ -61,9 +67,31 @@ function getDb(): Database.Database {
         PRIMARY KEY (market_id, address)
       );
     `);
+    migrateMarketColumns();
     seedDemoMarkets();
   }
   return db;
+}
+
+function migrateMarketColumns() {
+  const existing = new Set(
+    (getDb().prepare(`PRAGMA table_info(markets)`).all() as { name: string }[]).map(
+      (row) => row.name,
+    ),
+  );
+  const columns: Record<string, string> = {
+    deepbook_pool_key: "TEXT",
+    deepbook_pool_id: "TEXT",
+    deepbook_base_coin_type: "TEXT",
+    deepbook_quote_coin_type: "TEXT",
+    deepbook_base_scalar: "INTEGER",
+    deepbook_quote_scalar: "INTEGER",
+  };
+  for (const [name, type] of Object.entries(columns)) {
+    if (!existing.has(name)) {
+      getDb().exec(`ALTER TABLE markets ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 function seedDemoMarkets() {
@@ -136,19 +164,34 @@ export function upsertMarket(market: MarketInfo): void {
   getDb()
     .prepare(
       `INSERT INTO markets
-       (id, title, description, category, expiry_ms, resolution_source, status, outcome, pool_id, order_book_id, created_at_ms)
-       VALUES (@id, @title, @description, @category, @expiry_ms, @resolution_source, @status, @outcome, @pool_id, @order_book_id, @created_at_ms)
+       (id, title, description, category, expiry_ms, resolution_source, status, outcome, pool_id, order_book_id,
+        deepbook_pool_key, deepbook_pool_id, deepbook_base_coin_type, deepbook_quote_coin_type,
+        deepbook_base_scalar, deepbook_quote_scalar, created_at_ms)
+       VALUES (@id, @title, @description, @category, @expiry_ms, @resolution_source, @status, @outcome, @pool_id, @order_book_id,
+        @deepbook_pool_key, @deepbook_pool_id, @deepbook_base_coin_type, @deepbook_quote_coin_type,
+        @deepbook_base_scalar, @deepbook_quote_scalar, @created_at_ms)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, description=excluded.description, category=excluded.category,
          expiry_ms=excluded.expiry_ms, resolution_source=excluded.resolution_source,
          status=excluded.status, outcome=excluded.outcome, pool_id=excluded.pool_id,
-         order_book_id=excluded.order_book_id`,
+         order_book_id=excluded.order_book_id,
+         deepbook_pool_key=excluded.deepbook_pool_key, deepbook_pool_id=excluded.deepbook_pool_id,
+         deepbook_base_coin_type=excluded.deepbook_base_coin_type,
+         deepbook_quote_coin_type=excluded.deepbook_quote_coin_type,
+         deepbook_base_scalar=excluded.deepbook_base_scalar,
+         deepbook_quote_scalar=excluded.deepbook_quote_scalar`,
     )
     .run({
       ...market,
       outcome: market.outcome ?? null,
       pool_id: market.pool_id ?? null,
       order_book_id: market.order_book_id ?? null,
+      deepbook_pool_key: market.deepbook_pool_key ?? null,
+      deepbook_pool_id: market.deepbook_pool_id ?? null,
+      deepbook_base_coin_type: market.deepbook_base_coin_type ?? null,
+      deepbook_quote_coin_type: market.deepbook_quote_coin_type ?? null,
+      deepbook_base_scalar: market.deepbook_base_scalar ?? null,
+      deepbook_quote_scalar: market.deepbook_quote_scalar ?? null,
       created_at_ms: market.created_at_ms ?? Date.now(),
     });
 }
@@ -324,6 +367,12 @@ function rowToMarket(row: unknown): MarketInfo {
     outcome: (r.outcome as MarketInfo["outcome"]) ?? null,
     pool_id: (r.pool_id as string) ?? null,
     order_book_id: (r.order_book_id as string) ?? null,
+    deepbook_pool_key: (r.deepbook_pool_key as string) ?? null,
+    deepbook_pool_id: (r.deepbook_pool_id as string) ?? null,
+    deepbook_base_coin_type: (r.deepbook_base_coin_type as string) ?? null,
+    deepbook_quote_coin_type: (r.deepbook_quote_coin_type as string) ?? null,
+    deepbook_base_scalar: (r.deepbook_base_scalar as number) ?? null,
+    deepbook_quote_scalar: (r.deepbook_quote_scalar as number) ?? null,
     created_at_ms: r.created_at_ms as number,
   };
 }
