@@ -1,16 +1,16 @@
 import {
   buildCreateMarketTx,
-  buildCreateOrderBookTx,
-  createClient,
-  executeTransaction,
+  buildMintSharesTx,
+  buildSetupReferralTx,
   extractCreatedObjectId,
 } from "@suipredict/sdk";
+import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, recordResult } from "../lib.js";
 import { listMarkets, upsertMarket } from "../markets/store.js";
 
 const MAX_ACTIVE = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
-const REGISTRY_ID = process.env.MARKET_REGISTRY_ID;
+const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
 
 const FALLBACK_MARKETS = [
   {
@@ -38,7 +38,7 @@ interface MarketSpec {
 }
 
 async function proposeMarket(): Promise<MarketSpec> {
-  const prompt = `Propose one binary prediction market for a Polymarket-style exchange.
+  const prompt = `Propose one binary prediction market for a Polymarket-style exchange on Sui/DeepBook.
 Respond ONLY with JSON: {"title":"...","description":"...","category":"crypto|politics|sports|defi","expiry_days":7-30,"resolution_source":"..."}`;
 
   const raw = await callLlm(prompt);
@@ -73,18 +73,20 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
   }
 
-  if (!REGISTRY_ID) {
-    const spec = await proposeMarket();
+  const spec = await proposeMarket();
+  const expiryMs = BigInt(Date.now() + spec.expiry_days * 86_400_000);
+
+  if (!DEEPBOOK_REGISTRY_ID) {
+    // Demo mode — no on-chain
     const id = `demo-${Date.now()}`;
     upsertMarket({
       id,
       title: spec.title,
       description: spec.description,
       category: spec.category,
-      expiry_ms: Date.now() + spec.expiry_days * 86_400_000,
+      expiry_ms: Number(expiryMs),
       resolution_source: spec.resolution_source,
       status: "active",
-      order_book_id: `demo-book-${id}`,
       created_at_ms: Date.now(),
     });
     return recordResult("MarketCreator", {
@@ -94,34 +96,48 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
   }
 
-  const spec = await proposeMarket();
+  const { createClient, executeTransaction } = await import("@suipredict/sdk");
   const client = createClient();
-  const expiryMs = BigInt(Date.now() + spec.expiry_days * 86_400_000);
 
   try {
-    const createTx = buildCreateMarketTx({
-      registryId: REGISTRY_ID,
-      title: spec.title,
-      description: spec.description,
-      category: spec.category,
-      expiryMs,
-      resolutionSource: spec.resolution_source,
+    // Step 1: acquire a Coin<DEEP> with enough for pool creation fee (500 DEEP)
+    const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
+    const { objects: deepCoins } = await client.core.listCoins({
+      owner: agentAddr,
+      coinType: DEEP_TYPE,
     });
-    const createResult = await executeTransaction(client, createTx, ctx.signer);
-    const marketId = await extractCreatedObjectId(
-      client,
-      createResult.digest,
-      "Market",
-    );
-    if (!marketId) throw new Error("Market object not found in effects");
+    const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
+    if (!deepCoin) {
+      return recordResult("MarketCreator", {
+        action: "no_deep",
+        reasoning: `Need at least 500 DEEP for pool creation. Have ${deepCoins.length} DEEP coins.`,
+        confidence: 50,
+      });
+    }
 
-    const bookTx = buildCreateOrderBookTx(marketId);
-    const bookResult = await executeTransaction(client, bookTx, ctx.signer);
-    const bookId = await extractCreatedObjectId(
-      client,
-      bookResult.digest,
-      "OrderBook",
-    );
+    // Step 2: create the market (includes pool creation + YES/NO coin types)
+    const createTx = buildCreateMarketTx({
+      title: spec.title,
+      resolutionSource: spec.resolution_source,
+      expiryMs,
+      tickSize: 1_000_000n,      // 0.001 DBUSDC tick
+      lotSize: 1_000_000n,       // 1 YES minimum
+      minSize: 1_000_000n,       // 1 YES minimum
+      deepCoinId: deepCoin.objectId,
+    });
+
+    const createResult = await executeTransaction(client, createTx, ctx.signer);
+    const marketId = await extractCreatedObjectId(client, createResult.digest, "PredictionMarket");
+    if (!marketId) throw new Error("PredictionMarket object not found in effects");
+
+    // Step 3: setup DeepBook referral for this market's pool
+    // We need the pool ID from the market — fetch market object
+    const { object } = await client.core.getObject({ objectId: marketId, include: { json: true } });
+    const poolId = object?.json?.pool_id as string | undefined;
+    if (poolId) {
+      const referralTx = buildSetupReferralTx(marketId, poolId, 1_000_000_000n);
+      await executeTransaction(client, referralTx, ctx.signer);
+    }
 
     upsertMarket({
       id: marketId,
@@ -131,13 +147,16 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       expiry_ms: Number(expiryMs),
       resolution_source: spec.resolution_source,
       status: "active",
-      order_book_id: bookId ?? undefined,
+      pool_id: poolId ?? null,
+      deepbook_pool_id: poolId ?? null,
+      deepbook_base_coin_type: `${process.env.PREDICT_MARKET_PACKAGE_ID ?? "0x0"}::prediction_market::YES<0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC>`,
+      deepbook_quote_coin_type: "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
       created_at_ms: Date.now(),
     });
 
     return recordResult("MarketCreator", {
       action: "create_market",
-      reasoning: `On-chain market: ${spec.title}`,
+      reasoning: `On-chain market: ${spec.title} (pool: ${poolId ? poolId.slice(0, 10) + "..." : "N/A"})`,
       confidence: 85,
       txDigest: createResult.digest,
     });

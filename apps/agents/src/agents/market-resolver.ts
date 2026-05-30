@@ -5,6 +5,9 @@ import {
   getSpotPrice,
   findNearestActiveOracle,
 } from "@suipredict/sdk";
+// buildResolveMarketTx from @suipredict/sdk resolves to predict-client.ts legacy version.
+// Use the new prediction-market-client.js for DeepBook-integrated resolve.
+import { buildResolveMarketTx as buildResolveMarketTxNew } from "@suipredict/sdk/prediction-market-client";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertMarket } from "../markets/store.js";

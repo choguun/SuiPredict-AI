@@ -36,6 +36,32 @@ export {
 } from "./predict-client.js";
 export type { SuiClient, TxResult } from "./predict-client.js";
 
+// Prediction Market (DeepBook V3 integrated)
+// Re-export only the NEW functions that don't conflict with legacy exports.
+// getOrderBookDepth, getMidPrice, PREDICT_DEEPBOOK_POOL_KEY live in deepbook/client.ts
+// createMarketDeepBookClient, buildPlaceYesLimitOrderTx, buildWithdrawSettledTx, DeepBookClient
+// live in prediction-market-client.ts
+export {
+  createMarketDeepBookClient,
+  buildPlaceYesLimitOrderTx,
+  buildWithdrawSettledTx,
+  buildMintSharesTx,
+  buildSetupReferralTx,
+  buildCreateMarketTx,
+} from "./prediction-market-client.js";
+
+// buildCreateMarketTx lives in both prediction-market-client.js and
+// markets/factory-client.js. Import from prediction-market-client.js directly:
+//   import { buildCreateMarketTx } from "@suipredict/sdk/prediction-market-client";
+
+export {
+  getOrderBookDepth,
+  getMidPrice,
+  PREDICT_DEEPBOOK_POOL_KEY,
+  type DeepBookClient,
+  type BalanceManager,
+} from "./deepbook/client.js";
+
 // Legacy DeepBook Predict
 export * as predict from "./predict/index.js";
 

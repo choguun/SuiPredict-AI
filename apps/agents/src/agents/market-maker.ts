@@ -1,49 +1,87 @@
 import {
-  buildAllocateForMmTx,
-  buildPlaceLimitOrderTx,
-  buildSplitCollateralAmountTx,
   createClient,
+  createMarketDeepBookClient,
+  buildPlaceYesLimitOrderTx,
+  buildWithdrawSettledTx,
+  getOrderBookDepth,
+  getMidPrice,
+  PREDICT_DEEPBOOK_POOL_KEY,
   executeTransaction,
-  getMarketOrderBook,
+  DeepBookClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 
 const SPREAD_THRESHOLD_BPS = Number(process.env.MM_SPREAD_THRESHOLD_BPS ?? 400);
-const QUOTE_SIZE = BigInt(process.env.MM_QUOTE_SIZE ?? 10_000_000);
-const VAULT_ID = process.env.VAULT_OBJECT_ID;
+const QUOTE_SIZE = Number(process.env.MM_QUOTE_SIZE ?? 10_000_000);
+const BALANCE_MANAGER_ID = process.env.BALANCE_MANAGER_ID;
 
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
+  // Find an active market that has a DeepBook pool
   const target = listMarkets().find(
-    (m) => m.status === "active" && m.order_book_id,
+    (m) => m.status === "active" && m.deepbook_pool_id,
   );
   if (!target) {
     return recordResult("MarketMaker", {
       action: "skip",
-      reasoning: "No active markets with order books to quote.",
+      reasoning: "No active markets with DeepBook pools.",
     });
   }
 
-  let book;
+  const poolKey = target.deepbook_pool_key ?? PREDICT_DEEPBOOK_POOL_KEY;
+  const client = createClient();
+  const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
+
+  // Create DeepBook client for this specific market
+  let dbClient: DeepBookClient;
   try {
-    book = await getMarketOrderBook(target.id);
-  } catch {
-    book = { spread_bps: 9999, mid_price: 0.5, bids: [], asks: [] };
+    dbClient = createMarketDeepBookClient(
+      client,
+      agentAddr,
+      target.deepbook_pool_id!,
+      BALANCE_MANAGER_ID ?? undefined,
+    );
+  } catch (err) {
+    return recordResult("MarketMaker", {
+      action: "skip",
+      reasoning: `No BalanceManager configured: ${err instanceof Error ? err.message : String(err)}`,
+    });
   }
 
-  if (book.spread_bps <= SPREAD_THRESHOLD_BPS && book.bids.length > 0 && book.asks.length > 0) {
+  // Get current order book depth
+  let book;
+  try {
+    book = await getOrderBookDepth(dbClient, poolKey, 0.01, 0.99);
+  } catch {
+    book = { bids: [], asks: [] };
+  }
+
+  const bestBid = book.bids[0]?.[0] ?? 0;
+  const bestAsk = book.asks[0]?.[0] ?? 0;
+  const spreadBps =
+    bestBid > 0 && bestAsk > 0 ? Math.round((bestAsk - bestBid) * 10_000) : 9999;
+
+  if (spreadBps <= SPREAD_THRESHOLD_BPS && book.bids.length > 0 && book.asks.length > 0) {
     return recordResult("MarketMaker", {
       action: "hold",
-      reasoning: `${target.title.slice(0, 40)}… spread ${book.spread_bps}bps — within target.`,
+      reasoning: `${target.title.slice(0, 40)}... spread ${spreadBps}bps -- tight, hold.`,
       confidence: 88,
     });
   }
 
-  const midBps = Math.round(book.mid_price * 10_000);
+  // Derive quote prices from mid price
+  const midPrice = await getMidPrice(dbClient, poolKey);
+  if (midPrice <= 0) {
+    return recordResult("MarketMaker", {
+      action: "skip",
+      reasoning: "Could not determine mid price from DeepBook order book.",
+    });
+  }
+
+  const midBps = Math.round(midPrice * 10_000);
   const bidBps = Math.max(100, midBps - 200);
   const askBps = Math.min(9900, midBps + 200);
-  const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
 
   if (target.id.startsWith("demo-")) {
     upsertOrder({
@@ -52,7 +90,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       owner: agentAddr,
       is_bid: true,
       price_bps: bidBps,
-      quantity: Number(QUOTE_SIZE),
+      quantity: QUOTE_SIZE,
       timestamp_ms: Date.now(),
     });
     upsertOrder({
@@ -61,70 +99,44 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       owner: agentAddr,
       is_bid: false,
       price_bps: askBps,
-      quantity: Number(QUOTE_SIZE),
+      quantity: QUOTE_SIZE,
       timestamp_ms: Date.now(),
     });
     return recordResult("MarketMaker", {
       action: "quote_demo",
-      reasoning: `Demo quotes ${bidBps / 100}¢ / ${askBps / 100}¢ on ${target.title.slice(0, 36)}…`,
+      reasoning: `Demo quotes ${bidBps / 100}¢ / ${askBps / 100}¢ on ${target.title.slice(0, 36)}...`,
       confidence: 80,
     });
   }
 
-  if (!VAULT_ID || !target.order_book_id) {
-    return recordResult("MarketMaker", {
-      action: "skip",
-      reasoning: "VAULT_OBJECT_ID or order book not configured for on-chain MM.",
-    });
-  }
-
-  const client = createClient();
   try {
-    const bidQuote = (QUOTE_SIZE * BigInt(bidBps)) / BigInt(10_000);
-    const allocTx = buildAllocateForMmTx(VAULT_ID, QUOTE_SIZE + bidQuote);
-    await executeTransaction(client, allocTx, ctx.signer);
+    // Withdraw any previously settled amounts first (housekeeping)
+    const withdrawTx = buildWithdrawSettledTx(dbClient, poolKey);
+    await executeTransaction(client, withdrawTx, ctx.signer);
 
-    const { objects } = await client.core.listCoins({
-      owner: agentAddr,
-      coinType:
-        "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
-    });
-    const coin = objects.find((c) => BigInt(c.balance) >= QUOTE_SIZE + bidQuote);
-    if (!coin) throw new Error("No DBUSDC after vault allocation");
-
-    const splitTx = buildSplitCollateralAmountTx(target.id, coin.objectId, QUOTE_SIZE);
-    await executeTransaction(client, splitTx, ctx.signer);
-
-    const remainingCoins = await client.core.listCoins({
-      owner: agentAddr,
-      coinType:
-        "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
-    });
-    const bidCoin = remainingCoins.objects.find((c) => BigInt(c.balance) >= bidQuote);
-    if (!bidCoin) throw new Error("No DBUSDC left for bid escrow");
-
-    const bidTx = buildPlaceLimitOrderTx({
-      marketId: target.id,
-      orderBookId: target.order_book_id,
-      isBid: true,
-      priceBps: bidBps,
+    // Place bid limit order (buy YES shares)
+    const bidTx = buildPlaceYesLimitOrderTx(dbClient, poolKey, {
+      price: bidBps / 10_000,
       quantity: QUOTE_SIZE,
-      quoteCoinId: bidCoin.objectId,
+      isBid: true,
+      clientOrderId: `mm-${target.id}-bid-${Date.now()}`,
+      expiration: Math.floor(Date.now() / 1000) + 3600,
     });
     const bidResult = await executeTransaction(client, bidTx, ctx.signer);
 
-    const askTx = buildPlaceLimitOrderTx({
-      marketId: target.id,
-      orderBookId: target.order_book_id,
-      isBid: false,
-      priceBps: askBps,
+    // Place ask limit order (sell YES shares / go short YES)
+    const askTx = buildPlaceYesLimitOrderTx(dbClient, poolKey, {
+      price: askBps / 10_000,
       quantity: QUOTE_SIZE,
+      isBid: false,
+      clientOrderId: `mm-${target.id}-ask-${Date.now()}`,
+      expiration: Math.floor(Date.now() / 1000) + 3600,
     });
     await executeTransaction(client, askTx, ctx.signer);
 
     return recordResult("MarketMaker", {
       action: "place_quotes",
-      reasoning: `Quoted ${bidBps / 100}¢/${askBps / 100}¢ YES on ${getMarket(target.id)?.title.slice(0, 36) ?? target.id}`,
+      reasoning: `Quoted ${bidBps / 100}¢/${askBps / 100}¢ on ${target.title.slice(0, 36)}...`,
       confidence: 85,
       txDigest: bidResult.digest,
     });
@@ -135,3 +147,4 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     });
   }
 }
+

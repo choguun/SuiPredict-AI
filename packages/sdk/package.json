@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./prediction-market-client": {
+      "types": "./dist/prediction-market-client.d.ts",
+      "import": "./dist/prediction-market-client.js"
     }
   },
   "scripts": {
