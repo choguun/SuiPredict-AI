@@ -30,6 +30,7 @@ import {
   getMidPrice,
   type DeepBookClient,
   type PredictionDeepBookMarketConfig,
+  PREDICT_DEEPBOOK_POOL_KEY,
 } from "./deepbook/client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
 import type { SuiClient } from "./predict-client.js";
@@ -45,6 +46,17 @@ export const PREDICT_MARKET_PACKAGE_ID =
 
 const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 
+/** FeeVault<DBUSDC> object ID — set after contract deployment */
+export const FEE_VAULT_ID =
+  process.env.FEE_VAULT_ID ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+/** Protocol treasury address for withdrawing accumulated fees and claiming referral rewards */
+export const REFERRAL_TREASURY_ADDRESS =
+  process.env.REFERRAL_TREASURY_ADDRESS ??
+  process.env.PROTOCOL_TREASURY_ADDRESS ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 // ─── Transaction builders ─────────────────────────────────────────────────────
 
 /**
@@ -53,13 +65,13 @@ const PKG = () => PREDICT_MARKET_PACKAGE_ID;
  * Creates a new prediction market + DeepBook pool + YES/NO coin types.
  * Returns (market_id, pool_id) as created objects.
  *
- * @param params.title           - Market question
+ * @param params.title            - Market question
  * @param params.resolutionSource - How the market resolves
  * @param params.expiryMs        - Unix timestamp (ms) when resolution becomes allowed
  * @param params.tickSize        - Price tick in quote units (e.g. 1_000_000 = 0.001 DBUSDC with 6 decimals)
  * @param params.lotSize         - Minimum base-asset quantity per order (in YES * 10^decimals)
  * @param params.minSize         - Minimum order size in base units
- * @param params.deepCoinId      - Object ID of a Coin<DEEP> with at least 500 DEEP for pool creation fee
+ * @param params.deepCoinId      - Object ID of a Coin<DEEP> with at least 500 DEEP for pool creation fee (REQUIRED)
  */
 export function buildCreateMarketTx(params: {
   title: string;
@@ -68,8 +80,9 @@ export function buildCreateMarketTx(params: {
   tickSize?: bigint;
   lotSize?: bigint;
   minSize?: bigint;
-  deepCoinId?: string;
+  deepCoinId: string;
 }): Transaction {
+  if (!params.deepCoinId) throw new Error("deepCoinId is required for pool creation");
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::create_market`,
@@ -82,17 +95,7 @@ export function buildCreateMarketTx(params: {
       tx.pure.u64(params.tickSize ?? 1_000_000n),       // 0.001 DBUSDC tick
       tx.pure.u64(params.lotSize ?? 1_000_000n),        // 1 YES minimum
       tx.pure.u64(params.minSize ?? 1_000_000n),        // 1 YES minimum
-      // deep_coin: if deepCoinId provided, use it; otherwise mint fresh DEEP
-      params.deepCoinId
-        ? tx.object(params.deepCoinId)
-        : tx.moveCall({
-            target: "0x2::coin::mint",
-            typeArguments: [DEEP_TYPE],
-            arguments: [
-              tx.object("0x6"), // treasury cap — needs to be provided or use pre-existing
-              tx.pure.u64(POOL_CREATION_FEE_DEEP),
-            ],
-          }),
+      tx.object(params.deepCoinId),
     ],
   });
   return tx;
@@ -212,18 +215,20 @@ export function buildSetupReferralTx(
 /**
  * Build `claim_referral_rewards` transaction.
  *
- * @param poolId    - DeepBook Pool object ID
+ * @param poolId     - DeepBook Pool object ID
  * @param referralId - DeepBookPoolReferral object ID
+ * @param treasury   - Address to receive the accumulated referral rewards (DEEP + DBUSDC)
  */
 export function buildClaimReferralRewardsTx(
   poolId: string,
   referralId: string,
+  treasury: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(poolId), tx.object(referralId)],
+    arguments: [tx.object(poolId), tx.object(referralId), tx.pure.address(treasury)],
   });
   return tx;
 }
@@ -379,15 +384,18 @@ export function buildWithdrawSettledTx(
  * @param client      - SuiClient
  * @param address     - User's Sui address
  * @param poolId      - DeepBook Pool ID (from MarketInfo.deepbook_pool_id)
+ * @param poolKey     - Pool key string (e.g. "market_abc12345" or PREDICT_DEEPBOOK_POOL_KEY)
  * @param balanceManagerId - Optional BalanceManager ID for trading
  */
 export function createMarketDeepBookClient(
   client: SuiClient,
   address: string,
   poolId: string,
+  poolKey: string = PREDICT_DEEPBOOK_POOL_KEY,
   balanceManagerId?: string,
 ) {
   const marketConfig: PredictionDeepBookMarketConfig = {
+    poolKey,
     poolId,
     baseCoinType: yesCoinType(),
     quoteCoinType: DBUSDC_TYPE,

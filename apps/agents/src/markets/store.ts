@@ -37,6 +37,7 @@ function getDb(): Database.Database {
         deepbook_quote_coin_type TEXT,
         deepbook_base_scalar INTEGER,
         deepbook_quote_scalar INTEGER,
+        referral_id TEXT,
         created_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS orders (
@@ -86,6 +87,7 @@ function migrateMarketColumns() {
     deepbook_quote_coin_type: "TEXT",
     deepbook_base_scalar: "INTEGER",
     deepbook_quote_scalar: "INTEGER",
+    referral_id: "TEXT",
   };
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) {
@@ -166,10 +168,10 @@ export function upsertMarket(market: MarketInfo): void {
       `INSERT INTO markets
        (id, title, description, category, expiry_ms, resolution_source, status, outcome, pool_id, order_book_id,
         deepbook_pool_key, deepbook_pool_id, deepbook_base_coin_type, deepbook_quote_coin_type,
-        deepbook_base_scalar, deepbook_quote_scalar, created_at_ms)
+        deepbook_base_scalar, deepbook_quote_scalar, referral_id, created_at_ms)
        VALUES (@id, @title, @description, @category, @expiry_ms, @resolution_source, @status, @outcome, @pool_id, @order_book_id,
         @deepbook_pool_key, @deepbook_pool_id, @deepbook_base_coin_type, @deepbook_quote_coin_type,
-        @deepbook_base_scalar, @deepbook_quote_scalar, @created_at_ms)
+        @deepbook_base_scalar, @deepbook_quote_scalar, @referral_id, @created_at_ms)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, description=excluded.description, category=excluded.category,
          expiry_ms=excluded.expiry_ms, resolution_source=excluded.resolution_source,
@@ -179,7 +181,8 @@ export function upsertMarket(market: MarketInfo): void {
          deepbook_base_coin_type=excluded.deepbook_base_coin_type,
          deepbook_quote_coin_type=excluded.deepbook_quote_coin_type,
          deepbook_base_scalar=excluded.deepbook_base_scalar,
-         deepbook_quote_scalar=excluded.deepbook_quote_scalar`,
+         deepbook_quote_scalar=excluded.deepbook_quote_scalar,
+         referral_id=excluded.referral_id`,
     )
     .run({
       ...market,
@@ -192,6 +195,7 @@ export function upsertMarket(market: MarketInfo): void {
       deepbook_quote_coin_type: market.deepbook_quote_coin_type ?? null,
       deepbook_base_scalar: market.deepbook_base_scalar ?? null,
       deepbook_quote_scalar: market.deepbook_quote_scalar ?? null,
+      referral_id: market.referral_id ?? null,
       created_at_ms: market.created_at_ms ?? Date.now(),
     });
 }
@@ -373,6 +377,7 @@ function rowToMarket(row: unknown): MarketInfo {
     deepbook_quote_coin_type: (r.deepbook_quote_coin_type as string) ?? null,
     deepbook_base_scalar: (r.deepbook_base_scalar as number) ?? null,
     deepbook_quote_scalar: (r.deepbook_quote_scalar as number) ?? null,
+    referral_id: (r.referral_id as string) ?? null,
     created_at_ms: r.created_at_ms as number,
   };
 }

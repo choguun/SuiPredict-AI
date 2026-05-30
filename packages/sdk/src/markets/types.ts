@@ -15,6 +15,8 @@ export interface MarketInfo {
   deepbook_quote_coin_type?: string | null;
   deepbook_base_scalar?: number | null;
   deepbook_quote_scalar?: number | null;
+  /** DeepBook referral ID for claiming trading fee rebates */
+  referral_id?: string | null;
   created_at_ms?: number;
 }
 

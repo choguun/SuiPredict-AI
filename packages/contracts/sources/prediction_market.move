@@ -428,17 +428,17 @@ public fun setup_referral<Q>(
 }
 
 /// Claim accumulated referral rewards from DeepBook for the market's pool.
-/// All three Coin outputs are transferred to the caller.
-#[allow(lint(self_transfer))]
+/// All three Coin outputs are transferred to the nominated treasury address.
 public fun claim_referral_rewards<Q>(
     pool: &mut Pool<YES<Q>, Q>,
     referral: &DeepBookPoolReferral,
+    treasury: address,
     ctx: &mut TxContext,
 ) {
     let (yes_dust, quote_coins, deep_coins) = pool::claim_pool_referral_rewards<YES<Q>, Q>(pool, referral, ctx);
-    transfer::public_transfer(yes_dust, ctx.sender());
-    transfer::public_transfer(quote_coins, ctx.sender());
-    transfer::public_transfer(deep_coins, ctx.sender());
+    transfer::public_transfer(yes_dust, treasury);
+    transfer::public_transfer(quote_coins, treasury);
+    transfer::public_transfer(deep_coins, treasury);
 }
 
 // ============================================================

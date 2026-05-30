@@ -33,13 +33,14 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   const client = createClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
 
-  // Create DeepBook client for this specific market
+  // Create DeepBook client for this specific market, using its pool key
   let dbClient: DeepBookClient;
   try {
     dbClient = createMarketDeepBookClient(
       client,
       agentAddr,
       target.deepbook_pool_id!,
+      target.deepbook_pool_key ?? PREDICT_DEEPBOOK_POOL_KEY,
       BALANCE_MANAGER_ID ?? undefined,
     );
   } catch (err) {

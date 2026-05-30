@@ -51,6 +51,10 @@ export {
   buildResolveMarketTx,
   buildRedeemTx,
   buildRedeemNoTx,
+  buildClaimReferralRewardsTx,
+  PREDICT_MARKET_PACKAGE_ID,
+  FEE_VAULT_ID,
+  REFERRAL_TREASURY_ADDRESS,
 } from "./prediction-market-client.js";
 
 // buildCreateMarketTx lives in both prediction-market-client.js and

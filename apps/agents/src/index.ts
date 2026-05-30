@@ -5,9 +5,6 @@ import { runMarketCreator } from "./agents/market-creator.js";
 import { runMarketMaker } from "./agents/market-maker.js";
 import { runMarketResolver } from "./agents/market-resolver.js";
 import { runRiskMonitor } from "./agents/risk-monitor.js";
-import { runMarketStrategist } from "./agents/legacy/market-strategist.js";
-import { runPLPManager } from "./agents/legacy/plp-manager.js";
-import { runRedeemKeeper } from "./agents/legacy/redeem-keeper.js";
 import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
@@ -37,9 +34,6 @@ async function runCycle(ctx: AgentContext) {
     runMarketCreator,
     runMarketMaker,
     runRiskMonitor,
-    ...(LEGACY_PREDICT
-      ? [runRedeemKeeper, runPLPManager, runMarketStrategist]
-      : []),
   ] as const;
 
   for (const agent of agents) {

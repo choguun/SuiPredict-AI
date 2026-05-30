@@ -3,6 +3,7 @@ import {
   buildMintSharesTx,
   buildSetupReferralTx,
   extractCreatedObjectId,
+  PREDICT_MARKET_PACKAGE_ID,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -120,9 +121,9 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       title: spec.title,
       resolutionSource: spec.resolution_source,
       expiryMs,
-      tickSize: 1_000_000n,      // 0.001 DBUSDC tick
-      lotSize: 1_000_000n,       // 1 YES minimum
-      minSize: 1_000_000n,       // 1 YES minimum
+      tickSize: BigInt(1_000_000),  // 0.001 DBUSDC tick
+      lotSize: BigInt(1_000_000),    // 1 YES minimum
+      minSize: BigInt(1_000_000),    // 1 YES minimum
       deepCoinId: deepCoin.objectId,
     });
 
@@ -131,12 +132,14 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     if (!marketId) throw new Error("PredictionMarket object not found in effects");
 
     // Step 3: setup DeepBook referral for this market's pool
-    // We need the pool ID from the market — fetch market object
+    // We need the pool ID and referral ID from the market — fetch market object
     const { object } = await client.core.getObject({ objectId: marketId, include: { json: true } });
     const poolId = object?.json?.pool_id as string | undefined;
+    let referralId: string | null = null;
     if (poolId) {
-      const referralTx = buildSetupReferralTx(marketId, poolId, 1_000_000_000n);
-      await executeTransaction(client, referralTx, ctx.signer);
+      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
+      const referralResult = await executeTransaction(client, referralTx, ctx.signer);
+      referralId = await extractCreatedObjectId(client, referralResult.digest, "DeepBookPoolReferral");
     }
 
     upsertMarket({
@@ -148,9 +151,15 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       resolution_source: spec.resolution_source,
       status: "active",
       pool_id: poolId ?? null,
+      deepbook_pool_key: poolId ? `market_${marketId.slice(0, 8)}` : null,
       deepbook_pool_id: poolId ?? null,
-      deepbook_base_coin_type: `${process.env.PREDICT_MARKET_PACKAGE_ID ?? "0x0"}::prediction_market::YES<0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC>`,
+      deepbook_base_coin_type: poolId
+        ? `${PREDICT_MARKET_PACKAGE_ID}::prediction_market::YES<0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC>`
+        : null,
       deepbook_quote_coin_type: "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
+      deepbook_base_scalar: 1_000_000,
+      deepbook_quote_scalar: 1_000_000,
+      referral_id: referralId,
       created_at_ms: Date.now(),
     });
 
