@@ -48,6 +48,9 @@ export {
   buildMintSharesTx,
   buildSetupReferralTx,
   buildCreateMarketTx,
+  buildResolveMarketTx,
+  buildRedeemTx,
+  buildRedeemNoTx,
 } from "./prediction-market-client.js";
 
 // buildCreateMarketTx lives in both prediction-market-client.js and
