@@ -204,26 +204,26 @@ export default function TradePage() {
   }, [account]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Trade BTC Binaries</h1>
-        <p className="text-zinc-400">Mint UP/DOWN positions on DeepBook Predict</p>
+        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">Trade BTC Binaries</h1>
+        <p className="mt-2 text-zinc-400">Mint UP/DOWN positions on DeepBook Predict</p>
       </div>
 
       {!account && (
-        <Card>
+        <Card className="border-white/10">
           <p className="text-zinc-400">Connect wallet to trade</p>
         </Card>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Setup">
-          <div className="space-y-4">
+        <Card title="Setup" className="border-white/10">
+          <div className="space-y-5 mt-2">
             <div>
-              <label className="text-xs text-zinc-500">PredictManager ID</label>
-              <div className="mt-1 flex gap-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">PredictManager ID</label>
+              <div className="mt-1 flex gap-3">
                 <input
-                  className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono"
+                  className="flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                   value={managerId}
                   onChange={(e) => setManagerId(e.target.value)}
                   placeholder="0x..."
@@ -231,21 +231,21 @@ export default function TradePage() {
                 <button
                   onClick={createManager}
                   disabled={!account || loading}
-                  className="rounded-lg bg-zinc-800 px-3 py-2 text-sm hover:bg-zinc-700 disabled:opacity-50"
+                  className="rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
                 >
                   Create
                 </button>
               </div>
             </div>
             <div>
-              <label className="text-xs text-zinc-500">Oracle</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Oracle</label>
               <select
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="mt-1 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors appearance-none"
                 value={selectedOracle}
                 onChange={(e) => setSelectedOracle(e.target.value)}
               >
                 {oracles.map((o) => (
-                  <option key={o.oracle_id} value={o.oracle_id}>
+                  <option key={o.oracle_id} value={o.oracle_id} className="bg-zinc-900">
                     {o.underlying_asset} · {new Date(o.expiry).toLocaleString()}
                   </option>
                 ))}
@@ -254,19 +254,19 @@ export default function TradePage() {
           </div>
         </Card>
 
-        <Card title="Position">
-          <div className="space-y-4">
-            <div className="flex gap-2">
+        <Card title="Position" className="border-white/10">
+          <div className="space-y-5 mt-2">
+            <div className="flex gap-3">
               {(["up", "down"] as const).map((d) => (
                 <button
                   key={d}
                   onClick={() => setDirection(d)}
-                  className={`flex-1 rounded-lg py-2 text-sm font-medium ${
+                  className={`flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-300 ${
                     direction === d
                       ? d === "up"
-                        ? "bg-emerald-500/30 text-emerald-300"
-                        : "bg-red-500/30 text-red-300"
-                      : "bg-zinc-800 text-zinc-400"
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.15)]"
+                        : "bg-rose-500/20 text-rose-300 border border-rose-500/30 shadow-[0_0_15px_rgba(244,63,94,0.15)]"
+                      : "bg-white/5 text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
                   }`}
                 >
                   {d.toUpperCase()}
@@ -274,20 +274,20 @@ export default function TradePage() {
               ))}
             </div>
             <div>
-              <label className="text-xs text-zinc-500">Strike ($)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Strike ($)</label>
               <input
                 type="number"
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={strike}
                 onChange={(e) => setStrike(Number(e.target.value))}
               />
             </div>
             <div>
-              <label className="text-xs text-zinc-500">Quantity ($ face)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Quantity ($ face)</label>
               <input
                 type="number"
                 min={1}
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={quantity}
                 onChange={(e) => setQuantity(Number(e.target.value))}
               />
@@ -295,50 +295,56 @@ export default function TradePage() {
             <button
               onClick={mintPosition}
               disabled={!account || !managerId || !oracle || loading}
-              className="w-full rounded-lg bg-cyan-500 py-2.5 text-sm font-medium text-zinc-950 hover:bg-cyan-400 disabled:opacity-50"
+              className="mt-2 w-full rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
             >
               {loading ? "Submitting..." : "Mint Position"}
             </button>
             {status && (
-              <p className="text-xs text-zinc-400 font-mono break-all">{status}</p>
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3 mt-3">
+                <p className="text-xs font-mono text-cyan-400 break-all">{status}</p>
+              </div>
             )}
           </div>
         </Card>
       </div>
 
       {managerId && positions.length > 0 && (
-        <Card title="Open Positions">
-          <div className="overflow-x-auto">
+        <Card title="Open Positions" className="border-white/10">
+          <div className="overflow-x-auto mt-2">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-zinc-500">
-                  <th className="pb-2 pr-4">Direction</th>
-                  <th className="pb-2 pr-4">Strike</th>
-                  <th className="pb-2 pr-4">Qty ($)</th>
-                  <th className="pb-2 pr-4">Expiry</th>
-                  <th className="pb-2">Action</th>
+                <tr className="border-b border-white/10 text-left text-zinc-400">
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Direction</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Strike</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Qty ($)</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Expiry</th>
+                  <th className="pb-3 font-semibold uppercase tracking-wider text-xs">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {positions.map((pos) => {
                   const settled = settledOracleIds.has(pos.oracle_id);
                   return (
-                    <tr key={`${pos.oracle_id}-${pos.strike}-${pos.is_up}`} className="border-t border-zinc-800">
-                      <td className="py-2 pr-4">{pos.is_up ? "UP" : "DOWN"}</td>
-                      <td className="py-2 pr-4">${strikeToDollars(BigInt(pos.strike)).toLocaleString()}</td>
-                      <td className="py-2 pr-4">${(pos.quantity / 1e6).toFixed(2)}</td>
-                      <td className="py-2 pr-4">{new Date(pos.expiry).toLocaleString()}</td>
-                      <td className="py-2">
+                    <tr key={`${pos.oracle_id}-${pos.strike}-${pos.is_up}`} className="border-b border-white/5 transition-colors hover:bg-white/5 last:border-0">
+                      <td className="py-3 pr-4 font-medium">
+                        <span className={pos.is_up ? "text-emerald-400" : "text-rose-400"}>
+                          {pos.is_up ? "UP" : "DOWN"}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4 text-white">${strikeToDollars(BigInt(pos.strike)).toLocaleString()}</td>
+                      <td className="py-3 pr-4 text-zinc-300">${(pos.quantity / 1e6).toFixed(2)}</td>
+                      <td className="py-3 pr-4 text-zinc-400">{new Date(pos.expiry).toLocaleString()}</td>
+                      <td className="py-3">
                         {settled ? (
                           <button
                             onClick={() => redeemPosition(pos)}
                             disabled={loading || !account}
-                            className="rounded bg-emerald-500/20 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50"
+                            className="rounded-md bg-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/30 transition-colors disabled:opacity-50 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)]"
                           >
                             Redeem
                           </button>
                         ) : (
-                          <span className="text-xs text-zinc-500">Active</span>
+                          <span className="text-xs text-cyan-500/70 font-medium px-2 py-1 bg-cyan-500/10 rounded-md">Active</span>
                         )}
                       </td>
                     </tr>

@@ -105,29 +105,29 @@ export default function VaultPage() {
   const allocated = summary?.allocated ?? 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold">Vault (VLP)</h1>
-        <p className="text-zinc-400">
+        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">Vault (VLP)</h1>
+        <p className="mt-2 text-zinc-400">
           Deposit DBUSDC to earn VLP shares. Agents allocate vault capital for
           CLOB market making.
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
+        <Card className="border-emerald-500/20 bg-emerald-500/5 shadow-[0_0_15px_rgba(16,185,129,0.05)]">
           <Stat
             label="TVL"
             value={`$${(total / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
           />
         </Card>
-        <Card>
+        <Card className="border-cyan-500/20 bg-cyan-500/5 shadow-[0_0_15px_rgba(6,182,212,0.05)]">
           <Stat
             label="Allocated to MM"
             value={`$${(allocated / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
           />
         </Card>
-        <Card>
+        <Card className="border-violet-500/20 bg-violet-500/5 shadow-[0_0_15px_rgba(139,92,246,0.05)]">
           <Stat
             label="Your VLP"
             value={`${(vlpBalance / 1e6).toFixed(4)}`}
@@ -135,21 +135,21 @@ export default function VaultPage() {
         </Card>
       </div>
 
-      <Card title="Deposit / Withdraw DBUSDC">
-        <label className="text-xs text-zinc-500">Amount (USDC)</label>
+      <Card title="Deposit / Withdraw DBUSDC" className="border-white/10">
+        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5 mt-2">Amount (USDC)</label>
         <input
           type="number"
           min="1"
           value={amount}
           onChange={(e) => setAmount(Number(e.target.value))}
-          className="mt-1 w-full max-w-xs rounded-lg bg-zinc-800 px-3 py-2 mb-4"
+          className="block w-full max-w-xs rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 mb-5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
         />
         <div className="flex gap-3">
           <button
             type="button"
             disabled={loading || !account}
             onClick={deposit}
-            className="rounded-lg bg-cyan-500 px-5 py-2 text-sm font-medium text-zinc-950"
+            className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
           >
             Deposit
           </button>
@@ -157,18 +157,24 @@ export default function VaultPage() {
             type="button"
             disabled={loading || !account || !vlpCoinId}
             onClick={withdraw}
-            className="rounded-lg border border-zinc-700 px-5 py-2 text-sm"
+            className="rounded-lg border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium text-white transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
           >
             Withdraw
           </button>
         </div>
         {!VAULT_ID && (
-          <p className="mt-3 text-xs text-amber-400/90">
-            Demo mode: indexer shows simulated TVL. Deploy vault and set
-            NEXT_PUBLIC_VAULT_OBJECT_ID for live deposits.
-          </p>
+          <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
+            <p className="text-xs text-amber-400/90">
+              Demo mode: indexer shows simulated TVL. Deploy vault and set
+              NEXT_PUBLIC_VAULT_OBJECT_ID for live deposits.
+            </p>
+          </div>
         )}
-        {status && <p className="mt-3 text-sm text-zinc-400 font-mono">{status}</p>}
+        {status && (
+          <div className="mt-4 rounded-lg border border-white/10 bg-black/20 p-3 inline-block">
+            <p className="text-sm text-cyan-400 font-mono">{status}</p>
+          </div>
+        )}
       </Card>
     </div>
   );

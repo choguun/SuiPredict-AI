@@ -41,39 +41,39 @@ export default async function LeaderboardPage() {
     .slice(0, 20);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Leaderboard</h1>
-        <p className="text-zinc-400">
+        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">Leaderboard</h1>
+        <p className="mt-2 text-zinc-400">
           Top traders by volume on DeepBook Predict testnet
         </p>
       </div>
 
-      <Card title="Rankings">
+      <Card title="Rankings" className="border-white/10">
         {ranked.length === 0 ? (
           <p className="text-sm text-zinc-500">No indexed trades yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-800 text-left text-zinc-500">
-                  <th className="pb-2 pr-4">#</th>
-                  <th className="pb-2 pr-4">Manager</th>
-                  <th className="pb-2 pr-4">Mints</th>
-                  <th className="pb-2 pr-4">Redeems</th>
-                  <th className="pb-2">Volume</th>
+                <tr className="border-b border-white/10 text-left text-zinc-400">
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">#</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Manager</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Mints</th>
+                  <th className="pb-3 pr-4 font-semibold uppercase tracking-wider text-xs">Redeems</th>
+                  <th className="pb-3 font-semibold uppercase tracking-wider text-xs">Volume</th>
                 </tr>
               </thead>
               <tbody>
                 {ranked.map((row, i) => (
-                  <tr key={row.id} className="border-b border-zinc-800/50">
-                    <td className="py-2 pr-4 text-zinc-500">{i + 1}</td>
-                    <td className="py-2 pr-4 font-mono text-xs text-cyan-400">
+                  <tr key={row.id} className="border-b border-white/5 transition-colors hover:bg-white/5">
+                    <td className="py-3 pr-4 text-zinc-500">{i + 1}</td>
+                    <td className="py-3 pr-4 font-mono text-xs text-cyan-400">
                       {row.id.slice(0, 10)}...
                     </td>
-                    <td className="py-2 pr-4">{row.mints}</td>
-                    <td className="py-2 pr-4">{row.redeems}</td>
-                    <td className="py-2">${row.volume.toFixed(2)}</td>
+                    <td className="py-3 pr-4 text-zinc-300">{row.mints}</td>
+                    <td className="py-3 pr-4 text-zinc-300">{row.redeems}</td>
+                    <td className="py-3 text-white font-medium">${row.volume.toFixed(2)}</td>
                   </tr>
                 ))}
               </tbody>

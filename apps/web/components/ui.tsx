@@ -9,10 +9,10 @@ export function Card({
 }) {
   return (
     <div
-      className={`rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-md shadow-inner transition hover:border-white/20 ${className}`}
+      className={`rounded-lg border border-white/10 bg-[#11141d]/90 p-4 shadow-sm shadow-black/20 ${className}`}
     >
       {title && (
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-zinc-400">
+        <h2 className="mb-3 text-xs font-semibold uppercase text-zinc-500">
           {title}
         </h2>
       )}
@@ -23,9 +23,9 @@ export function Card({
 
 export function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <p className="text-xs uppercase tracking-wider text-zinc-400/80 mb-1">{label}</p>
-      <p className="text-2xl font-bold text-white drop-shadow-md">{value}</p>
+    <div className="min-w-0">
+      <p className="mb-1 text-xs font-medium uppercase text-zinc-500">{label}</p>
+      <p className="truncate text-xl font-semibold text-white sm:text-2xl">{value}</p>
     </div>
   );
 }
@@ -38,13 +38,13 @@ export function Badge({
   variant?: "default" | "success" | "warning";
 }) {
   const colors = {
-    default: "border border-white/10 bg-white/5 text-zinc-300 shadow-inner",
-    success: "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.15)]",
-    warning: "border border-amber-500/30 bg-amber-500/10 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.15)]",
+    default: "border border-white/10 bg-white/[0.06] text-zinc-300",
+    success: "border border-emerald-500/25 bg-emerald-500/10 text-emerald-300",
+    warning: "border border-amber-500/25 bg-amber-500/10 text-amber-300",
   };
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold tracking-wide ${colors[variant]}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${colors[variant]}`}
     >
       {children}
     </span>

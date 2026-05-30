@@ -135,16 +135,16 @@ export default function VaultPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">PLP Vault</h1>
-        <p className="text-zinc-400">
+        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">PLP Vault</h1>
+        <p className="mt-2 text-zinc-400">
           Supply dUSDC to earn PLP liquidity provider shares
         </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="border-emerald-500/20 bg-emerald-500/5 shadow-[0_0_15px_rgba(16,185,129,0.05)]">
           <Stat
             label="Vault Value"
             value={
@@ -154,7 +154,7 @@ export default function VaultPage() {
             }
           />
         </Card>
-        <Card>
+        <Card className="border-cyan-500/20 bg-cyan-500/5 shadow-[0_0_15px_rgba(6,182,212,0.05)]">
           <Stat
             label="Utilization"
             value={
@@ -162,7 +162,7 @@ export default function VaultPage() {
             }
           />
         </Card>
-        <Card>
+        <Card className="border-blue-500/20 bg-blue-500/5 shadow-[0_0_15px_rgba(59,130,246,0.05)]">
           <Stat
             label="PLP Supply"
             value={
@@ -172,7 +172,7 @@ export default function VaultPage() {
             }
           />
         </Card>
-        <Card>
+        <Card className="border-violet-500/20 bg-violet-500/5 shadow-[0_0_15px_rgba(139,92,246,0.05)]">
           <Stat
             label="Your PLP"
             value={
@@ -184,17 +184,17 @@ export default function VaultPage() {
         </Card>
       </div>
 
-      <Card title="Supply Liquidity">
+      <Card title="Supply Liquidity" className="border-white/10">
         {!account ? (
           <p className="text-zinc-400">Connect wallet to supply</p>
         ) : (
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-4 mt-2">
             <div>
-              <label className="text-xs text-zinc-500">Amount (dUSDC)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Amount (dUSDC)</label>
               <input
                 type="number"
                 min={1}
-                className="mt-1 block w-32 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="mt-1 block w-32 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={amount}
                 onChange={(e) => setAmount(Number(e.target.value))}
               />
@@ -202,7 +202,7 @@ export default function VaultPage() {
             <button
               onClick={supplyPLP}
               disabled={loading}
-              className="rounded-lg bg-cyan-500 px-5 py-2 text-sm font-medium text-zinc-950 hover:bg-cyan-400 disabled:opacity-50"
+              className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
             >
               {loading ? "Supplying..." : "Supply PLP"}
             </button>
@@ -210,19 +210,19 @@ export default function VaultPage() {
         )}
       </Card>
 
-      <Card title="Withdraw Liquidity">
+      <Card title="Withdraw Liquidity" className="border-white/10">
         {!account ? (
           <p className="text-zinc-400">Connect wallet to withdraw</p>
         ) : !plpCoinId ? (
           <p className="text-zinc-400">No PLP tokens in wallet</p>
         ) : (
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-4 mt-2">
             <div>
-              <label className="text-xs text-zinc-500">Withdraw (dUSDC face)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Withdraw (dUSDC face)</label>
               <input
                 type="number"
                 min={1}
-                className="mt-1 block w-32 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="mt-1 block w-32 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(Number(e.target.value))}
               />
@@ -230,7 +230,7 @@ export default function VaultPage() {
             <button
               onClick={withdrawPLP}
               disabled={loading}
-              className="rounded-lg border border-zinc-600 px-5 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+              className="rounded-lg border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium text-white transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
             >
               {loading ? "Withdrawing..." : "Withdraw PLP"}
             </button>
@@ -239,7 +239,9 @@ export default function VaultPage() {
       </Card>
 
       {status && (
-        <p className="text-xs font-mono text-zinc-400">{status}</p>
+        <div className="rounded-lg border border-white/10 bg-black/20 p-4 backdrop-blur-sm inline-block">
+          <p className="text-xs font-mono text-cyan-400">{status}</p>
+        </div>
       )}
     </div>
   );

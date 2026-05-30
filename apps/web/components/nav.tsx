@@ -18,15 +18,12 @@ export function Nav() {
   const pathname = usePathname();
 
   return (
-    <header className="border-b border-white/10 bg-black/20 backdrop-blur-md sticky top-0 z-50 shadow-sm shadow-black/20">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
-        <Link href="/" className="text-xl font-bold tracking-tight">
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-violet-400 to-cyan-400 drop-shadow-sm">
-            SuiPredict
-          </span>
-          <span className="text-zinc-400 font-medium">.AI</span>
+    <header className="sticky top-0 z-50 border-b border-white/10 bg-[#07090d]/90 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
+        <Link href="/" className="shrink-0 text-lg font-bold tracking-tight text-white sm:text-xl">
+          SuiPredict<span className="text-emerald-400">.AI</span>
         </Link>
-        <nav className="hidden md:flex gap-1 bg-white/5 border border-white/10 rounded-xl p-1 backdrop-blur-sm">
+        <nav className="hidden min-w-0 gap-1 rounded-lg border border-white/10 bg-white/[0.04] p-1 md:flex">
           {links.map((l) => {
             const active =
               pathname === l.href ||
@@ -36,10 +33,10 @@ export function Nav() {
               <Link
                 key={l.href}
                 href={l.href}
-                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-all duration-300 ${
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   active
-                    ? "bg-gradient-to-r from-violet-600/90 to-cyan-600/90 text-white shadow-md shadow-cyan-900/30 scale-[1.02]"
-                    : "text-zinc-400 hover:text-white hover:bg-white/10"
+                    ? "bg-white text-zinc-950"
+                    : "text-zinc-400 hover:bg-white/10 hover:text-white"
                 }`}
               >
                 {l.label}
@@ -51,6 +48,27 @@ export function Nav() {
           <ConnectButton />
         </div>
       </div>
+      <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 pb-3 md:hidden">
+        {links.map((l) => {
+          const active =
+            pathname === l.href ||
+            (l.href === "/markets" && pathname.startsWith("/markets/")) ||
+            (l.href.startsWith("/legacy") && pathname.startsWith("/legacy"));
+          return (
+            <Link
+              key={l.href}
+              href={l.href}
+              className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium ${
+                active
+                  ? "bg-white text-zinc-950"
+                  : "bg-white/[0.04] text-zinc-400"
+              }`}
+            >
+              {l.label}
+            </Link>
+          );
+        })}
+      </nav>
     </header>
   );
 }

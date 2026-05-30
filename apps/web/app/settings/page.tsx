@@ -89,33 +89,33 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold">Agent Policy</h1>
-        <p className="text-zinc-400">
+        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">Agent Policy</h1>
+        <p className="mt-2 text-zinc-400">
           Create and revoke on-chain agent wallets with budget caps (shared policy object)
         </p>
       </div>
 
-      <Card title="Create Policy">
+      <Card title="Create Policy" className="border-white/10">
         {!account ? (
           <p className="text-zinc-400">Connect wallet as policy owner</p>
         ) : (
-          <div className="space-y-3 max-w-md">
+          <div className="space-y-4 max-w-md mt-2">
             <div>
-              <label className="text-xs text-zinc-500">Agent Address</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Agent Address</label>
               <input
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono"
+                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={agentAddress}
                 onChange={(e) => setAgentAddress(e.target.value)}
                 placeholder="0x..."
               />
             </div>
             <div>
-              <label className="text-xs text-zinc-500">Max Budget (dUSDC)</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Max Budget (dUSDC)</label>
               <input
                 type="number"
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={budget}
                 onChange={(e) => setBudget(Number(e.target.value))}
               />
@@ -123,7 +123,7 @@ export default function SettingsPage() {
             <button
               onClick={createPolicy}
               disabled={loading || !agentAddress}
-              className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-cyan-400 disabled:opacity-50"
+              className="mt-2 w-full rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
             >
               Create Policy
             </button>
@@ -131,12 +131,12 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      <Card title="Revoke Policy">
-        <div className="space-y-3 max-w-md">
+      <Card title="Revoke Policy" className="border-white/10">
+        <div className="space-y-4 max-w-md mt-2">
           <div>
-            <label className="text-xs text-zinc-500">Policy Object ID</label>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Policy Object ID</label>
             <input
-              className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono"
+              className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
               value={policyId}
               onChange={(e) => setPolicyId(e.target.value)}
               onBlur={() => loadPolicyInfo(policyId)}
@@ -144,29 +144,31 @@ export default function SettingsPage() {
             />
           </div>
           {policyInfo && (
-            <p className="text-xs text-zinc-400">{policyInfo}</p>
+            <p className="text-xs text-zinc-400 bg-white/5 p-3 rounded-lg border border-white/5">{policyInfo}</p>
           )}
           <button
             onClick={revokePolicy}
             disabled={loading || !policyId || !account}
-            className="rounded-lg bg-red-500/80 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+            className="mt-2 w-full rounded-lg bg-rose-500/20 border border-rose-500/30 py-3 text-sm font-semibold text-rose-300 shadow-[0_0_15px_rgba(244,63,94,0.15)] transition-all hover:bg-rose-500/30 disabled:opacity-50"
           >
             Revoke Agent Access
           </button>
         </div>
       </Card>
 
-      <Card title="Contract Info">
-        <p className="text-xs font-mono text-zinc-400 break-all">
+      <Card title="Contract Info" className="border-white/10">
+        <p className="text-xs font-mono text-zinc-400 break-all bg-black/20 p-3 rounded-lg border border-white/5">
           Agent Policy Package: {AGENT_POLICY_PACKAGE_ID}
         </p>
-        <p className="mt-2 text-xs text-zinc-500">
-          After create, copy the policy ID into <code className="text-zinc-400">AGENT_POLICY_ID</code> in your agents <code className="text-zinc-400">.env</code>.
+        <p className="mt-4 text-xs text-zinc-400">
+          After create, copy the policy ID into <code className="text-zinc-300 bg-white/10 px-1 rounded">AGENT_POLICY_ID</code> in your agents <code className="text-zinc-300 bg-white/10 px-1 rounded">.env</code>.
         </p>
       </Card>
 
       {status && (
-        <p className="text-xs font-mono text-zinc-400 break-all">{status}</p>
+        <div className="rounded-lg border border-white/10 bg-black/20 p-4 backdrop-blur-sm inline-block">
+          <p className="text-xs font-mono text-cyan-400 break-all">{status}</p>
+        </div>
       )}
     </div>
   );

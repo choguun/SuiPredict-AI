@@ -7,7 +7,7 @@ import {
 } from "@mysten/dapp-kit-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   buildMergeCollateralTx,
   buildPlaceLimitOrderTx,
@@ -28,6 +28,30 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
 const DBUSDC =
   "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
 
+function clampProbability(value: number) {
+  if (Number.isNaN(value)) return 0.5;
+  return Math.min(0.99, Math.max(0.01, value));
+}
+
+function formatCents(value: number) {
+  return `${(clampProbability(value) * 100).toFixed(1)}¢`;
+}
+
+function formatShares(value: number) {
+  return (value / 1e6).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatDate(ms: number) {
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const marketId = decodeURIComponent(id);
@@ -44,6 +68,7 @@ export default function MarketDetailPage() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [position, setPosition] = useState({ yes: 0, no: 0 });
+  const initializedPrice = useRef(false);
 
   const refresh = useCallback(async () => {
     const [m, b] = await Promise.all([
@@ -52,7 +77,10 @@ export default function MarketDetailPage() {
     ]);
     setMarket(m);
     setBook(b);
-    if (b.mid_price) setPrice(b.mid_price);
+    if (b.mid_price && !initializedPrice.current) {
+      setPrice(b.mid_price);
+      initializedPrice.current = true;
+    }
   }, [marketId]);
 
   useEffect(() => {
@@ -71,8 +99,27 @@ export default function MarketDetailPage() {
       .catch(() => {});
   }, [account, marketId, status]);
 
-  const impliedNo = 1 - (book?.mid_price ?? price);
-  const priceBps = Math.round(price * 10_000);
+  const yesMid = book?.mid_price ?? 0.5;
+  const impliedNo = 1 - yesMid;
+  const displayedPrice = clampProbability(price);
+  const yesLimitPrice = side === "yes" ? displayedPrice : 1 - displayedPrice;
+  const priceBps = Math.round(clampProbability(yesLimitPrice) * 10_000);
+  const isBid = side === "yes" ? orderSide === "buy" : orderSide === "sell";
+  const estimatedCost = displayedPrice * qty;
+  const payout = qty;
+  const potentialProfit = Math.max(0, payout - estimatedCost);
+  const actionLabel = `${orderSide === "buy" ? "Buy" : "Sell"} ${side.toUpperCase()}`;
+  const routeLabel =
+    side === "yes"
+      ? `${orderSide === "buy" ? "Bid" : "Ask"} YES at ${formatCents(displayedPrice)}`
+      : `${isBid ? "Bid" : "Ask"} YES at ${formatCents(yesLimitPrice)}`;
+
+  function selectSide(next: "yes" | "no") {
+    if (next === side) return;
+    const currentYesPrice = side === "yes" ? displayedPrice : 1 - displayedPrice;
+    setSide(next);
+    setPrice(clampProbability(next === "yes" ? currentYesPrice : 1 - currentYesPrice));
+  }
 
   async function splitCollateral() {
     if (!account || !client || !market) return;
@@ -119,7 +166,7 @@ export default function MarketDetailPage() {
       const tx = buildPlaceLimitOrderTx({
         marketId: market.id,
         orderBookId: market.order_book_id,
-        isBid: orderSide === "buy",
+        isBid,
         priceBps,
         quantity: BigInt(Math.floor(qty * 1_000_000)),
       });
@@ -156,113 +203,202 @@ export default function MarketDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <Link href="/markets" className="text-sm text-cyan-400 hover:underline">
-        ← Markets
+    <div className="space-y-5">
+      <Link
+        href="/markets"
+        className="inline-flex text-sm font-medium text-zinc-400 transition hover:text-white"
+      >
+        Back to markets
       </Link>
-      <div>
-        <Badge variant={market.status === "active" ? "success" : "warning"}>
-          {market.status}
-        </Badge>
-        <h1 className="mt-2 text-2xl font-bold">{market.title}</h1>
-        <p className="text-zinc-400">{market.description}</p>
-      </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card title="Order book (YES)" className="lg:col-span-2">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="mb-2 text-xs uppercase text-zinc-500">Bids</p>
-              {(book?.bids ?? []).slice(0, 8).map((l) => (
-                <div key={`b-${l.price_bps}`} className="flex justify-between text-emerald-400">
-                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
-                  <span>{(l.quantity / 1e6).toFixed(2)}</span>
-                </div>
-              ))}
+      <div className="rounded-lg border border-white/10 bg-[#11141d] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Badge variant={market.status === "active" ? "success" : "warning"}>
+                {market.status}
+              </Badge>
+              <span className="text-xs font-medium text-zinc-500">
+                {market.category}
+              </span>
+              <span className="text-xs text-zinc-600">
+                Ends {formatDate(market.expiry_ms)}
+              </span>
             </div>
-            <div>
-              <p className="mb-2 text-xs uppercase text-zinc-500">Asks</p>
-              {(book?.asks ?? []).slice(0, 8).map((l) => (
-                <div key={`a-${l.price_bps}`} className="flex justify-between text-rose-400">
-                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
-                  <span>{(l.quantity / 1e6).toFixed(2)}</span>
-                </div>
-              ))}
+            <h1 className="max-w-4xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              {market.title}
+            </h1>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-400">
+              {market.description}
+            </p>
+          </div>
+
+          <div className="grid min-w-full grid-cols-2 gap-2 sm:min-w-72">
+            <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/10 p-3">
+              <p className="text-xs font-medium uppercase text-emerald-300/80">Yes</p>
+              <p className="mt-1 text-3xl font-semibold text-emerald-200">
+                {formatCents(yesMid)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-rose-400/20 bg-rose-400/10 p-3">
+              <p className="text-xs font-medium uppercase text-rose-300/80">No</p>
+              <p className="mt-1 text-3xl font-semibold text-rose-200">
+                {formatCents(impliedNo)}
+              </p>
             </div>
           </div>
-          <div className="mt-4 flex gap-4 border-t border-zinc-800 pt-4">
-            <Stat label="Mid YES" value={`${((book?.mid_price ?? 0.5) * 100).toFixed(1)}¢`} />
-            <Stat label="Implied NO" value={`${(impliedNo * 100).toFixed(1)}¢`} />
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <Card title="YES order book" className="order-2 lg:order-1">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="overflow-hidden rounded-lg border border-white/10">
+              <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                <span>Bids</span>
+                <span className="text-right">Shares</span>
+              </div>
+              {(book?.bids ?? []).slice(0, 8).map((l) => (
+                <div
+                  key={`b-${l.price_bps}`}
+                  className="grid grid-cols-2 px-3 py-2 text-sm text-emerald-300 odd:bg-white/[0.02]"
+                >
+                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                  <span className="text-right">{formatShares(l.quantity)}</span>
+                </div>
+              ))}
+              {(book?.bids ?? []).length === 0 && (
+                <p className="px-3 py-6 text-center text-sm text-zinc-500">
+                  No bids yet
+                </p>
+              )}
+            </div>
+            <div className="overflow-hidden rounded-lg border border-white/10">
+              <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                <span>Asks</span>
+                <span className="text-right">Shares</span>
+              </div>
+              {(book?.asks ?? []).slice(0, 8).map((l) => (
+                <div
+                  key={`a-${l.price_bps}`}
+                  className="grid grid-cols-2 px-3 py-2 text-sm text-rose-300 odd:bg-white/[0.02]"
+                >
+                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                  <span className="text-right">{formatShares(l.quantity)}</span>
+                </div>
+              ))}
+              {(book?.asks ?? []).length === 0 && (
+                <p className="px-3 py-6 text-center text-sm text-zinc-500">
+                  No asks yet
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3 border-t border-white/10 pt-4">
+            <Stat label="Mid YES" value={formatCents(yesMid)} />
+            <Stat label="Implied NO" value={formatCents(impliedNo)} />
             <Stat label="Spread" value={`${book?.spread_bps ?? 0} bps`} />
           </div>
         </Card>
 
-        <Card title="Trade">
-          <div className="flex gap-2 mb-3">
+        <Card title="Trade" className="order-1 lg:order-2">
+          <div className="mb-4 grid grid-cols-2 gap-2">
             {(["yes", "no"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
-                onClick={() => setSide(s)}
-                className={`flex-1 rounded-lg py-2 text-sm ${
-                  side === s ? "bg-cyan-500/20 text-cyan-300" : "bg-zinc-800 text-zinc-400"
+                onClick={() => selectSide(s)}
+                className={`min-h-11 rounded-md text-sm font-semibold transition ${
+                  side === s
+                    ? s === "yes"
+                      ? "bg-emerald-400 text-zinc-950"
+                      : "bg-rose-400 text-zinc-950"
+                    : "border border-white/10 bg-white/[0.04] text-zinc-400 hover:bg-white/10 hover:text-white"
                 }`}
               >
                 {s.toUpperCase()}
               </button>
             ))}
           </div>
-          {side === "no" && (
-            <p className="mb-3 text-xs text-zinc-500">
-              NO price ≈ {(impliedNo * 100).toFixed(1)}¢ (1 − YES). Trade YES or hold NO from split.
-            </p>
-          )}
-          <div className="flex gap-2 mb-3">
+          <div className="mb-4 grid grid-cols-2 gap-2">
             {(["buy", "sell"] as const).map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => setOrderSide(s)}
-                className={`flex-1 rounded-lg py-2 text-sm ${
+                className={`min-h-11 rounded-md border text-sm font-semibold transition ${
                   orderSide === s
                     ? s === "buy"
-                      ? "bg-emerald-500/20 text-emerald-300"
-                      : "bg-rose-500/20 text-rose-300"
-                    : "bg-zinc-800 text-zinc-400"
+                      ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                      : "border-rose-400/30 bg-rose-400/10 text-rose-200"
+                    : "border-white/10 bg-white/[0.04] text-zinc-400 hover:bg-white/10 hover:text-white"
                 }`}
               >
-                {s === "buy" ? "Buy YES" : "Sell YES"}
+                {s === "buy" ? `Buy ${side.toUpperCase()}` : `Sell ${side.toUpperCase()}`}
               </button>
             ))}
           </div>
-          <label className="block text-xs text-zinc-500 mb-1">Price (0–1)</label>
+
+          <label className="mb-1.5 block text-xs font-semibold uppercase text-zinc-500">
+            {side.toUpperCase()} price
+          </label>
           <input
             type="number"
             step="0.01"
             min="0.01"
             max="0.99"
             value={price}
-            onChange={(e) => setPrice(Number(e.target.value))}
-            className="w-full rounded-lg bg-zinc-800 px-3 py-2 mb-3"
+            onChange={(e) => setPrice(clampProbability(Number(e.target.value)))}
+            className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
           />
-          <label className="block text-xs text-zinc-500 mb-1">Size (tokens)</label>
+          <label className="mb-1.5 block text-xs font-semibold uppercase text-zinc-500">
+            Size
+          </label>
           <input
             type="number"
             min="0.01"
             value={qty}
-            onChange={(e) => setQty(Number(e.target.value))}
-            className="w-full rounded-lg bg-zinc-800 px-3 py-2 mb-3"
+            onChange={(e) => setQty(Math.max(0.01, Number(e.target.value)))}
+            className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
           />
+          <div className="mb-4 rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
+            <div className="flex justify-between gap-3 text-zinc-400">
+              <span>Est. cost</span>
+              <span className="font-medium text-white">
+                ${estimatedCost.toFixed(2)} DBUSDC
+              </span>
+            </div>
+            <div className="mt-2 flex justify-between gap-3 text-zinc-400">
+              <span>Max payout</span>
+              <span className="font-medium text-white">
+                ${payout.toFixed(2)}
+              </span>
+            </div>
+            <div className="mt-2 flex justify-between gap-3 text-zinc-400">
+              <span>Profit if right</span>
+              <span className="font-medium text-emerald-300">
+                ${potentialProfit.toFixed(2)}
+              </span>
+            </div>
+            <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-500">
+              DeepBook route: {routeLabel}. NO orders use the 1 - YES
+              complement on the same book.
+            </p>
+          </div>
           <button
             type="button"
             disabled={loading || !account || market.id.startsWith("demo-")}
             onClick={placeOrder}
-            className="w-full rounded-lg bg-cyan-500 py-2.5 text-sm font-medium text-zinc-950 disabled:opacity-50"
+            className={`min-h-12 w-full rounded-md text-sm font-semibold text-zinc-950 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              orderSide === "buy"
+                ? "bg-emerald-400 hover:bg-emerald-300"
+                : "bg-rose-400 hover:bg-rose-300"
+            }`}
           >
-            Place limit order
+            {actionLabel}
           </button>
           {market.id.startsWith("demo-") && (
-            <p className="mt-2 text-xs text-amber-400/80">
+            <p className="mt-3 text-xs leading-5 text-amber-300/90">
               Demo market — deploy contracts and set MARKET_REGISTRY_ID for on-chain orders.
             </p>
           )}
@@ -271,15 +407,15 @@ export default function MarketDetailPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Collateral">
-          <p className="text-sm text-zinc-400 mb-3">
+          <p className="mb-4 text-sm leading-6 text-zinc-400">
             Split 1 DBUSDC → 1 YES + 1 NO. Merge pair back to DBUSDC.
           </p>
-          <div className="flex gap-2">
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
               disabled={loading || !account || market.id.startsWith("demo-")}
               onClick={splitCollateral}
-              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-800"
+              className="min-h-11 rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-50"
             >
               Split
             </button>
@@ -287,30 +423,36 @@ export default function MarketDetailPage() {
               type="button"
               disabled={loading || !account || market.id.startsWith("demo-")}
               onClick={mergeCollateral}
-              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-50"
             >
               Merge
             </button>
           </div>
         </Card>
         <Card title="Your position">
-          <Stat label="YES" value={(position.yes / 1e6).toFixed(4)} />
-          <Stat label="NO" value={(position.no / 1e6).toFixed(4)} />
-          {market.status === "resolved" && (
-            <button
-              type="button"
-              disabled={loading || !account || market.id.startsWith("demo-")}
-              onClick={redeemWinner}
-              className="mt-3 rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white"
-            >
-              Redeem winner
-            </button>
-          )}
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-4">
+              <Stat label="YES" value={(position.yes / 1e6).toFixed(4)} />
+              <Stat label="NO" value={(position.no / 1e6).toFixed(4)} />
+            </div>
+            {market.status === "resolved" && (
+              <button
+                type="button"
+                disabled={loading || !account || market.id.startsWith("demo-")}
+                onClick={redeemWinner}
+                className="w-fit rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
+              >
+                Redeem winner
+              </button>
+            )}
+          </div>
         </Card>
       </div>
 
       {status && (
-        <p className="text-sm text-zinc-400 font-mono">{status}</p>
+        <div className="rounded-lg border border-white/10 bg-[#11141d] p-4">
+          <p className="break-words font-mono text-sm text-emerald-300">{status}</p>
+        </div>
       )}
     </div>
   );
