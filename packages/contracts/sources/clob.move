@@ -50,7 +50,6 @@ const EInvalidPrice: u64 = 2;
 const EZeroQuantity: u64 = 3;
 const EInsufficientYes: u64 = 4;
 const EOrderNotFound: u64 = 5;
-const EOrderClosed: u64 = 6;
 const EWrongMarket: u64 = 7;
 const EInsufficientQuote: u64 = 8;
 const EBidNeedsCollateral: u64 = 9;
@@ -152,22 +151,24 @@ public fun cancel_order<QuoteCoin>(
     assert!(table::contains(&book.orders, order_id), EOrderNotFound);
     let order = table::borrow(&book.orders, order_id);
     assert!(types::order_owner(order) == ctx.sender(), ENotOwner);
-    assert!(types::is_open(order), EOrderClosed);
 
-    let owner = types::order_owner(order);
     let remaining = types::order_remaining(order);
     let is_bid = types::order_is_bid(order);
     let price_bps = types::order_price_bps(order);
+    let owner = types::order_owner(order);
 
+    // Always remove from the price vector — cancellation always closes the order
     if (is_bid) {
+        remove_order_id(&mut book.bids, order_id);
         let refund = quote_for(remaining, price_bps);
         let refund_balance = balance::split(&mut book.bid_escrow, refund);
         transfer::public_transfer(coin::from_balance(refund_balance, ctx), owner);
-        remove_order_id(&mut book.bids, order_id);
     } else {
-        outcome_tokens::credit_yes_internal(market, owner, remaining);
         remove_order_id(&mut book.asks, order_id);
+        outcome_tokens::credit_yes_internal(market, owner, remaining);
     };
+
+    // Mark the order as fully filled so is_open returns false
     let order_mut = table::borrow_mut(&mut book.orders, order_id);
     types::fill_order(order_mut, remaining);
 
