@@ -70,6 +70,7 @@ public fun new_order(
 }
 
 public fun order_owner(order: &Order): address { order.owner }
+public fun order_is_bid(order: &Order): bool { order.is_bid }
 public fun order_price_bps(order: &Order): u64 { order.price_bps }
 public fun order_quantity(order: &Order): u64 { order.quantity }
 public fun order_filled(order: &Order): u64 { order.filled }

@@ -124,11 +124,10 @@ fun test_place_limit_order() {
     {
         let mut market = ts::take_shared<Market<FakeUSDC>>(&scenario);
         let mut book = ts::take_shared<OrderBook<FakeUSDC>>(&scenario);
-        let clock = clock::create_for_testing(ts::ctx(&mut scenario));
-        clob::place_limit_order(
+        let mut clock = clock::create_for_testing(ts::ctx(&mut scenario));
+        clob::place_ask_order(
             &mut market,
             &mut book,
-            false,
             5200,
             100_000,
             &clock,
@@ -137,6 +136,34 @@ fun test_place_limit_order() {
         clock::destroy_for_testing(clock);
         ts::return_shared(market);
         ts::return_shared(book);
+    };
+
+    ts::next_tx(&mut scenario, @0xC);
+    {
+        let mut market = ts::take_shared<Market<FakeUSDC>>(&scenario);
+        let mut book = ts::take_shared<OrderBook<FakeUSDC>>(&scenario);
+        let mut clock = clock::create_for_testing(ts::ctx(&mut scenario));
+        let quote = coin::mint_for_testing<FakeUSDC>(52_000, ts::ctx(&mut scenario));
+        clob::place_bid_order(
+            &mut market,
+            &mut book,
+            quote,
+            5200,
+            100_000,
+            &clock,
+            ts::ctx(&mut scenario),
+        );
+        assert!(outcome_tokens::yes_balance(&market, @0xC) == 100_000, 2);
+        clock::destroy_for_testing(clock);
+        ts::return_shared(market);
+        ts::return_shared(book);
+    };
+
+    ts::next_tx(&mut scenario, @0xB);
+    {
+        let proceeds = ts::take_from_sender<coin::Coin<FakeUSDC>>(&scenario);
+        assert!(coin::value(&proceeds) == 52_000, 3);
+        coin::burn_for_testing(proceeds);
     };
 
     ts::end(scenario);

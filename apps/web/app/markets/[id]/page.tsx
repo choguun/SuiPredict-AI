@@ -105,6 +105,8 @@ export default function MarketDetailPage() {
   const yesLimitPrice = side === "yes" ? displayedPrice : 1 - displayedPrice;
   const priceBps = Math.round(clampProbability(yesLimitPrice) * 10_000);
   const isBid = side === "yes" ? orderSide === "buy" : orderSide === "sell";
+  const quantityAtoms = BigInt(Math.floor(qty * 1_000_000));
+  const quoteAtoms = (quantityAtoms * BigInt(priceBps)) / BigInt(10_000);
   const estimatedCost = displayedPrice * qty;
   const payout = qty;
   const potentialProfit = Math.max(0, payout - estimatedCost);
@@ -159,16 +161,31 @@ export default function MarketDetailPage() {
   }
 
   async function placeOrder() {
-    if (!account || !market?.order_book_id) return;
+    if (!account || !client || !market?.order_book_id) return;
     setLoading(true);
     setStatus("Placing limit order…");
     try {
+      let quoteCoinId: string | undefined;
+      if (isBid) {
+        const { objects } = await client.core.listCoins({
+          owner: account.address,
+          coinType: DBUSDC,
+        });
+        const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
+        if (!coin) {
+          throw new Error(
+            `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
+          );
+        }
+        quoteCoinId = coin.objectId;
+      }
       const tx = buildPlaceLimitOrderTx({
         marketId: market.id,
         orderBookId: market.order_book_id,
         isBid,
         priceBps,
-        quantity: BigInt(Math.floor(qty * 1_000_000)),
+        quantity: quantityAtoms,
+        quoteCoinId,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setStatus(`Order placed: ${txDigest(r).slice(0, 16)}…`);

@@ -1,7 +1,7 @@
 import {
   buildAllocateForMmTx,
   buildPlaceLimitOrderTx,
-  buildSplitCollateralTx,
+  buildSplitCollateralAmountTx,
   createClient,
   executeTransaction,
   getMarketOrderBook,
@@ -80,7 +80,8 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
   const client = createClient();
   try {
-    const allocTx = buildAllocateForMmTx(VAULT_ID, QUOTE_SIZE * 2n);
+    const bidQuote = (QUOTE_SIZE * BigInt(bidBps)) / 10_000n;
+    const allocTx = buildAllocateForMmTx(VAULT_ID, QUOTE_SIZE + bidQuote);
     await executeTransaction(client, allocTx, ctx.signer);
 
     const { objects } = await client.core.listCoins({
@@ -88,11 +89,19 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       coinType:
         "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
     });
-    const coin = objects[0];
+    const coin = objects.find((c) => BigInt(c.balance) >= QUOTE_SIZE + bidQuote);
     if (!coin) throw new Error("No DBUSDC after vault allocation");
 
-    const splitTx = buildSplitCollateralTx(target.id, coin.objectId);
+    const splitTx = buildSplitCollateralAmountTx(target.id, coin.objectId, QUOTE_SIZE);
     await executeTransaction(client, splitTx, ctx.signer);
+
+    const remainingCoins = await client.core.listCoins({
+      owner: agentAddr,
+      coinType:
+        "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
+    });
+    const bidCoin = remainingCoins.objects.find((c) => BigInt(c.balance) >= bidQuote);
+    if (!bidCoin) throw new Error("No DBUSDC left for bid escrow");
 
     const bidTx = buildPlaceLimitOrderTx({
       marketId: target.id,
@@ -100,6 +109,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       isBid: true,
       priceBps: bidBps,
       quantity: QUOTE_SIZE,
+      quoteCoinId: bidCoin.objectId,
     });
     const bidResult = await executeTransaction(client, bidTx, ctx.signer);
 

@@ -44,15 +44,10 @@ export function buildCreateMarketTx(params: {
 
 export function buildCreateOrderBookTx(marketId: string): Transaction {
   const tx = new Transaction();
-  const book = tx.moveCall({
-    target: `${PKG()}::clob::create_order_book`,
+  tx.moveCall({
+    target: `${PKG()}::clob::create_and_link_order_book`,
     typeArguments: [DBUSDC_TYPE],
     arguments: [tx.object(marketId)],
-  });
-  tx.moveCall({
-    target: `${PKG()}::clob::share_order_book`,
-    typeArguments: [DBUSDC_TYPE],
-    arguments: [book],
   });
   return tx;
 }
@@ -66,6 +61,21 @@ export function buildSplitCollateralTx(
     target: `${PKG()}::outcome_tokens::split_collateral`,
     typeArguments: [DBUSDC_TYPE],
     arguments: [tx.object(marketId), tx.object(coinId)],
+  });
+  return tx;
+}
+
+export function buildSplitCollateralAmountTx(
+  marketId: string,
+  coinId: string,
+  amount: bigint,
+): Transaction {
+  const tx = new Transaction();
+  const [coin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
+  tx.moveCall({
+    target: `${PKG()}::outcome_tokens::split_collateral`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(marketId), coin],
   });
   return tx;
 }
@@ -89,15 +99,38 @@ export function buildPlaceLimitOrderTx(params: {
   isBid: boolean;
   priceBps: number;
   quantity: bigint;
+  quoteCoinId?: string;
 }): Transaction {
   const tx = new Transaction();
+  if (params.isBid) {
+    if (!params.quoteCoinId) {
+      throw new Error("quoteCoinId is required for bid orders");
+    }
+    const quoteAmount = (params.quantity * BigInt(params.priceBps)) / 10_000n;
+    const [quote] = tx.splitCoins(tx.object(params.quoteCoinId), [
+      tx.pure.u64(quoteAmount),
+    ]);
+    tx.moveCall({
+      target: `${PKG()}::clob::place_bid_order`,
+      typeArguments: [DBUSDC_TYPE],
+      arguments: [
+        tx.object(params.marketId),
+        tx.object(params.orderBookId),
+        quote,
+        tx.pure.u64(BigInt(params.priceBps)),
+        tx.pure.u64(params.quantity),
+        tx.object(CLOCK_OBJECT_ID),
+      ],
+    });
+    return tx;
+  }
+
   tx.moveCall({
-    target: `${PKG()}::clob::place_limit_order`,
+    target: `${PKG()}::clob::place_ask_order`,
     typeArguments: [DBUSDC_TYPE],
     arguments: [
       tx.object(params.marketId),
       tx.object(params.orderBookId),
-      tx.pure.bool(params.isBid),
       tx.pure.u64(BigInt(params.priceBps)),
       tx.pure.u64(params.quantity),
       tx.object(CLOCK_OBJECT_ID),

@@ -96,17 +96,49 @@ public(package) fun transfer_yes_internal<QuoteCoin>(
     to: address,
     amount: u64,
 ) {
+    debit_yes_internal(market, from, amount);
+    credit_yes_internal(market, to, amount);
+}
+
+public(package) fun debit_yes_internal<QuoteCoin>(
+    market: &mut Market<QuoteCoin>,
+    user: address,
+    amount: u64,
+) {
     assert!(amount > 0, EZeroAmount);
     let positions = market_factory::positions_mut(market);
-    assert!(positions.contains(from), EInsufficientBalance);
-    let from_pos = positions.borrow_mut(from);
+    assert!(positions.contains(user), EInsufficientBalance);
+    let from_pos = positions.borrow_mut(user);
     assert!(types::yes_balance(from_pos) >= amount, EInsufficientBalance);
     types::sub_yes(from_pos, amount);
-    if (!positions.contains(to)) {
-        positions.add(to, types::new_position());
+}
+
+public(package) fun credit_yes_internal<QuoteCoin>(
+    market: &mut Market<QuoteCoin>,
+    user: address,
+    amount: u64,
+) {
+    assert!(amount > 0, EZeroAmount);
+    let positions = market_factory::positions_mut(market);
+    if (!positions.contains(user)) {
+        positions.add(user, types::new_position());
     };
-    let to_pos = positions.borrow_mut(to);
+    let to_pos = positions.borrow_mut(user);
     types::add_yes(to_pos, amount);
+}
+
+public(package) fun credit_no_internal<QuoteCoin>(
+    market: &mut Market<QuoteCoin>,
+    user: address,
+    amount: u64,
+) {
+    assert!(amount > 0, EZeroAmount);
+    let positions = market_factory::positions_mut(market);
+    if (!positions.contains(user)) {
+        positions.add(user, types::new_position());
+    };
+    let to_pos = positions.borrow_mut(user);
+    types::add_no(to_pos, amount);
 }
 
 public fun transfer_yes<QuoteCoin>(
