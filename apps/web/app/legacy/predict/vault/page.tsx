@@ -6,7 +6,7 @@ import {
   useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { Transaction } from "@mysten/sui/transactions";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
@@ -35,7 +35,7 @@ export default function VaultPage() {
     setVault(summary);
   }
 
-  async function refreshPlp() {
+  const refreshPlp = useCallback(async () => {
     if (!account || !client) return;
     const { objects } = await client.core.listCoins({
       owner: account.address,
@@ -44,7 +44,7 @@ export default function VaultPage() {
     const total = objects.reduce((s, c) => s + Number(c.balance), 0);
     setPlpBalance(total);
     setPlpCoinId(objects[0]?.objectId ?? "");
-  }
+  }, [account, client]);
 
   useEffect(() => {
     refreshVault().catch(console.error);
@@ -55,7 +55,7 @@ export default function VaultPage() {
   useEffect(() => {
     if (!account || !client) return;
     refreshPlp().catch(console.error);
-  }, [account, client]);
+  }, [account, client, refreshPlp]);
 
   async function supplyPLP() {
     if (!account || !client) return;

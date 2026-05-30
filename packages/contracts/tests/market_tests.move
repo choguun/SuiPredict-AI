@@ -106,9 +106,8 @@ fun test_place_limit_order() {
 
     ts::next_tx(&mut scenario, @0xA);
     {
-        let market = ts::take_shared<Market<FakeUSDC>>(&scenario);
-        let book = clob::create_order_book(&market, ts::ctx(&mut scenario));
-        clob::share_order_book(book);
+        let mut market = ts::take_shared<Market<FakeUSDC>>(&scenario);
+        clob::create_and_link_order_book(&mut market, ts::ctx(&mut scenario));
         ts::return_shared(market);
     };
 
@@ -143,12 +142,12 @@ fun test_place_limit_order() {
         let mut market = ts::take_shared<Market<FakeUSDC>>(&scenario);
         let mut book = ts::take_shared<OrderBook<FakeUSDC>>(&scenario);
         let mut clock = clock::create_for_testing(ts::ctx(&mut scenario));
-        let quote = coin::mint_for_testing<FakeUSDC>(52_000, ts::ctx(&mut scenario));
+        let quote = coin::mint_for_testing<FakeUSDC>(70_000, ts::ctx(&mut scenario));
         clob::place_bid_order(
             &mut market,
             &mut book,
             quote,
-            5200,
+            7000,
             100_000,
             &clock,
             ts::ctx(&mut scenario),
@@ -164,6 +163,13 @@ fun test_place_limit_order() {
         let proceeds = ts::take_from_sender<coin::Coin<FakeUSDC>>(&scenario);
         assert!(coin::value(&proceeds) == 52_000, 3);
         coin::burn_for_testing(proceeds);
+    };
+
+    ts::next_tx(&mut scenario, @0xC);
+    {
+        let refund = ts::take_from_sender<coin::Coin<FakeUSDC>>(&scenario);
+        assert!(coin::value(&refund) == 18_000, 4);
+        coin::burn_for_testing(refund);
     };
 
     ts::end(scenario);

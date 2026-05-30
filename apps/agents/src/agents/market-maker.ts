@@ -80,7 +80,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
   const client = createClient();
   try {
-    const bidQuote = (QUOTE_SIZE * BigInt(bidBps)) / 10_000n;
+    const bidQuote = (QUOTE_SIZE * BigInt(bidBps)) / BigInt(10_000);
     const allocTx = buildAllocateForMmTx(VAULT_ID, QUOTE_SIZE + bidQuote);
     await executeTransaction(client, allocTx, ctx.signer);
 

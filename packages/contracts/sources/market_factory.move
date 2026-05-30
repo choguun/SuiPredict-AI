@@ -40,6 +40,7 @@ public struct PoolLinked has copy, drop {
 const ENotCreator: u64 = 0;
 const EMarketNotActive: u64 = 1;
 const EZeroAmount: u64 = 2;
+const EPoolAlreadyLinked: u64 = 3;
 
 public fun create_market<QuoteCoin>(
     registry: &mut MarketRegistry,
@@ -85,6 +86,7 @@ public fun link_pool<QuoteCoin>(
 ) {
     assert!(ctx.sender() == market.creator, ENotCreator);
     assert!(market.status == types::active(), EMarketNotActive);
+    assert!(option::is_none(&market.pool_id), EPoolAlreadyLinked);
     market.pool_id = option::some(pool_id);
     event::emit(PoolLinked {
         market_id: object::id(market),
@@ -118,6 +120,10 @@ public fun status<QuoteCoin>(market: &Market<QuoteCoin>): u8 { market.status }
 public fun outcome<QuoteCoin>(market: &Market<QuoteCoin>): u8 { market.outcome }
 public fun expiry_ms<QuoteCoin>(market: &Market<QuoteCoin>): u64 { market.expiry_ms }
 public fun pool_id<QuoteCoin>(market: &Market<QuoteCoin>): Option<ID> { market.pool_id }
+
+public(package) fun is_linked_pool<QuoteCoin>(market: &Market<QuoteCoin>, pool_id: ID): bool {
+    option::is_some(&market.pool_id) && *option::borrow(&market.pool_id) == pool_id
+}
 
 public fun next_order_id<QuoteCoin>(market: &mut Market<QuoteCoin>): u64 {
     let id = market.next_order_id;

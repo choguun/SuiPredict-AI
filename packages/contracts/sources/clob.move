@@ -54,10 +54,12 @@ const EOrderClosed: u64 = 6;
 const EWrongMarket: u64 = 7;
 const EInsufficientQuote: u64 = 8;
 const EBidNeedsCollateral: u64 = 9;
+const EQuoteOverflow: u64 = 10;
+const EInvalidLot: u64 = 11;
 
 const MAX_BPS: u64 = 10000;
 
-public fun create_order_book<QuoteCoin>(
+public(package) fun create_order_book<QuoteCoin>(
     market: &Market<QuoteCoin>,
     ctx: &mut TxContext,
 ): OrderBook<QuoteCoin> {
@@ -71,7 +73,7 @@ public fun create_order_book<QuoteCoin>(
     }
 }
 
-public fun share_order_book<QuoteCoin>(book: OrderBook<QuoteCoin>) {
+public(package) fun share_order_book<QuoteCoin>(book: OrderBook<QuoteCoin>) {
     transfer::share_object(book);
 }
 
@@ -146,6 +148,7 @@ public fun cancel_order<QuoteCoin>(
     ctx: &mut TxContext,
 ) {
     assert!(book.market_id == object::id(market), EWrongMarket);
+    assert!(market_factory::is_linked_pool(market, object::id(book)), EWrongMarket);
     assert!(table::contains(&book.orders, order_id), EOrderNotFound);
     let order = table::borrow(&book.orders, order_id);
     assert!(types::order_owner(order) == ctx.sender(), ENotOwner);
@@ -258,16 +261,23 @@ fun try_match_best<QuoteCoin>(
         if (types::order_price_bps(bid) < types::order_price_bps(ask)) break;
         let bid_owner = types::order_owner(bid);
         let ask_owner = types::order_owner(ask);
-        let price_bps = types::order_price_bps(bid);
+        let bid_price_bps = types::order_price_bps(bid);
+        let price_bps = types::order_price_bps(ask);
         let mut fill_qty = types::order_remaining(bid);
         let ask_remaining = types::order_remaining(ask);
         if (fill_qty > ask_remaining) fill_qty = ask_remaining;
         if (fill_qty == 0) break;
 
         let quote_paid = quote_for(fill_qty, price_bps);
+        let quote_reserved = quote_for(fill_qty, bid_price_bps);
+        let buyer_refund = quote_reserved - quote_paid;
         outcome_tokens::credit_yes_internal(market, bid_owner, fill_qty);
         let seller_proceeds = balance::split(&mut book.bid_escrow, quote_paid);
         transfer::public_transfer(coin::from_balance(seller_proceeds, ctx), ask_owner);
+        if (buyer_refund > 0) {
+            let refund_balance = balance::split(&mut book.bid_escrow, buyer_refund);
+            transfer::public_transfer(coin::from_balance(refund_balance, ctx), bid_owner);
+        };
 
         let bid_mut = table::borrow_mut(&mut book.orders, bid_id);
         types::fill_order(bid_mut, fill_qty);
@@ -301,11 +311,18 @@ fun assert_active_book<QuoteCoin>(
     book: &OrderBook<QuoteCoin>,
 ) {
     assert!(market_factory::status(market) == types::active(), EMarketNotActive);
+    let book_id = object::id(book);
     assert!(book.market_id == object::id(market), EWrongMarket);
+    assert!(market_factory::is_linked_pool(market, book_id), EWrongMarket);
 }
 
 fun quote_for(quantity: u64, price_bps: u64): u64 {
-    (quantity * price_bps) / MAX_BPS
+    let product = (quantity as u128) * (price_bps as u128);
+    let divisor = MAX_BPS as u128;
+    assert!(product % divisor == 0, EInvalidLot);
+    let maybe_quote = std::u128::try_as_u64(product / divisor);
+    assert!(option::is_some(&maybe_quote), EQuoteOverflow);
+    option::destroy_some(maybe_quote)
 }
 
 fun remove_order_id(ids: &mut vector<u64>, order_id: u64) {

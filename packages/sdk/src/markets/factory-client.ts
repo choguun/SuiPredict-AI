@@ -7,6 +7,15 @@ import {
 } from "./constants.js";
 
 const PKG = () => MARKET_PACKAGE_ID;
+const BPS_SCALE = BigInt(10_000);
+
+function quoteFor(quantity: bigint, priceBps: number): bigint {
+  const product = quantity * BigInt(priceBps);
+  if (product % BPS_SCALE !== BigInt(0)) {
+    throw new Error("quantity/price produces fractional DBUSDC atoms");
+  }
+  return product / BPS_SCALE;
+}
 
 export function buildCreateRegistryTx(): Transaction {
   const tx = new Transaction();
@@ -106,7 +115,7 @@ export function buildPlaceLimitOrderTx(params: {
     if (!params.quoteCoinId) {
       throw new Error("quoteCoinId is required for bid orders");
     }
-    const quoteAmount = (params.quantity * BigInt(params.priceBps)) / 10_000n;
+    const quoteAmount = quoteFor(params.quantity, params.priceBps);
     const [quote] = tx.splitCoins(tx.object(params.quoteCoinId), [
       tx.pure.u64(quoteAmount),
     ]);
@@ -132,6 +141,36 @@ export function buildPlaceLimitOrderTx(params: {
       tx.object(params.marketId),
       tx.object(params.orderBookId),
       tx.pure.u64(BigInt(params.priceBps)),
+      tx.pure.u64(params.quantity),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+export function buildBuyNoLimitOrderTx(params: {
+  marketId: string;
+  orderBookId: string;
+  collateralCoinId: string;
+  yesPriceBps: number;
+  quantity: bigint;
+}): Transaction {
+  const tx = new Transaction();
+  const [collateral] = tx.splitCoins(tx.object(params.collateralCoinId), [
+    tx.pure.u64(params.quantity),
+  ]);
+  tx.moveCall({
+    target: `${PKG()}::outcome_tokens::split_collateral`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(params.marketId), collateral],
+  });
+  tx.moveCall({
+    target: `${PKG()}::clob::place_ask_order`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.orderBookId),
+      tx.pure.u64(BigInt(params.yesPriceBps)),
       tx.pure.u64(params.quantity),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -213,6 +252,21 @@ export function buildAllocateForMmTx(
     target: `${PKG()}::vault::allocate_for_mm`,
     typeArguments: [DBUSDC_TYPE],
     arguments: [tx.object(vaultId), tx.pure.u64(amount)],
+  });
+  return tx;
+}
+
+export function buildReturnFromMmTx(
+  vaultId: string,
+  coinId: string,
+  amount: bigint,
+): Transaction {
+  const tx = new Transaction();
+  const [coin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
+  tx.moveCall({
+    target: `${PKG()}::vault::return_from_mm`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(vaultId), coin],
   });
   return tx;
 }

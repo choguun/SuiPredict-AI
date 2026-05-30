@@ -1,4 +1,5 @@
 /// Vault LP share token.
+#[allow(deprecated_usage)]
 module suipredict_agent_policy::vlp;
 
 use sui::coin;

@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  buildBuyNoLimitOrderTx,
   buildMergeCollateralTx,
   buildPlaceLimitOrderTx,
   buildRedeemWinnerTx,
@@ -105,14 +106,18 @@ export default function MarketDetailPage() {
   const yesLimitPrice = side === "yes" ? displayedPrice : 1 - displayedPrice;
   const priceBps = Math.round(clampProbability(yesLimitPrice) * 10_000);
   const isBid = side === "yes" ? orderSide === "buy" : orderSide === "sell";
+  const isSyntheticBuyNo = side === "no" && orderSide === "buy";
   const quantityAtoms = BigInt(Math.floor(qty * 1_000_000));
   const quoteAtoms = (quantityAtoms * BigInt(priceBps)) / BigInt(10_000);
   const estimatedCost = displayedPrice * qty;
+  const capitalRequired = isSyntheticBuyNo ? qty : estimatedCost;
   const payout = qty;
   const potentialProfit = Math.max(0, payout - estimatedCost);
   const actionLabel = `${orderSide === "buy" ? "Buy" : "Sell"} ${side.toUpperCase()}`;
   const routeLabel =
-    side === "yes"
+    isSyntheticBuyNo
+      ? `Split DBUSDC, keep NO, ask YES at ${formatCents(yesLimitPrice)}`
+      : side === "yes"
       ? `${orderSide === "buy" ? "Bid" : "Ask"} YES at ${formatCents(displayedPrice)}`
       : `${isBid ? "Bid" : "Ask"} YES at ${formatCents(yesLimitPrice)}`;
 
@@ -165,28 +170,45 @@ export default function MarketDetailPage() {
     setLoading(true);
     setStatus("Placing limit order…");
     try {
-      let quoteCoinId: string | undefined;
-      if (isBid) {
-        const { objects } = await client.core.listCoins({
-          owner: account.address,
-          coinType: DBUSDC,
-        });
-        const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
+      let tx;
+      const { objects } = await client.core.listCoins({
+        owner: account.address,
+        coinType: DBUSDC,
+      });
+      if (isSyntheticBuyNo) {
+        const coin = objects.find((c) => BigInt(c.balance) >= quantityAtoms);
         if (!coin) {
           throw new Error(
-            `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
+            `Need ${(Number(quantityAtoms) / 1e6).toFixed(2)} DBUSDC to split collateral`,
           );
         }
-        quoteCoinId = coin.objectId;
+        tx = buildBuyNoLimitOrderTx({
+          marketId: market.id,
+          orderBookId: market.order_book_id,
+          collateralCoinId: coin.objectId,
+          yesPriceBps: priceBps,
+          quantity: quantityAtoms,
+        });
+      } else {
+        let quoteCoinId: string | undefined;
+        if (isBid) {
+          const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
+          if (!coin) {
+            throw new Error(
+              `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
+            );
+          }
+          quoteCoinId = coin.objectId;
+        }
+        tx = buildPlaceLimitOrderTx({
+          marketId: market.id,
+          orderBookId: market.order_book_id,
+          isBid,
+          priceBps,
+          quantity: quantityAtoms,
+          quoteCoinId,
+        });
       }
-      const tx = buildPlaceLimitOrderTx({
-        marketId: market.id,
-        orderBookId: market.order_book_id,
-        isBid,
-        priceBps,
-        quantity: quantityAtoms,
-        quoteCoinId,
-      });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setStatus(`Order placed: ${txDigest(r).slice(0, 16)}…`);
       await refresh();
@@ -373,6 +395,7 @@ export default function MarketDetailPage() {
           </label>
           <input
             type="number"
+            step="0.01"
             min="0.01"
             value={qty}
             onChange={(e) => setQty(Math.max(0.01, Number(e.target.value)))}
@@ -383,6 +406,12 @@ export default function MarketDetailPage() {
               <span>Est. cost</span>
               <span className="font-medium text-white">
                 ${estimatedCost.toFixed(2)} DBUSDC
+              </span>
+            </div>
+            <div className="mt-2 flex justify-between gap-3 text-zinc-400">
+              <span>Capital needed</span>
+              <span className="font-medium text-white">
+                ${capitalRequired.toFixed(2)} DBUSDC
               </span>
             </div>
             <div className="mt-2 flex justify-between gap-3 text-zinc-400">
@@ -398,7 +427,7 @@ export default function MarketDetailPage() {
               </span>
             </div>
             <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-500">
-              DeepBook route: {routeLabel}. NO orders use the 1 - YES
+              Order route: {routeLabel}. NO orders use the 1 - YES
               complement on the same book.
             </p>
           </div>

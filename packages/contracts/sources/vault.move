@@ -39,9 +39,14 @@ public struct Allocated has copy, drop {
     total_allocated: u64,
 }
 
+public struct Deallocated has copy, drop {
+    vault_id: ID,
+    amount: u64,
+    total_allocated: u64,
+}
+
 const ENotAdmin: u64 = 0;
 const EZeroAmount: u64 = 1;
-const EInsufficientBalance: u64 = 2;
 const EInsufficientAvailable: u64 = 3;
 
 public fun create_vault<QuoteCoin>(
@@ -87,7 +92,7 @@ public fun withdraw<QuoteCoin>(
 ): Coin<QuoteCoin> {
     let vlp_amount = coin::value(&vlp);
     assert!(vlp_amount > 0, EZeroAmount);
-    let available = total_balance(vault) - vault.allocated;
+    let available = available_balance(vault);
     assert!(available >= vlp_amount, EInsufficientAvailable);
     coin::burn(&mut vault.treasury, vlp);
     let out = balance::split(&mut vault.balance, vlp_amount);
@@ -107,7 +112,7 @@ public fun allocate_for_mm<QuoteCoin>(
 ): Coin<QuoteCoin> {
     assert!(ctx.sender() == vault.admin, ENotAdmin);
     assert!(amount > 0, EZeroAmount);
-    let available = total_balance(vault) - vault.allocated;
+    let available = available_balance(vault);
     assert!(available >= amount, EInsufficientAvailable);
     vault.allocated = vault.allocated + amount;
     event::emit(Allocated {
@@ -118,7 +123,29 @@ public fun allocate_for_mm<QuoteCoin>(
     coin::from_balance(balance::split(&mut vault.balance, amount), ctx)
 }
 
+public fun return_from_mm<QuoteCoin>(
+    vault: &mut ProtocolVault<QuoteCoin>,
+    coin: Coin<QuoteCoin>,
+    ctx: &mut TxContext,
+) {
+    assert!(ctx.sender() == vault.admin, ENotAdmin);
+    let amount = coin::value(&coin);
+    assert!(amount > 0, EZeroAmount);
+    assert!(vault.allocated >= amount, EInsufficientAvailable);
+    vault.allocated = vault.allocated - amount;
+    balance::join(&mut vault.balance, coin::into_balance(coin));
+    event::emit(Deallocated {
+        vault_id: object::id(vault),
+        amount,
+        total_allocated: vault.allocated,
+    });
+}
+
 public fun total_balance<QuoteCoin>(vault: &ProtocolVault<QuoteCoin>): u64 {
+    balance::value(&vault.balance) + vault.allocated
+}
+
+public fun available_balance<QuoteCoin>(vault: &ProtocolVault<QuoteCoin>): u64 {
     balance::value(&vault.balance)
 }
 
