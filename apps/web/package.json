@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@ducanh2912/next-pwa": "^10.2.9",
-    "@mysten/dapp-kit": "^1.0.6",
     "@mysten/dapp-kit-react": "^2.0.3",
     "@mysten/enoki": "^1.0.8",
     "@mysten/sui": "^2.17.0",

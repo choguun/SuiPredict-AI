@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useWallets, useConnectWallet, useDisconnectWallet, useCurrentAccount } from "@mysten/dapp-kit";
+import { useWallets, useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
 
 export function ConnectModal() {
   const [isOpen, setIsOpen] = useState(false);
   const wallets = useWallets();
-  const { mutate: connect } = useConnectWallet();
-  const { mutate: disconnect } = useDisconnectWallet();
   const currentAccount = useCurrentAccount();
+  const dappKit = useDAppKit();
   
   const enokiFlow = useEnokiFlow();
   const zkLogin = useZkLogin();
@@ -39,7 +38,7 @@ export function ConnectModal() {
     if (isZkLogin) {
       await enokiFlow.logout();
     } else {
-      disconnect();
+      await dappKit.disconnectWallet();
     }
     setIsOpen(false);
   };
@@ -168,8 +167,8 @@ export function ConnectModal() {
                       {wallets.map((wallet) => (
                         <button
                           key={wallet.name}
-                          onClick={() => {
-                            connect({ wallet });
+                          onClick={async () => {
+                            await dappKit.connectWallet({ wallet });
                             setIsOpen(false);
                           }}
                           className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-transparent p-3 transition hover:bg-white/[0.04]"
