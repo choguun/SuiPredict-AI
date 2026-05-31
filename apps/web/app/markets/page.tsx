@@ -30,15 +30,21 @@ export default async function MarketsPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Badge variant="success">Polymarket-style CLOB</Badge>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">Markets</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">
-            Pick a side, set a probability, and route the order through the
-            DeepBook YES order book. NO is shown as the complement price.
-          </p>
-        </div>
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40 mb-8">
+        <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
+        <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
+        
+        <div className="relative z-10 flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+          <div className="max-w-2xl">
+            <Badge variant="success" className="px-3 py-1 text-sm mb-4">Polymarket-style CLOB</Badge>
+            <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-5xl mb-4">
+              Prediction Markets
+            </h1>
+            <p className="text-base leading-relaxed text-zinc-400">
+              Pick a side, set a probability, and route the order through the
+              DeepBook YES order book. NO is shown as the complement price.
+            </p>
+          </div>
         <div className="grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-[#11141d] p-2 text-center">
           <div className="px-3 py-2">
             <p className="text-lg font-semibold text-white">{markets.length}</p>
@@ -52,6 +58,7 @@ export default async function MarketsPage() {
             <p className="text-lg font-semibold text-amber-300">{resolved}</p>
             <p className="text-xs text-zinc-500">Resolved</p>
           </div>
+        </div>
         </div>
       </div>
 
