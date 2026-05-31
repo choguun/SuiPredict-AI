@@ -9,9 +9,6 @@ const links = [
   { href: "/markets", label: "Markets" },
   { href: "/vault", label: "Vault" },
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/agents", label: "Agents" },
-  { href: "/legacy/predict/trade", label: "Legacy ▾" },
-  { href: "/settings", label: "Settings" },
 ];
 
 export function Nav() {

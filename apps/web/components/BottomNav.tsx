@@ -7,7 +7,6 @@ const links = [
   { href: "/", label: "Home", icon: "🏠" },
   { href: "/markets", label: "Markets", icon: "📈" },
   { href: "/vault", label: "Vault", icon: "🏦" },
-  { href: "/agents", label: "Agents", icon: "🤖" },
 ];
 
 export function BottomNav() {

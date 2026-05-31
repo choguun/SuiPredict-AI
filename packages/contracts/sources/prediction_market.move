@@ -1,14 +1,21 @@
 /// DeepBook V3-integrated prediction market.
-/// Uses DeepBook Pool<YES<QUOTE>, QUOTE> as the orderbook CLOB.
+/// Uses DeepBook Pool<YES<Q>, Q> as the orderbook CLOB.
 /// YES/NO are TreasuryCap-backed Sui coins with 1:1 collateral backing.
 #[allow(deprecated_usage)]
+#[allow(unused_const)]
 module suipredict::prediction_market;
 
 // ============================================================
 // Imports
 // ============================================================
 
-use deepbook::balance_manager::DeepBookPoolReferral;
+use deepbook::balance_manager::{
+    Self,
+    BalanceManager,
+    TradeProof,
+    DeepBookPoolReferral,
+};
+use deepbook::order_info;
 use deepbook::pool::{Self, Pool};
 use deepbook::registry::Registry;
 use token::deep::DEEP;
@@ -42,6 +49,27 @@ const EInvalidOutcome: u64 = 4;
 const EZeroAmount: u64 = 5;
 const EReferralAlreadySet: u64 = 6;
 const ENotAdmin: u64 = 7;
+const EInvalidPrice: u64 = 8;
+const EInvalidQuantity: u64 = 9;
+
+// ============================================================
+// DeepBook order type constants (for reference)
+// ============================================================
+
+/// Immediate-or-cancel: fill what you can, cancel rest
+const ORDER_TYPE_IOC: u8 = 2;
+/// Good-for-time: active for duration, then cancel
+const ORDER_TYPE_GFT: u8 = 3;
+/// Fill-or-kill: execute fully or not at all
+const ORDER_TYPE_FOK: u8 = 1;
+/// Post-only: only add liquidity, reject if would take
+const ORDER_TYPE_POST_ONLY: u8 = 0;
+
+/// Disallow self-matching (safe default)
+const SELF_MATCHING_DISALLOW: u8 = 1;
+
+/// Default expiry for limit orders: max u64 (no expiry)
+const DEFAULT_EXPIRY: u64 = 18446744073709551615;
 
 // ============================================================
 // Coin witness types
@@ -88,6 +116,9 @@ public struct PredictionMarket<phantom Q> has key {
     creator: address,
     /// ID of the DeepBook Pool<YES<Q>, Q> for this market
     pool_id: ID,
+    /// BalanceManager ID for this market's DeepBook trading
+    /// The BalanceManager must be passed separately to trading functions
+    balance_manager_id: ID,
     /// Optional DeepBook referral ID for this market's pool
     referral_id: Option<ID>,
     /// Timestamp (ms) when the market was created
@@ -114,6 +145,7 @@ public struct FeeVault<phantom Q> has key {
 public struct MarketCreatedEvent has copy, drop {
     market_id: ID,
     pool_id: ID,
+    balance_manager_id: ID,
     title: vector<u8>,
     expiry_ms: u64,
     creator: address,
@@ -142,6 +174,22 @@ public struct RedeemedEvent has copy, drop {
     collateral_returned: u64,
 }
 
+public struct OrderPlacedEvent has copy, drop {
+    market_id: ID,
+    pool_id: ID,
+    client_order_id: u64,
+    is_bid: bool,
+    price: u64,
+    quantity: u64,
+    order_id: u128,
+}
+
+public struct OrderCancelledEvent has copy, drop {
+    market_id: ID,
+    pool_id: ID,
+    order_id: u128,
+}
+
 public struct ReferralSetEvent has copy, drop {
     market_id: ID,
     referral_id: ID,
@@ -156,9 +204,11 @@ public struct FeesWithdrawnEvent has copy, drop {
 // initializer
 // ============================================================
 
-/// Creates the FeeVault for DBUSDC and shares it. Called once at publish time.
+/// Creates the FeeVault for Q and shares it. Called once at publish time.
+public struct Q has drop {}
+
 fun init(ctx: &mut TxContext) {
-    let vault = FeeVault<DBUSDC> {
+    let vault = FeeVault<Q> {
         id: object::new(ctx),
         admin: ctx.sender(),
         fee_balance: balance::zero(),
@@ -166,30 +216,30 @@ fun init(ctx: &mut TxContext) {
     transfer::share_object(vault);
 }
 
-/// Placeholder DBUSDC coin type - in production would be real DBUSDC.
-public struct DBUSDC has drop {}
-
 // ============================================================
 // Market creation
 // ============================================================
 
-/// Creates a new prediction market, its YES/NO coin types, and a DeepBook pool.
-/// Returns (market_id, pool_id).
+/// Creates a new prediction market, its YES/NO coin types, a DeepBook pool,
+/// and a BalanceManager for trading.
+///
+/// Returns (market_id, pool_id, balance_manager_id).
 ///
 /// This function handles everything in one PTB:
-///   1. Call pool_creation_fee() to get the 500 DEEP creation fee
+///   1. Call pool_creation_fee() to get the 500M MIST creation fee
 ///   2. Create the DeepBook Pool<YES<Q>, Q> via create_permissionless_pool
-///   3. Create PredictionMarket<Q> with YES/NO TreasuryCaps
+///   3. Create a BalanceManager for this market's trading (shared object)
+///   4. Create PredictionMarket<Q> with YES/NO TreasuryCaps
 ///
 /// Arguments:
 ///   registry         - DeepBook registry (must be shared)
 ///   title            - Market question / title
 ///   resolution_source - URL or description of how resolution occurs
 ///   expiry_ms        - Unix timestamp (ms) after which market can be resolved
-///   tick_size        - Price tick in quote units (e.g. 1_000_000 = 0.001 DBUSDC with 6 decimals)
+///   tick_size        - Price tick in quote units (e.g. 1_000_000 = 0.001 with 6 decimals)
 ///   lot_size         - Minimum base-asset quantity per order (in YES * 10^decimals)
 ///   min_size         - Minimum order size in base units
-///   deep_coin        - Coin<DEEP> for pool creation fee (500 DEEP)
+///   deep_coin        - Coin<DEEP> for pool creation fee (500M MIST = 0.5 SUI)
 ///   ctx
 public fun create_market<Q>(
     registry: &mut Registry,
@@ -201,7 +251,7 @@ public fun create_market<Q>(
     min_size: u64,
     deep_coin: Coin<DEEP>,
     ctx: &mut TxContext,
-): (ID, ID) {
+): (ID, ID, ID) {
     let creator = ctx.sender();
 
     // 1. Create the DeepBook permissionless pool
@@ -215,7 +265,16 @@ public fun create_market<Q>(
         ctx,
     );
 
-    // 2. Create YES and NO coin currencies
+    // 2. Create BalanceManager for this market (shared object)
+    //    The BM must be created and shared so it can be used across PTBs
+    let balance_manager = balance_manager::new_with_custom_owner(
+        creator,
+        ctx,
+    );
+    let balance_manager_id = object::id(&balance_manager);
+    transfer::public_share_object(balance_manager);
+
+    // 3. Create YES and NO coin currencies
     let (yes_cap, yes_meta) = coin::create_currency(
         YES<Q> {},
         0,
@@ -237,7 +296,7 @@ public fun create_market<Q>(
     );
     transfer::public_freeze_object(no_meta);
 
-    // 3. Create the PredictionMarket with YES/NO TreasuryCaps
+    // 4. Create the PredictionMarket with YES/NO TreasuryCaps
     let market = PredictionMarket<Q> {
         id: object::new(ctx),
         title,
@@ -251,6 +310,7 @@ public fun create_market<Q>(
         resolution_source,
         creator,
         pool_id: pool_id,
+        balance_manager_id,
         referral_id: option::none(),
         created_ms: ctx.epoch_timestamp_ms(),
     };
@@ -259,13 +319,23 @@ public fun create_market<Q>(
     event::emit(MarketCreatedEvent {
         market_id,
         pool_id: pool_id,
+        balance_manager_id,
         title: market.title,
         expiry_ms,
         creator,
     });
 
     transfer::share_object(market);
-    (market_id, pool_id)
+    (market_id, pool_id, balance_manager_id)
+}
+
+// ============================================================
+// BalanceManager helpers
+// ============================================================
+
+/// Get the BalanceManager ID for a market (read-only).
+public fun balance_manager_id<Q>(market: &PredictionMarket<Q>): ID {
+    market.balance_manager_id
 }
 
 // ============================================================
@@ -403,6 +473,169 @@ public fun redeem_no<Q>(
 }
 
 // ============================================================
+// DeepBook Trading - place limit order
+//
+// Trading requires BOTH the PredictionMarket (shared) AND the
+// BalanceManager (shared) to be passed as arguments. The caller
+// fetches the BalanceManager using balance_manager_id from the market.
+// ============================================================
+
+/// Place a limit order on the DeepBook pool for YES tokens.
+/// Uses the market's BalanceManager for funds and trading.
+/// Price is in quote units (e.g. 500_000_000 = 0.5 Q with 9 decimals).
+///
+/// Arguments:
+///   market          - PredictionMarket<Q> (shared)
+///   pool            - Pool<YES<Q>, Q> (shared, mutable)
+///   balance_manager - BalanceManager for this market (shared, mutable)
+///   client_order_id - Client-supplied order ID for tracking
+///   price           - Price in quote units (e.g. 500_000_000 = 0.5 Q)
+///   quantity        - Base asset quantity (in YES * 10^decimals)
+///   is_bid          - true = buy YES (bid), false = sell YES (ask)
+///   order_type      - IOC=2, GFT=3, FOK=1, POST_ONLY=0
+///   clock           - Clock for timestamping
+///   ctx
+public fun place_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    client_order_id: u64,
+    price: u64,
+    quantity: u64,
+    is_bid: bool,
+    order_type: u8,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(!market.resolved, EMarketNotActive);
+    assert!(price > 0, EInvalidPrice);
+    assert!(quantity > 0, EInvalidQuantity);
+
+    // Generate trade proof as the BM owner
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+
+    // Place the order
+    let order_info = pool::place_limit_order<YES<Q>, Q>(
+        pool,
+        balance_manager,
+        &proof,
+        client_order_id,
+        order_type,
+        SELF_MATCHING_DISALLOW,
+        price,
+        quantity,
+        is_bid,
+        true,   // pay_with_deep = true (fee in DEEP)
+        DEFAULT_EXPIRY,
+        clock,
+        ctx,
+    );
+
+    event::emit(OrderPlacedEvent {
+        market_id: object::id(market),
+        pool_id: market.pool_id,
+        client_order_id,
+        is_bid,
+        price,
+        quantity,
+        order_id: order_info::order_id(&order_info),
+    });
+}
+
+/// Place a market order (immediately executable at best price).
+public fun place_market_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    client_order_id: u64,
+    quantity: u64,
+    is_bid: bool,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    assert!(!market.resolved, EMarketNotActive);
+    assert!(quantity > 0, EInvalidQuantity);
+
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+
+    let order_info = pool::place_market_order<YES<Q>, Q>(
+        pool,
+        balance_manager,
+        &proof,
+        client_order_id,
+        SELF_MATCHING_DISALLOW,
+        quantity,
+        is_bid,
+        true,
+        clock,
+        ctx,
+    );
+
+    event::emit(OrderPlacedEvent {
+        market_id: object::id(market),
+        pool_id: market.pool_id,
+        client_order_id,
+        is_bid,
+        price: 0,
+        quantity,
+        order_id: order_info::order_id(&order_info),
+    });
+}
+
+// ============================================================
+// DeepBook Trading - cancel orders
+// ============================================================
+
+/// Cancel a single order on the DeepBook pool.
+public fun cancel_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    order_id: u128,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert!(!market.resolved, EMarketNotActive);
+
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+
+    pool::cancel_live_order<YES<Q>, Q>(pool, balance_manager, &proof, order_id, clock, ctx);
+
+    event::emit(OrderCancelledEvent {
+        market_id: object::id(market),
+        pool_id: market.pool_id,
+        order_id,
+    });
+}
+
+/// Cancel multiple orders on the DeepBook pool.
+public fun cancel_orders<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    order_ids: vector<u128>,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert!(!market.resolved, EMarketNotActive);
+
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+
+    pool::cancel_live_orders<YES<Q>, Q>(pool, balance_manager, &proof, order_ids, clock, ctx);
+}
+
+/// Withdraw settled amounts from the pool back to BalanceManager.
+public fun withdraw_settled<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    ctx: &mut TxContext,
+) {
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+    pool::withdraw_settled_amounts<YES<Q>, Q>(pool, balance_manager, &proof);
+}
+
+// ============================================================
 // DeepBook referral - protocol earns extra trading fees
 // ============================================================
 
@@ -428,7 +661,6 @@ public fun setup_referral<Q>(
 }
 
 /// Claim accumulated referral rewards from DeepBook for the market's pool.
-/// All three Coin outputs are transferred to the nominated treasury address.
 public fun claim_referral_rewards<Q>(
     pool: &mut Pool<YES<Q>, Q>,
     referral: &DeepBookPoolReferral,
@@ -495,3 +727,10 @@ public fun pool_id<Q>(market: &PredictionMarket<Q>): ID {
 public fun referral_id<Q>(market: &PredictionMarket<Q>): Option<ID> {
     market.referral_id
 }
+
+// ============================================================
+// Imports
+// ============================================================
+
+use std::vector;
+use std::option::{Self, Option};
