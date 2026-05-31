@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024.beta"
 
 [dependencies]
-deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "main" }
-token = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/token", rev = "main" }
+# Use the ORIGINAL deepbookv3 (Mysten Labs, no local modifications)
+# This should match what's deployed on testnet at 0x2fec... or 0x74cd...
+deepbook = { local = "../../deps/deepbookv3/packages/deepbook" }
+token = { local = "../../deps/deepbookv3/packages/token" }
+
+# Override to avoid version conflict
+_token = { local = "../../deps/deepbookv3/packages/token", override = true }
 
 [addresses]
 suipredict = "0x0"
