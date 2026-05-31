@@ -1,56 +1,58 @@
-# Judge E2E Demo Script (3 min + optional legacy)
+# Judge E2E Demo Script (3 min)
 
 ## Setup
 
-1. `pnpm install && pnpm --filter @suipredict/sdk build`
-2. `pnpm dev:agents` — seeds demo markets + indexer API on :3001
-3. `pnpm dev:web` — http://localhost:3000
-4. Optional on-chain: publish Move package, set `MARKET_REGISTRY_ID`, `VAULT_OBJECT_ID`, wallet DBUSDC + SUI
+1. `pnpm install && pnpm build`
+2. `cp .env.example .env` — fill in deployed contract addresses
+3. `pnpm dev:agents` — starts indexer API on :3001, seeds demo markets
+4. `pnpm dev:web` — http://localhost:3000
 
-## Primary: Polymarket CLOB (3 min)
+## Demo walkthrough
 
 ### 1. Home (20s)
 
 - Active markets count, vault TVL, featured markets
-- Narrative: vault → agents → CLOB → resolve
+- Narrative: DeepBook V3 CLOB + autonomous agents
 
 ### 2. Markets list (20s)
 
-- Open **Markets** — categories, expiry, status
-- Open a market (e.g. BTC $100k)
+- Open **Markets** — categories, expiry, status, DeepBook pool info
+- Open a market (e.g. "BTC above $100k by end of 2026")
 
-### 3. Order book (60s)
+### 3. Order book + trading (60s)
 
-- Show bids/asks, spread, implied NO = 1 − YES
-- Explain split: 1 DBUSDC → 1 YES + 1 NO
-- Demo mode: agent-fed book; live mode: place limit order on-chain
+- Show bids/asks, spread, mid price (from DeepBook L2 book)
+- Explain split: 1 DBUSDC -> 1 YES + 1 NO; merge: 1 YES + 1 NO -> 1 DBUSDC
+- Implied NO price = 1 - YES
+- Demo mode: agent-fed book from DeepBook SDK; live mode: on-chain limit order
 
-### 4. Vault VLP (40s)
+### 4. Vault (40s)
 
-- **Vault** — TVL, MM allocation, deposit/withdraw VLP (DBUSDC)
+- **Vault** — TVL, VLP deposit/withdraw DBUSDC
+- Explain VLP share model and market-maker capital allocation
 
 ### 5. Agents (40s)
 
-- **Agents** — Creator / Maker / Resolver decision feed
-- Point to quote or create_market tx on Suiscan (if on-chain)
+- **Agents** page — Creator / Maker / Resolver / Referral Keeper decision feed
+- Creator shows market creation tx; Resolver shows LLM reasoning
+- Point to transactions on Suiscan (if on-chain mode)
 
 ### 6. Portfolio (20s)
 
 - **Portfolio** — YES/NO balances per market
-
-## Optional: Legacy Predict (30s)
-
-- **Legacy ▾** → `/legacy/predict/trade` — mint BTC binary with dUSDC
-- `/legacy/predict/vault` — PLP supply/withdraw
+- Redeem section for resolved markets
 
 ## Talking points
 
-- Polymarket-style complement (YES + NO = $1) in Move `outcome_tokens`
-- On-chain CLOB avoids 500 DEEP per DeepBook pool for hackathon MVP
-- Three autonomous agents + user vault for MM capital
-- Legacy Predict shows DeepBook protocol breadth
+- Single `prediction_market.move` contract replaces clob + factory + settlement + outcome_tokens
+- DeepBook V3 permissionless pool created atomically with market
+- 1% mint fee + 0.5% redeem fee + referral rebates fund protocol revenue
+- Referral Keeper sweeps trading fee rebates to treasury automatically
+- Four agents: Creator, Market Maker, Resolver, Referral Keeper
+- Polymarket complement (YES + NO = $1) in Move `split`/`merge`
 
 ## Backup
 
 - Demo markets in `apps/agents/data/markets.db` if chain unavailable
 - Pre-recorded agent feed from `/decisions`
+- Build is green: 0 errors across Move + SDK + agents

@@ -40,8 +40,8 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       client,
       agentAddr,
       target.deepbook_pool_id!,
-      target.deepbook_pool_key ?? PREDICT_DEEPBOOK_POOL_KEY,
-      BALANCE_MANAGER_ID ?? undefined,
+      poolKey,                                  // poolKey used to derive yesCoinType
+      BALANCE_MANAGER_ID ?? undefined,          // balanceManagerId for trading
     );
   } catch (err) {
     return recordResult("MarketMaker", {
@@ -134,6 +134,27 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       expiration: Math.floor(Date.now() / 1000) + 3600,
     });
     await executeTransaction(client, askTx, ctx.signer);
+
+    // Record on-chain orders in SQLite so the frontend order book stays in sync.
+    // Use unique numeric IDs derived from timestamp to avoid type conflicts.
+    upsertOrder({
+      market_id: target.id,
+      order_id: Number(BigInt("0x" + bidResult.digest.slice(2, 18)) % BigInt(1e15)),
+      owner: agentAddr,
+      is_bid: true,
+      price_bps: bidBps,
+      quantity: QUOTE_SIZE,
+      timestamp_ms: Date.now(),
+    });
+    upsertOrder({
+      market_id: target.id,
+      order_id: Number(BigInt("0x" + bidResult.digest.slice(2, 18)) % BigInt(1e15)) + 1,
+      owner: agentAddr,
+      is_bid: false,
+      price_bps: askBps,
+      quantity: QUOTE_SIZE,
+      timestamp_ms: Date.now() + 1,
+    });
 
     return recordResult("MarketMaker", {
       action: "place_quotes",

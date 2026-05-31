@@ -1,6 +1,6 @@
 # SuiPredict-AI
 
-**Polymarket-style prediction markets on Sui** — on-chain CLOB, vault LP, and autonomous agents — plus legacy **DeepBook Predict** integration. Built for Sui Overflow 2026 (DeepBook track).
+**Prediction markets on Sui via DeepBook V3** — create markets, trade YES/NO tokens on a DeepBook CLOB, resolve outcomes with an LLM oracle, and sweep referral rewards automatically. Built for Sui Overflow 2026 (DeepBook track).
 
 [![Sui Overflow 2026](https://img.shields.io/badge/Hackathon-Sui%20Overflow%202026-blue)](https://overflow.sui.io)
 
@@ -8,102 +8,63 @@
 
 SuiPredict-AI is a **multi-market prediction exchange** where:
 
-1. Users deposit **DBUSDC** into a vault and receive **VLP** shares
-2. Agents allocate vault capital and quote **bid/ask** liquidity on an **on-chain order book**
-3. Users **split** collateral → **YES + NO** tokens, **trade YES** with limit orders, then **redeem** winners after resolution
-4. **Market Creator**, **Market Maker**, and **Market Resolver** agents run autonomously (LLM + rule fallbacks)
-5. Legacy **DeepBook Predict** flows remain at `/legacy/predict/*` for protocol comparison
+1. **Market Creator** agent deploys a new prediction market — creates a `PredictionMarket` + DeepBook V3 pool + YES/NO coin types in one transaction
+2. **Market Maker** agent quotes bid/ask on the DeepBook order book, funded by a vault
+3. Users **split** DBUSDC into YES + NO tokens, **trade YES** on the DeepBook CLOB, then **redeem** winners after resolution
+4. **Market Resolver** agent determines outcomes via LLM (with BTC price oracle fallback)
+5. **Referral Keeper** agent sweeps accumulated DeepBook trading fee rebates to the protocol treasury
 
-**Polymarket complement:** `split(1 DBUSDC) → 1 YES + 1 NO` and `merge(1 YES + 1 NO) → 1 DBUSDC`. The UI shows implied NO price as `1 − YES`.
+**Polymarket complement:** `split(1 DBUSDC) -> 1 YES + 1 NO` and `merge(1 YES + 1 NO) -> 1 DBUSDC`. The UI shows implied NO price as `1 - YES`.
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph users [Users]
-        Deposit[Deposit DBUSDC]
-        Split[Split to YES + NO]
-        Trade[Limit orders on CLOB]
-        Redeem[Redeem winners]
-    end
-
-    subgraph onchain [Move Layer]
-        Vault[vault.move VLP]
-        Factory[market_factory.move]
-        Tokens[outcome_tokens split/merge]
-        CLOB[clob.move order book]
-        Settlement[settlement.resolve]
-    end
-
-    subgraph agents [Agents Service :3001]
-        Creator[MarketCreator]
-        Maker[MarketMaker]
-        Resolver[MarketResolver]
-        Indexer[SQLite indexer API]
-    end
-
-    subgraph legacy [Legacy Demo]
-        Predict[DeepBook Predict mint/redeem]
-    end
-
-    Deposit --> Vault
-    Creator --> Factory
-    Factory --> Tokens
-    Factory --> CLOB
-    Maker --> Vault
-    Maker --> CLOB
-    Split --> Tokens
-    Trade --> CLOB
-    Resolver --> Settlement
-    Redeem --> Settlement
-    Web[Next.js] --> Indexer
-    Web --> onchain
-    Web -.-> Predict
-    agents --> onchain
-    agents --> Policy[agent_policy.move]
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend (Next.js)                    │
+│    /markets  /vault  /portfolio  /agents                     │
+└──────────┬────────────────┬──────────────┬─────────────────┘
+           │                │              │
+           ▼                ▼              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      Agents Service (:3001)                   │
+│   MarketCreator │ MarketMaker │ MarketResolver │ ReferralKeeper│
+│                  SQLite indexer                              │
+└──────────┬────────────────┬──────────────────┬────────────────┘
+           │                │                  │
+           ▼                ▼                  ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      Move Contracts (testnet)                 │
+│  prediction_market.move   vault.move   registry.move   vlp.move │
+│  DeepBook V3 (external)  ──────────────────────────────────  │
+│  Pool: YES/DBUSDC  │  Mint fee: 1%  │  Redeem fee: 0.5%     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for sequence diagrams and [docs/demo-script.md](docs/demo-script.md) for the judge walkthrough.
+### Contract stack
 
-### Primary: CLOB stack
+| File | Purpose |
+|------|---------|
+| `prediction_market.move` | Market lifecycle, split/merge, DeepBook pool creation, mint/redeem fees, referral system, DEEP reserve |
+| `vault.move` | Protocol vault (VLP), deposit/withdraw, market-maker capital allocation |
+| `registry.move` | Global market registry (admin-only) |
+| `vlp.move` | VLP liquidity token (vault share) |
+| `types.move` | Market struct, helpers |
 
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| **Move** | `vault`, `vlp`, `registry`, `market_factory`, `outcome_tokens`, `clob`, `settlement`, `types` | Markets, split/merge, order book, resolve/redeem |
-| **Policy** | `agent_policy.move` (shared object v2) | Agent budget caps, pause, audit events |
-| **SDK** | `@suipredict/sdk` | PTB builders, DeepBook V3 client, indexer REST client |
-| **Indexer** | `apps/agents` + SQLite | `/markets`, order book, portfolio, vault summary |
-| **Agents** | TypeScript | Creator → Maker → Resolver (+ Risk Monitor) |
-| **Frontend** | Next.js + dApp Kit | Markets, vault, portfolio, agents dashboard |
-
-### Legacy: DeepBook Predict
+### Agents
 
 | Agent | Role |
 |-------|------|
-| **Market Strategist** | Mints BTC binary positions (LLM + demo fallback) |
-| **PLP Manager** | Supplies dUSDC when vault utilization is high |
-| **Redeem Keeper** | `predict::redeem_permissionless` on settled positions |
-| **Risk Monitor** | Pauses policy on critical utilization (shared with CLOB cycle) |
-
-Enable legacy agents with `ENABLE_LEGACY_PREDICT_AGENTS=true` in `.env`.
-
-### Stablecoins & tokens
-
-| Token | Used for |
-|-------|----------|
-| **DBUSDC** | CLOB vault, split/merge, on-chain trading |
-| **dUSDC** | Legacy DeepBook Predict mint/redeem, PLP |
-| **DEEP** | Optional DeepBook V3 pool creation (~500 DEEP/pool) via `@mysten/deepbook-v3` |
-| **SUI** | Gas (testnet faucet) |
-
-> **Note:** The MVP uses an **on-chain Move CLOB** (`clob.move`) so demos work without paying 500 DEEP per pool. The DeepBook V3 SDK is wired for optional external YES/DBUSDC pools when funded.
+| **MarketCreator** | Creates markets with DeepBook V3 pool + referral setup |
+| **MarketMaker** | Places bid/ask limit orders on DeepBook, reads pool key per-market |
+| **MarketResolver** | LLM oracle + BTC price fallback to resolve markets |
+| **ReferralKeeper** | Sweeps DeepBook trading fee rebates to treasury |
 
 ## Quick start
 
 ### Prerequisites
 
 - Node.js 20+, [pnpm](https://pnpm.io), [Sui CLI](https://docs.sui.io/guides/developer/getting-started/sui-install)
-- Testnet **SUI** (faucet); **DBUSDC** / **dUSDC** / **DEEP** via [DeepBook testnet forms](https://mystenlabs.notion.site/deepbook-predict-problem-statement)
+- Testnet **SUI** (faucet); **DBUSDC** via DeepBook testnet faucet
 
 ### Install
 
@@ -112,153 +73,127 @@ git clone https://github.com/choguun/SuiPredict-AI.git
 cd SuiPredict-AI
 pnpm install
 cp .env.example .env
-pnpm --filter @suipredict/sdk build
+pnpm build
 ```
 
 ### Demo mode (no on-chain deploy)
 
-The agents service seeds **demo markets** and serves the indexer API without a wallet:
+The agents service seeds demo markets and serves the indexer API without a wallet:
 
 ```bash
 pnpm dev:agents   # http://localhost:3001 — /markets, /decisions, etc.
-pnpm dev:web      # http://localhost:3000 — Markets, Vault, Portfolio
+pnpm dev:web       # http://localhost:3000 — Markets, Vault, Portfolio
 ```
 
-Open **Markets** → pick a demo market → view live order book (agent-fed quotes).
+Open **Markets** -> pick a demo market -> view live order book (agent-fed quotes).
 
-### Agents with wallet (on-chain)
+### On-chain mode (testnet)
+
+Fill in `.env` (see [.env.example](.env.example) for all variables):
 
 ```bash
-# Required in .env:
-AGENT_PRIVATE_KEY=<suiprivkey or hex>
+# Required:
+PREDICT_MARKET_PACKAGE_ID=   # deployed prediction_market.move package
+FEE_VAULT_ID=                # FeeVault object ID from deployment
+REFERRAL_TREASURY_ADDRESS=  # your treasury wallet
+AGENT_PRIVATE_KEY=           # agent hot wallet (suiprivkey or hex)
+OPENAI_API_KEY=              # LLM for MarketResolver
 
-# Optional — after publishing Move package:
-MARKET_REGISTRY_ID=
-VAULT_OBJECT_ID=
-VLP_TREASURY_CAP_ID=
-OPENAI_API_KEY=          # LLM for Creator / Resolver
+# DeepBook V3 (testnet):
+DEEPBOOK_PACKAGE_ID=0xdee9
+DEEPBOOK_REGISTRY_ID=0xe0ce
 
 pnpm dev:agents
 ```
 
-**Agent cycle (every 15s):** Resolver → Creator → Maker → Risk Monitor (+ legacy Predict agents if enabled).
-
-### Publish Move package (testnet)
+### Deploy Move contracts (testnet)
 
 ```bash
-pnpm contracts:test     # 5 tests: agent_policy + market (split, CLOB, resolve)
-
 cd packages/contracts
 sui client publish --gas-budget 500000000
 ```
 
-After publish, initialize on-chain objects and set env vars:
-
-1. `registry::create_registry` → `MARKET_REGISTRY_ID`
-2. Publish triggers `vlp::init` → transfer treasury cap, then `vault::create_vault` → `VAULT_OBJECT_ID`
-3. Copy package ID → `MARKET_PACKAGE_ID`, `NEXT_PUBLIC_MARKET_PACKAGE_ID`
-
-### Legacy Predict smoke test
-
-```bash
-pnpm smoke-test
-```
-
-Creates a PredictManager and attempts a $1 mint (requires **dUSDC** in agent wallet).
+After publish, set `PREDICT_MARKET_PACKAGE_ID` in `.env`.
 
 ## Frontend routes
 
 | Route | Description |
 |-------|-------------|
 | `/` | Hero, featured markets, vault TVL |
-| `/markets` | Multi-market list (category, expiry, status) |
-| `/markets/[id]` | Order book, YES/NO tabs, limit orders, split/merge, redeem |
-| `/vault` | Deposit/withdraw DBUSDC → VLP, MM allocation stats |
+| `/markets` | Market list (category, expiry, status) |
+| `/markets/[id]` | Order book, YES/NO tabs, split/merge, redeem |
+| `/vault` | Deposit/withdraw DBUSDC <-> VLP |
 | `/portfolio` | YES/NO balances per market |
-| `/agents` | Creator / Maker / Resolver decision feed |
-| `/settings` | Create/revoke `agent_policy` shared object |
-| `/leaderboard` | Predict-server volume (legacy) |
-| `/legacy/predict/trade` | DeepBook Predict mint + redeem |
-| `/legacy/predict/vault` | PLP supply/withdraw (dUSDC) |
-| `/trade` | Redirects to `/legacy/predict/trade` |
+| `/agents` | Decision feed for all agents |
 
 ## Indexer & agent API (`:3001`)
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Service status |
-| `GET /markets` | All markets (registry + SQLite cache) |
-| `GET /markets/:id` | Market metadata, expiry, outcome, pool_id |
+| `GET /markets` | All markets (from SQLite) |
+| `GET /markets/:id` | Market metadata, expiry, outcome, DeepBook pool info |
 | `GET /markets/:id/book` | L2 bids/asks, spread, mid price |
-| `GET /markets/:id/trades` | Recent fills |
-| `GET /portfolio/:address` | YES/NO balances per market |
-| `GET /vault/summary` | VLP TVL + agent allocation |
-| `GET /decisions` | Agent decision log (SQLite) |
+| `GET /decisions` | Agent decision log |
 | `GET /stats` | Agent action counts |
-
-Demo data is stored in `apps/agents/data/markets.db`.
 
 ## Project structure
 
 ```
 apps/
-  web/                 Next.js frontend (CLOB primary + legacy Predict)
+  web/                 Next.js frontend
   agents/              Autonomous agents + markets indexer API
-    src/agents/        market-creator, market-maker, market-resolver, risk-monitor
-    src/agents/legacy/ market-strategist, plp-manager, redeem-keeper
-    src/markets/       SQLite store + HTTP routes
+    src/agents/
+      market-creator.ts   creates markets + DeepBook pools + referrals
+      market-maker.ts     DeepBook bid/ask liquidity (per-market pool)
+      market-resolver.ts  LLM oracle + BTC fallback
+      referral-keeper.ts   sweeps DeepBook referral rewards to treasury
+    src/markets/
+      store.ts            SQLite market store (id, pool_key, referral_id, ...)
 packages/
-  contracts/           Move: vault, clob, market_factory, outcome_tokens, settlement, registry, agent_policy
-  sdk/                 @suipredict/sdk
-    src/deepbook/      DeepBook V3 constants + client wrappers
-    src/markets/       Factory PTBs, indexer client, types
-    src/predict/       Legacy Predict re-exports
-docs/                  architecture.md, demo-script.md, agent-prompts.md
+  contracts/
+    sources/
+      prediction_market.move   DeepBook V3 integrated market (replaces CLOB)
+      vault.move              VLP vault
+      registry.move           Market registry
+      types.move              Market struct
+  sdk/
+    src/
+      prediction-market-client.ts  PTB builders (create, mint, redeem, resolve, referral)
+      deepbook/                    DeepBook V3 client (order book, place orders)
+      markets/                     Market types + store client
+docs/
+  architecture.md     Sequence diagrams, contract interactions
+  demo-script.md      Judge walkthrough
+  agent-prompts.md    Agent prompt engineering
 ```
 
 ## Environment variables
 
+Full list in [.env.example](.env.example). Key variables:
+
 | Variable | Description |
 |----------|-------------|
+| `PREDICT_MARKET_PACKAGE_ID` | Deployed `prediction_market.move` package |
+| `FEE_VAULT_ID` | FeeVault object ID |
+| `REFERRAL_TREASURY_ADDRESS` | Protocol treasury for referral rewards |
 | `AGENT_PRIVATE_KEY` | Agent wallet (server-side only) |
-| `MARKET_REGISTRY_ID` | Shared `MarketRegistry` object |
-| `VAULT_OBJECT_ID` | Shared `ProtocolVault` object |
-| `VLP_TREASURY_CAP_ID` | VLP treasury cap (for vault init) |
-| `MARKET_PACKAGE_ID` | Published Move package ID |
-| `AGENT_POLICY_ID` | Shared `AgentPolicy` object (from Settings) |
-| `AGENT_MANAGER_ID` | PredictManager ID (legacy agents) |
-| `ENABLE_LEGACY_PREDICT_AGENTS` | `true` to run Predict strategist/PLP/redeem |
-| `OPENAI_API_KEY` | LLM for Creator / Resolver / Strategist |
-| `MM_SPREAD_THRESHOLD_BPS` | Market maker quote threshold (default `400`) |
+| `DEEPBOOK_PACKAGE_ID` | DeepBook V3 package (default: `0xdee9`) |
+| `DEEPBOOK_REGISTRY_ID` | DeepBook Registry (default: `0xe0ce`) |
+| `OPENAI_API_KEY` | LLM for MarketResolver |
+| `MM_SPREAD_THRESHOLD_BPS` | Market maker spread threshold (default `400`) |
 | `MAX_ACTIVE_MARKETS` | Creator cap (default `5`) |
-| `NEXT_PUBLIC_AGENTS_URL` | Indexer base URL (default `http://localhost:3001`) |
-| `NEXT_PUBLIC_VAULT_OBJECT_ID` | Vault ID for frontend deposits |
-
-Full list: [.env.example](.env.example).
-
-## Deployed contracts (testnet)
-
-| Contract | Address |
-|----------|---------|
-| Agent Policy + Markets Package (v2) | `0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8` |
-| DeepBook Predict Package | `0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138` |
-| Predict Object | `0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a` |
-| DeepBook V3 Package | `0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c` |
-| DBUSDC | `0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC` |
-| dUSDC (Predict) | `0xe95040085976bfd54a1a07225cd46c8a2b4e8e2b6732f140a0fc49850ba73e1a::dusdc::DUSDC` |
-
-> Create a **new** `AgentPolicy` via **Settings** after the v2 upgrade — old owner-owned policies cannot be used by autonomous agents.
 
 ## Development
 
 ```bash
-pnpm build              # Build all packages
+pnpm build              # Build all packages (Move + SDK + agents + web)
 pnpm dev                # Turbo dev (web + agents)
-pnpm contracts:build    # Move compile
-pnpm contracts:test     # Move unit tests (5 passing)
-pnpm lint               # Lint all apps
-pnpm smoke-test         # Legacy Predict E2E
+pnpm contracts:build    # Move compile only
+pnpm contracts:test     # Move unit tests
 ```
+
+**Build status:** 0 errors across Move, SDK, and agents packages.
 
 ## Hackathon submission
 
@@ -266,9 +201,8 @@ pnpm smoke-test         # Legacy Predict E2E
 - **Demo script:** [docs/demo-script.md](docs/demo-script.md)
 - **Architecture:** [docs/architecture.md](docs/architecture.md)
 - **Agent prompts:** [docs/agent-prompts.md](docs/agent-prompts.md)
-- **Pitch deck:** [docs/pitch-deck.md](docs/pitch-deck.md)
 
-**Judge narrative:** Polymarket-style P2P order book with autonomous agents creating markets, quoting liquidity from a user vault, and resolving outcomes — plus legacy DeepBook Predict integration showing protocol breadth.
+**Judge narrative:** Polymarket-style prediction market on Sui using DeepBook V3 as the CLOB backend. A single `prediction_market.move` contract handles market creation, YES/NO split/merge, DeepBook pool creation with referral tracking, and mint/redeem with fee harvesting. Four autonomous agents manage the full lifecycle: Creator deploys markets, Market Maker quotes the order book, Resolver determines outcomes, and Referral Keeper sweeps trading fee rebates to treasury.
 
 ## License
 
