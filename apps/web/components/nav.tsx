@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ConnectButton } from "@mysten/dapp-kit-react/ui";
+import { ConnectModal } from "@/components/ConnectModal";
 
 const links = [
   { href: "/", label: "Home" },
@@ -45,7 +45,7 @@ export function Nav() {
           })}
         </nav>
         <div className="flex items-center gap-2">
-          <ConnectButton />
+          <ConnectModal />
         </div>
       </div>
     </header>
