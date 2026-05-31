@@ -41,9 +41,14 @@ export default async function HomePage() {
   const active = markets.filter((m) => m.status === "active").length;
 
   return (
-    <div className="space-y-12 pb-12">
-      {/* 1. Massive Hero Section */}
-      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-8 sm:p-16 backdrop-blur-xl">
+    <div className="space-y-6 sm:space-y-12 pb-6 sm:pb-12">
+      {/* 1. Mobile Greeting (Hidden on Desktop) */}
+      <div className="sm:hidden flex items-center justify-between mb-2">
+        <h1 className="text-2xl font-bold text-white">GM, Trader 🔥</h1>
+      </div>
+
+      {/* 2. Massive Hero Section (Hidden on Mobile) */}
+      <section className="hidden sm:block relative overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-8 sm:p-16 backdrop-blur-xl">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-violet-900/40 via-[#0B0E14]/80 to-[#0B0E14] -z-10" />
         <div className="absolute -top-40 -right-40 h-[500px] w-[500px] rounded-full bg-cyan-600/20 blur-[100px] -z-10" />
         
@@ -76,8 +81,8 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* 2. Platform Stats */}
-      <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* 3. Platform Stats (Hidden on smaller screens to prioritize Gamification) */}
+      <section className="hidden lg:grid grid-cols-4 gap-4">
         <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-6 transition-all hover:-translate-y-1 hover:border-emerald-500/30 hover:shadow-[0_0_30px_rgba(16,185,129,0.1)]">
           <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -119,7 +124,7 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* 3. Gamification Row */}
+      {/* 4. Gamification Row (Prioritized on Mobile) */}
       <section className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-1">
           <StreakProfile />
@@ -129,8 +134,8 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* 4. Featured Markets Bento Grid */}
-      <section className="space-y-6">
+      {/* 5. Featured Markets Bento Grid */}
+      <section className="space-y-4 sm:space-y-6">
         <div className="flex items-end justify-between gap-3">
           <div>
             <h2 className="text-2xl font-bold tracking-tight text-white">Featured Markets</h2>
