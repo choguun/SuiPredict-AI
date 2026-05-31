@@ -76,9 +76,9 @@ export function ConnectModal() {
 
       {/* Modal Overlay */}
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
           {/* Modal Content */}
-          <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] shadow-2xl shadow-black/80 animate-in zoom-in-95 duration-200">
+          <div className="relative w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-3xl border border-white/10 bg-[#11141d] shadow-2xl shadow-black/80 animate-in zoom-in-95 duration-200 hide-scrollbar">
             {/* Background Gradients */}
             <div className="absolute -top-32 -right-32 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
             <div className="absolute -bottom-32 -left-32 h-64 w-64 rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
