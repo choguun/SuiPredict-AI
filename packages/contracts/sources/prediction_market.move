@@ -1,8 +1,7 @@
 /// DeepBook V3-integrated prediction market.
 /// Uses DeepBook Pool<YES<Q>, Q> as the orderbook CLOB.
 /// YES/NO are TreasuryCap-backed Sui coins with 1:1 collateral backing.
-#[allow(deprecated_usage)]
-#[allow(unused_const)]
+#[allow(deprecated_usage, unused_const, lint(self_transfer))]
 module suipredict::prediction_market;
 
 // ============================================================
@@ -626,7 +625,7 @@ public fun cancel_orders<Q>(
 
 /// Withdraw settled amounts from the pool back to BalanceManager.
 public fun withdraw_settled<Q>(
-    market: &mut PredictionMarket<Q>,
+    _market: &mut PredictionMarket<Q>,
     pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     ctx: &mut TxContext,
