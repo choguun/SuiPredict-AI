@@ -11,3 +11,18 @@ packages/contracts/Published.toml
 **/data/*.db
 /skills-main
 plan.md
+
+# DeepBook dependencies (build artifacts)
+deps/deepbookv3/**/build/
+deps/deepbookv3-self-hosted/**/build/
+
+# DeepBook cloned repo (use as submodule or clone separately)
+deps/deepbookv3/
+deps/deepbookv3-self-hosted/
+
+# Sui build outputs
+*.mv
+!*.move
+
+# Local deployment outputs
+.env.deployed*
