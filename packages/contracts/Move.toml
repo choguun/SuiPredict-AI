@@ -5,12 +5,8 @@ edition = "2024.beta"
 
 [dependencies]
 # Use the ORIGINAL deepbookv3 (Mysten Labs, no local modifications)
-# This should match what's deployed on testnet at 0x2fec... or 0x74cd...
 deepbook = { local = "../../deps/deepbookv3/packages/deepbook" }
 token = { local = "../../deps/deepbookv3/packages/token" }
-
-# Override to avoid version conflict
-_token = { local = "../../deps/deepbookv3/packages/token", override = true }
 
 [addresses]
 suipredict = "0x0"

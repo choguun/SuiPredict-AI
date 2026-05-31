@@ -427,24 +427,28 @@ export default function MarketDetailPage() {
         Back to markets
       </Link>
 
-      <div className="rounded-lg border border-white/10 bg-[#11141d] p-5 sm:p-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-8 shadow-2xl shadow-black/40">
+        {/* Background Gradients */}
+        <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
+        <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
+        
+        <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Badge variant={market.status === "active" ? "success" : "warning"}>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Badge variant={market.status === "active" ? "success" : "warning"} className="px-3 py-1 text-sm">
                 {market.status}
               </Badge>
-              <span className="text-xs font-medium text-zinc-500">
+              <span className="rounded-full bg-white/5 px-3 py-1 text-xs font-semibold text-zinc-300">
                 {market.category}
               </span>
-              <span className="text-xs text-zinc-600">
+              <span className="text-xs font-medium text-zinc-400">
                 Ends {formatDate(market.expiry_ms)}
               </span>
             </div>
-            <h1 className="max-w-4xl text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            <h1 className="max-w-4xl text-3xl font-bold tracking-tight text-white sm:text-4xl leading-tight mb-4">
               {market.title}
             </h1>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-zinc-400">
+            <p className="max-w-3xl text-base leading-relaxed text-zinc-400">
               {market.description}
             </p>
           </div>

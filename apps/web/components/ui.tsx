@@ -9,14 +9,17 @@ export function Card({
 }) {
   return (
     <div
-      className={`rounded-lg border border-white/10 bg-[#11141d]/90 p-4 shadow-sm shadow-black/20 ${className}`}
+      className={`relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-5 sm:p-6 shadow-xl shadow-black/40 ${className}`}
     >
-      {title && (
-        <h2 className="mb-3 text-xs font-semibold uppercase text-zinc-500">
-          {title}
-        </h2>
-      )}
-      {children}
+      <div className="absolute inset-0 bg-gradient-to-b from-white/[0.04] to-transparent pointer-events-none" />
+      <div className="relative z-10">
+        {title && (
+          <h2 className="mb-4 text-xs font-bold uppercase tracking-widest text-zinc-500">
+            {title}
+          </h2>
+        )}
+        {children}
+      </div>
     </div>
   );
 }
