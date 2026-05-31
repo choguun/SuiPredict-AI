@@ -33,9 +33,11 @@ export function Stat({ label, value }: { label: string; value: string }) {
 export function Badge({
   children,
   variant = "default",
+  className = "",
 }: {
   children: React.ReactNode;
   variant?: "default" | "success" | "warning";
+  className?: string;
 }) {
   const colors = {
     default: "border border-white/10 bg-white/[0.06] text-zinc-300",
@@ -44,7 +46,7 @@ export function Badge({
   };
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${colors[variant]}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${colors[variant]} ${className}`}
     >
       {children}
     </span>

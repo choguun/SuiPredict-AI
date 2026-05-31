@@ -5,9 +5,12 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getPortfolio, listMarkets, type PortfolioPosition } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { EmptyState } from "@/components/EmptyState";
+import { useRouter } from "next/navigation";
 
 export default function PortfolioPage() {
   const account = useCurrentAccount();
+  const router = useRouter();
   const [positions, setPositions] = useState<PortfolioPosition[]>([]);
   const [markets, setMarkets] = useState(0);
 
@@ -28,9 +31,10 @@ export default function PortfolioPage() {
 
   if (!account) {
     return (
-      <Card>
-        <p className="text-zinc-400">Connect wallet to view portfolio.</p>
-      </Card>
+      <EmptyState
+        title="Wallet Disconnected"
+        description="Connect your Sui wallet to view your active prediction positions."
+      />
     );
   }
 
@@ -45,14 +49,12 @@ export default function PortfolioPage() {
       </div>
 
       {positions.length === 0 ? (
-        <Card>
-          <p className="text-zinc-400">
-            No positions yet. Split collateral on a market or place orders.
-          </p>
-          <Link href="/markets" className="mt-3 inline-block text-cyan-400 text-sm">
-            Browse markets →
-          </Link>
-        </Card>
+        <EmptyState
+          title="No Open Positions"
+          description="You don't have any active YES/NO positions. Start trading to build your portfolio."
+          actionLabel="Browse Markets"
+          onAction={() => router.push("/markets")}
+        />
       ) : (
         <div className="grid gap-4">
           {positions.map((p) => (

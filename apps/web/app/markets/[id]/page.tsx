@@ -29,6 +29,8 @@ import {
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
 import { Badge, Card, Stat } from "@/components/ui";
+import { toast } from "sonner";
+import { Tooltip } from "@/components/Tooltip";
 
 function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
@@ -74,8 +76,8 @@ export default function MarketDetailPage() {
   const [orderSide, setOrderSide] = useState<"buy" | "sell">("buy");
   const [price, setPrice] = useState(0.5);
   const [qty, setQty] = useState(1);
-  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshCounter, setRefreshCounter] = useState(0);
   const [position, setPosition] = useState({ yes: 0, no: 0 });
   const [balanceManagerId, setBalanceManagerId] = useState("");
   const [tradeCapId, setTradeCapId] = useState("");
@@ -110,7 +112,7 @@ export default function MarketDetailPage() {
         if (row) setPosition({ yes: row.yes, no: row.no });
       })
       .catch(() => {});
-  }, [account, marketId, status]);
+  }, [account, marketId, refreshCounter]);
 
   useEffect(() => {
     if (!account) return;
@@ -204,7 +206,7 @@ export default function MarketDetailPage() {
   async function splitCollateral() {
     if (!account || !client || !market) return;
     setLoading(true);
-    setStatus("Splitting DBUSDC → YES + NO…");
+    const toastId = toast.loading("Splitting DBUSDC → YES + NO…");
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
@@ -214,9 +216,10 @@ export default function MarketDetailPage() {
       if (!coin) throw new Error("No DBUSDC — request from DeepBook testnet form");
       const tx = buildSplitCollateralTx(market.id, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Split OK: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Split OK: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Split failed");
+      toast.error(e instanceof Error ? e.message : "Split failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -225,14 +228,15 @@ export default function MarketDetailPage() {
   async function mergeCollateral() {
     if (!account || !client || !market) return;
     setLoading(true);
-    setStatus("Merging YES + NO → DBUSDC…");
+    const toastId = toast.loading("Merging YES + NO → DBUSDC…");
     try {
       const amount = BigInt(Math.floor(qty * 1_000_000));
       const tx = buildMergeCollateralTx(market.id, amount);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Merge OK: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Merge OK: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Merge failed");
+      toast.error(e instanceof Error ? e.message : "Merge failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -243,10 +247,10 @@ export default function MarketDetailPage() {
     if (!useDeepBookRoute && !market.order_book_id) return;
     const orderBookId = market.order_book_id;
     setLoading(true);
-    setStatus(
+    const toastId = toast.loading(
       useDeepBookRoute
         ? "Placing DeepBook V3 limit order..."
-        : "Placing limit order...",
+        : "Placing limit order..."
     );
     try {
       let tx;
@@ -307,10 +311,11 @@ export default function MarketDetailPage() {
         }
       }
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Order placed: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Order placed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       await refresh();
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Order failed");
+      toast.error(e instanceof Error ? e.message : "Order failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -319,7 +324,7 @@ export default function MarketDetailPage() {
   async function createBalanceManager() {
     if (!account || !client || !deepBookMarket) return;
     setLoading(true);
-    setStatus("Creating DeepBook V3 BalanceManager...");
+    const toastId = toast.loading("Creating DeepBook V3 BalanceManager...");
     try {
       const dbClient = createPredictionDeepBookClient({
         client,
@@ -328,11 +333,13 @@ export default function MarketDetailPage() {
       });
       const tx = buildDeepBookCreateBalanceManagerTx(dbClient, account.address);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(
-        `BalanceManager created: ${txDigest(r).slice(0, 16)}... Paste its object ID below.`,
+      toast.success(
+        `BalanceManager created: ${txDigest(r).slice(0, 16)}...`, { id: toastId }
       );
+      // Wait a moment for indexer before refreshing
+      setTimeout(() => setRefreshCounter(c => c + 1), 2000);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "BalanceManager creation failed");
+      toast.error(e instanceof Error ? e.message : "BalanceManager creation failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -341,7 +348,7 @@ export default function MarketDetailPage() {
   async function depositToBalanceManager() {
     if (!account || !client || !deepBookMarket || !balanceManagerId) return;
     setLoading(true);
-    setStatus("Depositing to DeepBook V3 BalanceManager...");
+    const toastId = toast.loading("Depositing to DeepBook V3 BalanceManager...");
     try {
       const dbClient = createPredictionDeepBookClient({
         client,
@@ -356,9 +363,9 @@ export default function MarketDetailPage() {
         depositAmount,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Deposit OK: ${txDigest(r).slice(0, 16)}...`);
+      toast.success(`Deposit OK: ${txDigest(r).slice(0, 16)}...`, { id: toastId });
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Deposit failed");
+      toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -367,7 +374,7 @@ export default function MarketDetailPage() {
   async function withdrawSettledDeepBook() {
     if (!account || !client || !deepBookMarket || !balanceManagerId) return;
     setLoading(true);
-    setStatus("Withdrawing settled DeepBook V3 balances...");
+    const toastId = toast.loading("Withdrawing settled DeepBook V3 balances...");
     try {
       const dbClient = createPredictionDeepBookClient({
         client,
@@ -378,9 +385,10 @@ export default function MarketDetailPage() {
       });
       const tx = buildDeepBookWithdrawSettledTx(dbClient, deepBookMarket.poolKey);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Settled balances withdrawn: ${txDigest(r).slice(0, 16)}...`);
+      toast.success(`Settled balances withdrawn: ${txDigest(r).slice(0, 16)}...`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Withdraw settled failed");
+      toast.error(e instanceof Error ? e.message : "Withdraw settled failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -389,12 +397,14 @@ export default function MarketDetailPage() {
   async function redeemWinner() {
     if (!account || !market) return;
     setLoading(true);
+    const toastId = toast.loading("Redeeming...");
     try {
       const tx = buildRedeemWinnerTx(market.id);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Redeemed: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Redeemed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Redeem failed");
+      toast.error(e instanceof Error ? e.message : "Redeem failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -459,51 +469,83 @@ export default function MarketDetailPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card title="YES order book" className="order-2 lg:order-1">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="overflow-hidden rounded-lg border border-white/10">
-              <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
-                <span>Bids</span>
-                <span className="text-right">Shares</span>
-              </div>
-              {(book?.bids ?? []).slice(0, 8).map((l) => (
-                <div
-                  key={`b-${l.price_bps}`}
-                  className="grid grid-cols-2 px-3 py-2 text-sm text-emerald-300 odd:bg-white/[0.02]"
-                >
-                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
-                  <span className="text-right">{formatShares(l.quantity)}</span>
-                </div>
-              ))}
-              {(book?.bids ?? []).length === 0 && (
-                <p className="px-3 py-6 text-center text-sm text-zinc-500">
-                  No bids yet
-                </p>
-              )}
-            </div>
-            <div className="overflow-hidden rounded-lg border border-white/10">
-              <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
-                <span>Asks</span>
-                <span className="text-right">Shares</span>
-              </div>
-              {(book?.asks ?? []).slice(0, 8).map((l) => (
-                <div
-                  key={`a-${l.price_bps}`}
-                  className="grid grid-cols-2 px-3 py-2 text-sm text-rose-300 odd:bg-white/[0.02]"
-                >
-                  <span>{(l.price_bps / 100).toFixed(1)}¢</span>
-                  <span className="text-right">{formatShares(l.quantity)}</span>
-                </div>
-              ))}
-              {(book?.asks ?? []).length === 0 && (
-                <p className="px-3 py-6 text-center text-sm text-zinc-500">
-                  No asks yet
-                </p>
-              )}
-            </div>
+            {(() => {
+              const bids = (book?.bids ?? []).slice(0, 8);
+              const asks = (book?.asks ?? []).slice(0, 8);
+              const maxBidQty = Math.max(...bids.map(l => Number(l.quantity)), 0);
+              const maxAskQty = Math.max(...asks.map(l => Number(l.quantity)), 0);
+              const maxVolume = Math.max(maxBidQty, maxAskQty) || 1;
+
+              return (
+                <>
+                  <div className="overflow-hidden rounded-lg border border-white/10">
+                    <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                      <span>Bids</span>
+                      <span className="text-right">Shares</span>
+                    </div>
+                    {bids.map((l) => (
+                      <div
+                        key={`b-${l.price_bps}`}
+                        className="relative grid grid-cols-2 px-3 py-2 text-sm text-emerald-300 group z-0"
+                      >
+                        <div 
+                          className="absolute inset-y-0 right-0 bg-emerald-500/10 -z-10 transition-all group-hover:bg-emerald-500/20" 
+                          style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
+                        />
+                        <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                        <span className="text-right">{formatShares(l.quantity)}</span>
+                      </div>
+                    ))}
+                    {bids.length === 0 && (
+                      <p className="px-3 py-6 text-center text-sm text-zinc-500">
+                        No bids yet
+                      </p>
+                    )}
+                  </div>
+                  <div className="overflow-hidden rounded-lg border border-white/10">
+                    <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                      <span>Asks</span>
+                      <span className="text-right">Shares</span>
+                    </div>
+                    {asks.map((l) => (
+                      <div
+                        key={`a-${l.price_bps}`}
+                        className="relative grid grid-cols-2 px-3 py-2 text-sm text-rose-300 group z-0"
+                      >
+                        <div 
+                          className="absolute inset-y-0 right-0 bg-rose-500/10 -z-10 transition-all group-hover:bg-rose-500/20" 
+                          style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
+                        />
+                        <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                        <span className="text-right">{formatShares(l.quantity)}</span>
+                      </div>
+                    ))}
+                    {asks.length === 0 && (
+                      <p className="px-3 py-6 text-center text-sm text-zinc-500">
+                        No asks yet
+                      </p>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
           <div className="mt-4 grid grid-cols-3 gap-3 border-t border-white/10 pt-4">
-            <Stat label="Mid YES" value={formatCents(yesMid)} />
-            <Stat label="Implied NO" value={formatCents(impliedNo)} />
-            <Stat label="Spread" value={`${book?.spread_bps ?? 0} bps`} />
+            <Tooltip content="The current mid-price for YES shares">
+              <div className="cursor-help">
+                <Stat label="Mid YES" value={formatCents(yesMid)} />
+              </div>
+            </Tooltip>
+            <Tooltip content="The complement price calculated from the YES order book (100¢ - Mid YES)">
+              <div className="cursor-help">
+                <Stat label="Implied NO" value={formatCents(impliedNo)} />
+              </div>
+            </Tooltip>
+            <Tooltip content="The gap between the lowest ask and highest bid">
+              <div className="cursor-help">
+                <Stat label="Spread" value={`${book?.spread_bps ?? 0} bps`} />
+              </div>
+            </Tooltip>
           </div>
         </Card>
 
@@ -576,7 +618,9 @@ export default function MarketDetailPage() {
               </span>
             </div>
             <div className="mt-2 flex justify-between gap-3 text-zinc-400">
-              <span>Capital needed</span>
+              <Tooltip content="The total DBUSDC balance needed to place this order">
+                <span className="cursor-help underline decoration-white/20 underline-offset-4">Capital needed</span>
+              </Tooltip>
               <span className="font-medium text-white">
                 ${capitalRequired.toFixed(2)} DBUSDC
               </span>
@@ -606,10 +650,10 @@ export default function MarketDetailPage() {
               (!useDeepBookRoute && market.id.startsWith("demo-"))
             }
             onClick={placeOrder}
-            className={`min-h-12 w-full rounded-md text-sm font-semibold text-zinc-950 transition disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`min-h-12 w-full rounded-lg text-sm font-semibold text-white shadow-lg transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:scale-100 ${
               orderSide === "buy"
-                ? "bg-emerald-400 hover:bg-emerald-300"
-                : "bg-rose-400 hover:bg-rose-300"
+                ? "bg-gradient-to-r from-emerald-500 to-teal-400 shadow-emerald-900/30 hover:shadow-emerald-900/50"
+                : "bg-gradient-to-r from-rose-500 to-orange-400 shadow-rose-900/30 hover:shadow-rose-900/50"
             }`}
           >
             {actionLabel}
@@ -624,81 +668,80 @@ export default function MarketDetailPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Card title="DeepBook V3">
-          <div className="space-y-3">
-            <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-xs leading-5 text-zinc-400">
-              {hasDeepBookPool ? (
-                <>
-                  <p className="text-zinc-300">Pool key: {deepBookPoolKey}</p>
-                  <p className="break-all">Pool ID: {deepBookPoolId}</p>
-                  <p className="break-all">YES coin: {deepBookBaseCoinType}</p>
-                </>
-              ) : (
-                <p>
-                  Set NEXT_PUBLIC_DEEPBOOK_POOL_ID and
-                  NEXT_PUBLIC_DEEPBOOK_YES_COIN_TYPE, or return these fields from
-                  the market indexer.
+        <Card title="DeepBook V3 Account">
+          <div className="space-y-4 mt-2">
+            {!balanceManagerId ? (
+              <div className="rounded-lg border border-white/10 bg-black/20 p-5 text-center">
+                <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500/10 text-cyan-400">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                </div>
+                <h3 className="mb-1 font-medium text-white">No Trading Account</h3>
+                <p className="mb-4 text-xs leading-5 text-zinc-400">
+                  You need a DeepBook BalanceManager to trade. Click below to create one instantly.
                 </p>
-              )}
-            </div>
-            <button
-              type="button"
-              disabled={loading || !account || !deepBookMarket}
-              onClick={createBalanceManager}
-              className="min-h-11 w-full rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-50"
-            >
-              Create BalanceManager
-            </button>
-            <input
-              type="text"
-              value={balanceManagerId}
-              onChange={(e) => setBalanceManagerId(e.target.value.trim())}
-              placeholder="BalanceManager object ID"
-              className="w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
-            />
-            <input
-              type="text"
-              value={tradeCapId}
-              onChange={(e) => setTradeCapId(e.target.value.trim())}
-              placeholder="TradeCap ID (optional)"
-              className="w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
-            />
-            <div className="grid grid-cols-[1fr_120px] gap-2">
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={depositAmount}
-                onChange={(e) => setDepositAmount(Math.max(0, Number(e.target.value)))}
-                className="rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
-              />
-              <select
-                value={depositAsset}
-                onChange={(e) => setDepositAsset(e.target.value as "quote" | "base")}
-                className="rounded-md border border-white/10 bg-black/20 px-3 py-3 text-sm text-white outline-none transition focus:border-emerald-400/70"
-              >
-                <option value="quote">DBUSDC</option>
-                <option value="base">YES</option>
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                disabled={loading || !account || !deepBookMarket || !balanceManagerId}
-                onClick={depositToBalanceManager}
-                className="min-h-11 rounded-md bg-emerald-400 px-4 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
-              >
-                Deposit
-              </button>
-              <button
-                type="button"
-                disabled={loading || !account || !deepBookMarket || !balanceManagerId}
-                onClick={withdrawSettledDeepBook}
-                className="min-h-11 rounded-md border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-50"
-              >
-                Settle
-              </button>
-            </div>
+                <button
+                  type="button"
+                  disabled={loading || !account || !deepBookMarket}
+                  onClick={createBalanceManager}
+                  className="min-h-11 w-full rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
+                >
+                  Setup Trading Account
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+                    <span className="text-sm font-medium text-emerald-300">Account Ready</span>
+                  </div>
+                  <span className="text-xs font-mono text-zinc-500">{balanceManagerId.slice(0, 8)}...{balanceManagerId.slice(-4)}</span>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Deposit Funds</label>
+                  <div className="grid grid-cols-[1fr_100px] gap-2">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={depositAmount}
+                      onChange={(e) => setDepositAmount(Math.max(0, Number(e.target.value)))}
+                      className="rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/50"
+                    />
+                    <select
+                      value={depositAsset}
+                      onChange={(e) => setDepositAsset(e.target.value as "quote" | "base")}
+                      className="rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/50"
+                    >
+                      <option value="quote">DBUSDC</option>
+                      <option value="base">YES</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                    onClick={depositToBalanceManager}
+                    className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
+                  >
+                    Deposit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                    onClick={withdrawSettledDeepBook}
+                    className="min-h-11 rounded-lg border border-white/10 bg-black/20 px-4 text-sm font-semibold text-zinc-300 transition-all hover:bg-white/5 disabled:opacity-50"
+                  >
+                    Settle Funds
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
 
@@ -706,22 +749,22 @@ export default function MarketDetailPage() {
           <p className="mb-4 text-sm leading-6 text-zinc-400">
             Split 1 DBUSDC → 1 YES + 1 NO. Merge pair back to DBUSDC.
           </p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 mt-2">
             <button
               type="button"
               disabled={loading || !account || market.id.startsWith("demo-")}
               onClick={splitCollateral}
-              className="min-h-11 rounded-md bg-white px-4 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200 disabled:opacity-50"
+              className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
             >
-              Split
+              Split to Shares
             </button>
             <button
               type="button"
               disabled={loading || !account || market.id.startsWith("demo-")}
               onClick={mergeCollateral}
-              className="min-h-11 rounded-md border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-50"
+              className="min-h-11 rounded-lg border border-white/10 bg-black/20 px-4 text-sm font-semibold text-zinc-300 transition-all hover:bg-white/5 disabled:opacity-50"
             >
-              Merge
+              Merge to USDC
             </button>
           </div>
         </Card>
@@ -745,11 +788,6 @@ export default function MarketDetailPage() {
         </Card>
       </div>
 
-      {status && (
-        <div className="rounded-lg border border-white/10 bg-[#11141d] p-4">
-          <p className="break-words font-mono text-sm text-emerald-300">{status}</p>
-        </div>
-      )}
     </div>
   );
 }

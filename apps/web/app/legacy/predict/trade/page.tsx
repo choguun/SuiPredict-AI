@@ -13,7 +13,6 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   buildCreateManagerTx,
-  buildRedeemTx,
   getManagerForOwner,
   getActiveOracles,
   getManagerPositions,
@@ -22,8 +21,10 @@ import {
   strikeToDollars,
   type OracleInfo,
   type PositionSummary,
+  predict,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { toast } from "sonner";
 
 export default function TradePage() {
   const account = useCurrentAccount();
@@ -35,8 +36,8 @@ export default function TradePage() {
   const [direction, setDirection] = useState<"up" | "down">("up");
   const [quantity, setQuantity] = useState(1);
   const [managerId, setManagerId] = useState("");
-  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshCounter, setRefreshCounter] = useState(0);
   const [positions, setPositions] = useState<PositionSummary[]>([]);
   const [settledOracleIds, setSettledOracleIds] = useState<Set<string>>(new Set());
 
@@ -52,7 +53,7 @@ export default function TradePage() {
         ),
       )
       .catch(console.error);
-  }, [managerId, status]);
+  }, [managerId, refreshCounter]);
 
   useEffect(() => {
     getActiveOracles()
@@ -77,7 +78,7 @@ export default function TradePage() {
   async function createManager() {
     if (!account || !client) return;
     setLoading(true);
-    setStatus("Creating PredictManager...");
+    const toastId = toast.loading("Creating PredictManager...");
     try {
       const tx = buildCreateManagerTx();
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
@@ -92,11 +93,11 @@ export default function TradePage() {
         const id = await getManagerForOwner(account.address);
         if (id) {
           setManagerId(id);
-          setStatus(`Manager: ${id.slice(0, 12)}...`);
+          toast.success(`Manager created: ${id.slice(0, 12)}...`, { id: toastId });
         }
       }
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Error: ${e instanceof Error ? e.message : String(e)}`, { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -105,7 +106,7 @@ export default function TradePage() {
   async function mintPosition() {
     if (!account || !client || !managerId || !oracle) return;
     setLoading(true);
-    setStatus("Building mint transaction...");
+    const toastId = toast.loading("Building mint transaction...");
     try {
       const tx = new Transaction();
       const coins = await client.core.listCoins({
@@ -157,9 +158,10 @@ export default function TradePage() {
         result.$kind === "Transaction"
           ? result.Transaction.digest
           : "unknown";
-      setStatus(`Minted! Tx: ${digest.slice(0, 16)}...`);
+      toast.success(`Minted! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Error: ${e instanceof Error ? e.message : String(e)}`, { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -168,11 +170,11 @@ export default function TradePage() {
   async function redeemPosition(pos: PositionSummary) {
     if (!account || !managerId) return;
     setLoading(true);
-    setStatus("Redeeming settled position...");
+    const toastId = toast.loading("Redeeming settled position...");
     try {
       const strikeDollars = strikeToDollars(BigInt(pos.strike));
       const quantityDollars = pos.quantity / 1e6;
-      const tx = buildRedeemTx({
+      const tx = predict.buildRedeemTx({
         managerId,
         oracleId: pos.oracle_id,
         expiry: BigInt(pos.expiry),
@@ -186,9 +188,10 @@ export default function TradePage() {
         result.$kind === "Transaction"
           ? result.Transaction.digest
           : "unknown";
-      setStatus(`Redeemed! Tx: ${digest.slice(0, 16)}...`);
+      toast.success(`Redeemed! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Error: ${e instanceof Error ? e.message : String(e)}`, { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -299,11 +302,6 @@ export default function TradePage() {
             >
               {loading ? "Submitting..." : "Mint Position"}
             </button>
-            {status && (
-              <div className="rounded-lg border border-white/10 bg-black/20 p-3 mt-3">
-                <p className="text-xs font-mono text-cyan-400 break-all">{status}</p>
-              </div>
-            )}
           </div>
         </Card>
       </div>

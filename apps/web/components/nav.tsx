@@ -48,27 +48,6 @@ export function Nav() {
           <ConnectButton />
         </div>
       </div>
-      <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 pb-3 md:hidden">
-        {links.map((l) => {
-          const active =
-            pathname === l.href ||
-            (l.href === "/markets" && pathname.startsWith("/markets/")) ||
-            (l.href.startsWith("/legacy") && pathname.startsWith("/legacy"));
-          return (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={`shrink-0 rounded-md px-3 py-1.5 text-sm font-medium ${
-                active
-                  ? "bg-white text-zinc-950"
-                  : "bg-white/[0.04] text-zinc-400"
-              }`}
-            >
-              {l.label}
-            </Link>
-          );
-        })}
-      </nav>
     </header>
   );
 }

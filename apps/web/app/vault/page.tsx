@@ -13,6 +13,8 @@ import {
   VLP_TYPE,
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
+import { EmptyState } from "@/components/EmptyState";
+import { toast } from "sonner";
 
 function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
@@ -35,8 +37,8 @@ export default function VaultPage() {
   const [amount, setAmount] = useState(10);
   const [vlpBalance, setVlpBalance] = useState(0);
   const [vlpCoinId, setVlpCoinId] = useState("");
-  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   async function refresh() {
     const s = await getVaultSummaryClob();
@@ -58,14 +60,15 @@ export default function VaultPage() {
         setVlpCoinId(objects[0]?.objectId ?? "");
       })
       .catch(() => {});
-  }, [account, client, status]);
+  }, [account, client, refreshCounter]);
 
   async function deposit() {
     if (!account || !client || !VAULT_ID) {
-      setStatus("Set NEXT_PUBLIC_VAULT_OBJECT_ID for on-chain vault");
+      toast.error("Set NEXT_PUBLIC_VAULT_OBJECT_ID for on-chain vault");
       return;
     }
     setLoading(true);
+    const toastId = toast.loading("Depositing...");
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
@@ -79,9 +82,10 @@ export default function VaultPage() {
         account.address,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Deposited: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Deposited: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Deposit failed");
+      toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -90,12 +94,14 @@ export default function VaultPage() {
   async function withdraw() {
     if (!account || !VAULT_ID || !vlpCoinId) return;
     setLoading(true);
+    const toastId = toast.loading("Withdrawing...");
     try {
       const tx = buildVaultWithdrawTx(VAULT_ID, vlpCoinId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setStatus(`Withdrawn: ${txDigest(r).slice(0, 16)}…`);
+      toast.success(`Withdrawn: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      setRefreshCounter(c => c + 1);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : "Withdraw failed");
+      toast.error(e instanceof Error ? e.message : "Withdraw failed", { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -103,6 +109,15 @@ export default function VaultPage() {
 
   const total = summary?.total_balance ?? 0;
   const allocated = summary?.allocated ?? 0;
+
+  if (!account) {
+    return (
+      <EmptyState
+        title="Wallet Disconnected"
+        description="Connect your Sui wallet to view and manage your vault allocations."
+      />
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -168,11 +183,6 @@ export default function VaultPage() {
               Demo mode: indexer shows simulated TVL. Deploy vault and set
               NEXT_PUBLIC_VAULT_OBJECT_ID for live deposits.
             </p>
-          </div>
-        )}
-        {status && (
-          <div className="mt-4 rounded-lg border border-white/10 bg-black/20 p-3 inline-block">
-            <p className="text-sm text-cyan-400 font-mono">{status}</p>
           </div>
         )}
       </Card>
