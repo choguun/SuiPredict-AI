@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import {
   buildVaultDepositTx,
   buildVaultWithdrawTx,
+  DBUSDC_TYPE,
   getVaultSummaryClob,
   VLP_TYPE,
 } from "@suipredict/sdk";
@@ -21,8 +22,6 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
 }
 
 const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID;
-const DBUSDC =
-  "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
 
 export default function VaultPage() {
   const account = useCurrentAccount();
@@ -72,13 +71,14 @@ export default function VaultPage() {
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
-        coinType: DBUSDC,
+        coinType: DBUSDC_TYPE,
       });
       const coin = objects[0];
       if (!coin) throw new Error("No DBUSDC");
       const tx = buildVaultDepositTx(
         VAULT_ID,
         coin.objectId,
+        DBUSDC_TYPE,
         account.address,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });

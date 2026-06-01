@@ -10,14 +10,12 @@
  *   - streakIdForUser             — view: lookup streak ID by owner address
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { CLOCK_OBJECT_ID, DUSDC_TYPE } from "./constants.js";
+import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID, DUSDC_TYPE } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
+import { PREDICT_MARKET_PACKAGE_ID } from "./prediction-market-client.js";
 
-const PREDICT_MARKET_PACKAGE_ID = process.env.PREDICT_MARKET_PACKAGE_ID ?? "";
-const AGENT_POLICY_PACKAGE_ID = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
-
-const PKG = () => AGENT_POLICY_PACKAGE_ID || PREDICT_MARKET_PACKAGE_ID;
+const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
 export interface StreakInfo {
   streak_id: string;
@@ -91,10 +89,12 @@ export function buildRecordParticipationTx(params: {
 
 /**
  * Build `redeem_with_streak` transaction. Burns winning YES tokens and
- * pays out collateral multiplied by the user's streak multiplier.
+ * pays out collateral multiplied by the user's streak multiplier. The
+ * 0.5% protocol fee is routed to the shared `FeeVault`.
  */
 export function buildRedeemWithStreakTx(
   marketId: string,
+  vaultId: string,
   winningCoinId: string,
   streakId: string,
 ): Transaction {
@@ -104,6 +104,7 @@ export function buildRedeemWithStreakTx(
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
+      tx.object(vaultId),
       tx.object(winningCoinId),
       tx.object(streakId),
     ],
@@ -116,6 +117,7 @@ export function buildRedeemWithStreakTx(
  */
 export function buildRedeemNoWithStreakTx(
   marketId: string,
+  vaultId: string,
   winningCoinId: string,
   streakId: string,
 ): Transaction {
@@ -125,6 +127,7 @@ export function buildRedeemNoWithStreakTx(
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
+      tx.object(vaultId),
       tx.object(winningCoinId),
       tx.object(streakId),
     ],
@@ -185,6 +188,11 @@ export async function getStreakInfo(
 
 /**
  * Lookup a user's `UserStreak` ID via the shared `StreakRegistry`.
+ *
+ * `StreakRegistry` stores `streaks: Table<address, ID>`. Sui `Table`
+ * contents are dynamic fields — they don't appear in `getObject`'s
+ * JSON view. We use `getDynamicFieldObject` against the typed key
+ * `{type:"address", value:userAddress}`.
  */
 export async function streakIdForUser(
   client: SuiClient,
@@ -192,14 +200,19 @@ export async function streakIdForUser(
   userAddress: string,
 ): Promise<string | null> {
   try {
-    const { object } = await client.core.getObject({
-      objectId: registryId,
-      include: { json: true },
+    const { dynamicField } = await client.core.getDynamicField({
+      parentId: registryId,
+      name: { type: "address", value: userAddress } as unknown as never,
     });
-    const fields = object.json as { streaks?: Record<string, string> } | null;
-    if (!fields?.streaks) return null;
-    return fields.streaks[userAddress] ?? null;
+    if (!dynamicField) return null;
+    const value = (dynamicField as { value?: unknown }).value;
+    if (typeof value === "string") return value;
+    if (typeof value === "object" && value !== null && "id" in value) {
+      return (value as { id: string }).id;
+    }
+    return null;
   } catch {
+    // Dynamic-field-not-found is the common case for users with no streak
     return null;
   }
 }

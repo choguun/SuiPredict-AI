@@ -15,10 +15,37 @@ import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
+import { startScheduler } from "./scheduler.js";
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
 const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
+
+/**
+ * Per-agent cron schedule (UTC). Replaces the prior "run all every 15s"
+ * loop with a self-rescheduling setTimeout per agent.
+ *
+ * Override any entry via env (e.g. AGENT_CRON_MARKET_MAKER with the
+ * value 'star-slash-2 ...' to double the maker's cadence during a test
+ * run). The leading '/' in the example is escaped so the JSDoc parser
+ * does not treat it as the end of this comment.
+ */
+function buildSchedule() {
+  const env = (key: string, fallback: string) =>
+    process.env[key] ?? fallback;
+  return [
+    { name: "MarketCreator",     cron: env("AGENT_CRON_MARKET_CREATOR",     "0 0 * * *"),  fn: runMarketCreator },
+    { name: "MarketResolver",    cron: env("AGENT_CRON_MARKET_RESOLVER",    "58 23 * * *"), fn: runMarketResolver },
+    { name: "StreakSweeper",     cron: env("AGENT_CRON_STREAK_SWEEPER",     "2 0 * * *"),   fn: runStreakSweeper },
+    { name: "LeaderboardWorker", cron: env("AGENT_CRON_LEADERBOARD",        "5 0 * * 1"),   fn: runLeaderboardWorker },
+    { name: "PrizeAdmin",        cron: env("AGENT_CRON_PRIZE_ADMIN",        "10 0 * * 1"),  fn: runPrizeAdmin },
+    { name: "PrizeDistributor",  cron: env("AGENT_CRON_PRIZE_DISTRIBUTOR",  "15 0 * * 1"),  fn: runPrizeDistributor },
+    { name: "ReferralKeeper",    cron: env("AGENT_CRON_REFERRAL_KEEPER",    "*/15 * * * *"),fn: runReferralKeeper },
+    { name: "PositionIndexer",   cron: env("AGENT_CRON_POSITION_INDEXER",   "*/1 * * * *"), fn: runPositionIndexer },
+    { name: "RiskMonitor",       cron: env("AGENT_CRON_RISK_MONITOR",       "*/5 * * * *"), fn: runRiskMonitor },
+    { name: "MarketMaker",       cron: env("AGENT_CRON_MARKET_MAKER",       "*/1 * * * *"), fn: runMarketMaker },
+  ];
+}
 
 /**
  * Normalize env aliases. The deployed package is referenced under
@@ -57,26 +84,19 @@ function loadContext(): AgentContext | null {
 }
 
 async function runCycle(ctx: AgentContext) {
-  console.log(`[agents] cycle @ ${new Date().toISOString()}`);
-  const agents = [
-    runMarketResolver,
-    runMarketCreator,
-    runMarketMaker,
-    runRiskMonitor,
-    runStreakSweeper,
-    runLeaderboardWorker,
-    runPrizeAdmin,
-    runPrizeDistributor,
-    runReferralKeeper,
-    runPositionIndexer,
-  ] as const;
-
-  for (const agent of agents) {
+  // One-shot helper for /run and CLI smoke tests — runs every agent
+  // once with a short-circuit on noop. The production cron loop is
+  // `startScheduler()` in main(), which fires each agent on its own
+  // UTC boundary.
+  const schedule = buildSchedule();
+  for (const entry of schedule) {
     try {
-      const result = await agent(ctx);
-      console.log(`  ✓ ${result.action}: ${result.reasoning.slice(0, 80)}`);
+      const result = await entry.fn(ctx);
+      console.log(
+        `  ${entry.name}: ${result.action}: ${result.reasoning.slice(0, 80)}`,
+      );
     } catch (err) {
-      console.error(`  ✗ agent error:`, err);
+      console.error(`  ${entry.name} error:`, err);
     }
   }
 }
@@ -124,8 +144,10 @@ async function main() {
   console.log(`[agents] Agent address: ${ctx.signer.getPublicKey().toSuiAddress()}`);
   if (LEGACY_PREDICT) console.log(`[agents] Legacy Predict agents enabled`);
 
-  await runCycle(ctx);
-  setInterval(() => runCycle(ctx), POLL_MS);
+  // Per-agent UTC scheduling — see scheduler.ts and buildSchedule() above.
+  // Override any entry with AGENT_CRON_<NAME>=<expr> for tests.
+  startScheduler(ctx, buildSchedule());
+  console.log(`[agents] Scheduler online (POLL_MS=${POLL_MS})`);
 }
 
 main().catch(console.error);

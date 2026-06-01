@@ -1,14 +1,25 @@
+import Link from "next/link";
+
 export function EmptyState({
   title,
   description,
   actionLabel,
   onAction,
+  href,
 }: {
   title: string;
   description: string;
   actionLabel?: string;
   onAction?: () => void;
+  /**
+   * When set, the action renders as a Next.js <Link> instead of a button.
+   * Used by server components that can't pass a client-side `onAction`
+   * (e.g. `app/page.tsx` which is a server component).
+   */
+  href?: string;
 }) {
+  const ctaClass =
+    "rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-cyan-900/20 transition-all hover:scale-[1.02] hover:shadow-cyan-900/40";
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-white/5 bg-black/20 p-8 text-center backdrop-blur-md">
       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-white/5 text-zinc-500">
@@ -18,11 +29,13 @@ export function EmptyState({
       </div>
       <h3 className="mb-1 text-lg font-medium text-white">{title}</h3>
       <p className="mb-5 max-w-sm text-sm text-zinc-400">{description}</p>
-      {actionLabel && onAction && (
-        <button
-          onClick={onAction}
-          className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-cyan-900/20 transition-all hover:scale-[1.02] hover:shadow-cyan-900/40"
-        >
+      {actionLabel && href && (
+        <Link href={href} className={ctaClass}>
+          {actionLabel}
+        </Link>
+      )}
+      {actionLabel && onAction && !href && (
+        <button onClick={onAction} className={ctaClass}>
           {actionLabel}
         </button>
       )}

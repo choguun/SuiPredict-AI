@@ -38,6 +38,9 @@ const MINT_FEE_BPS: u64 = 100;
 const REDEEM_FEE_BPS: u64 = 50;
 const BPS: u64 = 10_000;
 
+/// Dispute window per PRD §7: 1 hour after resolution.
+const DISPUTE_WINDOW_MS: u64 = 3_600_000;
+
 // ============================================================
 // Error constants
 // ============================================================
@@ -56,6 +59,7 @@ const EWrongOutcome: u64 = 10;
 const ENotDisputed: u64 = 11;
 const EAlreadyDisputed: u64 = 12;
 const EWrongStreakOwner: u64 = 13;
+const EDisputeWindowExpired: u64 = 14;
 
 // ============================================================
 // DeepBook order type constants (for reference)
@@ -107,8 +111,6 @@ public struct PredictionMarket<phantom Q> has key {
     no_cap: TreasuryCap<NO<Q>>,
     /// All collateral backing this market's positions
     collateral: Balance<Q>,
-    /// Accumulated mint/redeem protocol fees (in quote coin)
-    fee_balance: Balance<Q>,
     /// Whether the market has been resolved
     resolved: bool,
     /// 0 = unset, 1 = YES won, 2 = NO won
@@ -134,6 +136,10 @@ public struct PredictionMarket<phantom Q> has key {
     dispute_evidence_uri: vector<u8>,
     /// Number of disputes filed against this market
     dispute_count: u64,
+    /// Unix timestamp (ms) at which `resolve_market` set the outcome.
+    /// 0 means the market has not been resolved yet. Used to enforce
+    /// the on-chain `DISPUTE_WINDOW_MS` after resolution.
+    resolved_ms: u64,
 }
 
 // ============================================================
@@ -141,12 +147,21 @@ public struct PredictionMarket<phantom Q> has key {
 // ============================================================
 
 /// Holds accumulated protocol revenue in quote coin for admin withdrawal.
-/// Q is the quote-coin type for the fee_balance field.
+/// `Q` is the quote-coin type (e.g. DBUSDC). One vault per quote-coin
+/// type; the deployer instantiates it via `init_fee_vault<Q>` after
+/// publishing the package.
 public struct FeeVault<phantom Q> has key {
     id: UID,
     admin: address,
-    /// Accumulated quote-coin (DBUSDC) fees
+    /// Accumulated quote-coin (e.g. DBUSDC) fees
     fee_balance: Balance<Q>,
+}
+
+/// Capability that authorizes creating a `FeeVault<Q>` for a new quote
+/// coin type. Created at module init and transferred to the deployer.
+public struct ProtocolAdminCap has key {
+    id: UID,
+    admin: address,
 }
 
 // ============================================================
@@ -240,13 +255,29 @@ public struct MarketUndisputedEvent has copy, drop {
 // initializer
 // ============================================================
 
-/// Creates the FeeVault for Q and shares it. Called once at publish time.
-public struct Q has drop {}
-
+/// Module init: creates a `ProtocolAdminCap` and transfers it to the
+/// publisher. The `FeeVault<Q>` is not created at init time because the
+/// quote-coin type `Q` is not known until the deployer picks one (e.g.
+/// DBUSDC). Call `init_fee_vault<Q>` once after publishing to create
+/// and share the actual vault.
 fun init(ctx: &mut TxContext) {
-    let vault = FeeVault<Q> {
+    let cap = ProtocolAdminCap {
         id: object::new(ctx),
         admin: ctx.sender(),
+    };
+    transfer::transfer(cap, ctx.sender());
+}
+
+/// Create and share a `FeeVault<Q>` for the given quote-coin type.
+/// Called once per quote-coin type by the holder of the `ProtocolAdminCap`.
+public fun init_fee_vault<Q>(
+    _admin_cap: &ProtocolAdminCap,
+    vault_admin: address,
+    ctx: &mut TxContext,
+) {
+    let vault = FeeVault<Q> {
+        id: object::new(ctx),
+        admin: vault_admin,
         fee_balance: balance::zero(),
     };
     transfer::share_object(vault);
@@ -339,7 +370,6 @@ public fun create_market<Q>(
         yes_cap,
         no_cap,
         collateral: balance::zero(),
-        fee_balance: balance::zero(),
         resolved: false,
         outcome: 0,
         expiry_ms,
@@ -352,6 +382,7 @@ public fun create_market<Q>(
         disputed: false,
         dispute_evidence_uri: vector[],
         dispute_count: 0,
+        resolved_ms: 0,
     };
 
     let market_id = object::id(&market);
@@ -382,9 +413,11 @@ public fun balance_manager_id<Q>(market: &PredictionMarket<Q>): ID {
 // ============================================================
 
 /// User deposits collateral and receives equal YES and NO tokens.
-/// The protocol takes a 1% fee in quote coin.
+/// The protocol takes a 1% fee in quote coin, routed to the shared
+/// `FeeVault<Q>`.
 public fun mint_shares<Q>(
     market: &mut PredictionMarket<Q>,
+    vault: &mut FeeVault<Q>,
     quote_in: Coin<Q>,
     ctx: &mut TxContext,
 ) {
@@ -396,9 +429,10 @@ public fun mint_shares<Q>(
     let fee = (total * MINT_FEE_BPS) / BPS;
     let net = total - fee;
 
-    // Split fee off before joining collateral
+    // Split fee off and route to the shared FeeVault, then keep net as collateral
     let mut bal = coin::into_balance(quote_in);
-    market.fee_balance.join(bal.split(fee));
+    let fee_bal = bal.split(fee);
+    vault.fee_balance.join(fee_bal);
     market.collateral.join(bal);
 
     // Mint equal YES and NO
@@ -436,6 +470,7 @@ public fun resolve_market<Q>(
 
     market.resolved = true;
     market.outcome = outcome;
+    market.resolved_ms = clock.timestamp_ms();
 
     event::emit(MarketResolvedEvent {
         market_id: object::id(market),
@@ -444,16 +479,24 @@ public fun resolve_market<Q>(
     });
 }
 
-/// File a dispute against a resolved market. Anyone can dispute (within the
-/// off-chain 1-hour window). Freezes the market so `redeem` aborts until
-/// `resolve_dispute` is called.
+/// File a dispute against a resolved market. Anyone can dispute, but
+/// only within the on-chain 1-hour window after `resolve_market`. After
+/// the window passes, disputes abort with `EDisputeWindowExpired` so
+/// the market can be redeemed normally. The market is frozen
+/// (`redeem` aborts) until `resolve_dispute` is called.
 public fun dispute_market<Q>(
     market: &mut PredictionMarket<Q>,
     evidence_uri: vector<u8>,
+    clock: &Clock,
     ctx: &TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(vector::length(&evidence_uri) > 0, EZeroAmount);
+    let now = clock.timestamp_ms();
+    assert!(
+        now <= market.resolved_ms + DISPUTE_WINDOW_MS,
+        EDisputeWindowExpired,
+    );
     market.disputed = true;
     market.dispute_count = market.dispute_count + 1;
     market.dispute_evidence_uri = evidence_uri;
@@ -492,10 +535,11 @@ public fun resolve_dispute<Q>(
 // ============================================================
 
 /// Redeem YES winning position for quote collateral.
-/// The protocol takes a 0.5% redemption fee.
-/// Only valid when the market resolved to YES (outcome = 1).
+/// The protocol takes a 0.5% redemption fee, routed to the shared
+/// `FeeVault<Q>`. Only valid when the market resolved to YES (outcome = 1).
 public fun redeem<Q>(
     market: &mut PredictionMarket<Q>,
+    vault: &mut FeeVault<Q>,
     winning_coin: Coin<YES<Q>>,
     ctx: &mut TxContext,
 ) {
@@ -513,7 +557,8 @@ public fun redeem<Q>(
     coin::burn(&mut market.yes_cap, winning_coin);
 
     // Split fee and return net collateral
-    market.fee_balance.join(market.collateral.split(fee));
+    let fee_bal = market.collateral.split(fee);
+    vault.fee_balance.join(fee_bal);
     let out = balance::split(&mut market.collateral, net);
 
     event::emit(RedeemedEvent {
@@ -528,10 +573,11 @@ public fun redeem<Q>(
 }
 
 /// Redeem NO winning position for quote collateral.
-/// The protocol takes a 0.5% redemption fee.
-/// Only valid when the market resolved to NO (outcome = 2).
+/// The protocol takes a 0.5% redemption fee, routed to the shared
+/// `FeeVault<Q>`. Only valid when the market resolved to NO (outcome = 2).
 public fun redeem_no<Q>(
     market: &mut PredictionMarket<Q>,
+    vault: &mut FeeVault<Q>,
     winning_coin: Coin<NO<Q>>,
     ctx: &mut TxContext,
 ) {
@@ -546,7 +592,8 @@ public fun redeem_no<Q>(
 
     coin::burn(&mut market.no_cap, winning_coin);
 
-    market.fee_balance.join(market.collateral.split(fee));
+    let fee_bal = market.collateral.split(fee);
+    vault.fee_balance.join(fee_bal);
     let out = balance::split(&mut market.collateral, net);
 
     event::emit(RedeemedEvent {
@@ -562,9 +609,11 @@ public fun redeem_no<Q>(
 
 /// Redeem YES winning position with a streak multiplier applied. The
 /// sender's `UserStreak` must belong to the sender. The multiplier is
-/// sourced from `streak_system::get_multiplier_bps`.
+/// sourced from `streak_system::get_multiplier_bps`. Fees are routed to
+/// the shared `FeeVault<Q>`.
 public fun redeem_with_streak<Q>(
     market: &mut PredictionMarket<Q>,
+    vault: &mut FeeVault<Q>,
     winning_coin: Coin<YES<Q>>,
     user_streak: &streak_system::UserStreak,
     ctx: &mut TxContext,
@@ -585,7 +634,8 @@ public fun redeem_with_streak<Q>(
 
     coin::burn(&mut market.yes_cap, winning_coin);
 
-    market.fee_balance.join(market.collateral.split(fee));
+    let fee_bal = market.collateral.split(fee);
+    vault.fee_balance.join(fee_bal);
     let out = balance::split(&mut market.collateral, net);
 
     event::emit(RedeemedEvent {
@@ -599,9 +649,11 @@ public fun redeem_with_streak<Q>(
     transfer::public_transfer(coin::from_balance(out, ctx), ctx.sender());
 }
 
-/// Redeem NO winning position with a streak multiplier applied.
+/// Redeem NO winning position with a streak multiplier applied. Fees
+/// are routed to the shared `FeeVault<Q>`.
 public fun redeem_no_with_streak<Q>(
     market: &mut PredictionMarket<Q>,
+    vault: &mut FeeVault<Q>,
     winning_coin: Coin<NO<Q>>,
     user_streak: &streak_system::UserStreak,
     ctx: &mut TxContext,
@@ -621,7 +673,8 @@ public fun redeem_no_with_streak<Q>(
 
     coin::burn(&mut market.no_cap, winning_coin);
 
-    market.fee_balance.join(market.collateral.split(fee));
+    let fee_bal = market.collateral.split(fee);
+    vault.fee_balance.join(fee_bal);
     let out = balance::split(&mut market.collateral, net);
 
     event::emit(RedeemedEvent {
@@ -925,8 +978,8 @@ public fun collateral_value<Q>(market: &PredictionMarket<Q>): u64 {
     balance::value(&market.collateral)
 }
 
-public fun fee_balance<Q>(market: &PredictionMarket<Q>): u64 {
-    balance::value(&market.fee_balance)
+public fun fee_balance<Q>(vault: &FeeVault<Q>): u64 {
+    balance::value(&vault.fee_balance)
 }
 
 public fun is_resolved<Q>(market: &PredictionMarket<Q>): bool {
@@ -967,3 +1020,12 @@ public fun dispute_evidence_uri<Q>(market: &PredictionMarket<Q>): &vector<u8> {
 
 use std::vector;
 use std::option::{Self, Option};
+
+// ============================================================
+// Test helpers
+// ============================================================
+
+#[test_only]
+public fun init_for_testing(ctx: &mut TxContext) {
+    init(ctx);
+}

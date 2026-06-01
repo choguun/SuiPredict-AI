@@ -10,7 +10,7 @@ import {
 import {
   listMarkets,
   getMarketOrderBook,
-  buildMintSharesTx,
+  buildMintSharesBatchTx,
   type MarketInfo,
 } from "@suipredict/sdk";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
@@ -19,6 +19,10 @@ import Link from "next/link";
 
 const DBUSDC =
   "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
+
+const FEE_VAULT_ID =
+  process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 /** Daily markets: expiry within 36h from now, status active. */
 const DAILY_EXPIRY_WINDOW_MS = 36 * 60 * 60 * 1000;
@@ -33,6 +37,9 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
 interface DailyMarket extends MarketInfo {
   yesProbability: number;
 }
+
+// Stable empty array reference (see `dailyMarkets` derivation below).
+const EMPTY_DAILY_MARKETS: DailyMarket[] = [];
 
 export function DailyPredictionCard() {
   const account = useCurrentAccount();
@@ -70,10 +77,12 @@ export function DailyPredictionCard() {
     },
   });
 
-  const dailyMarkets = useMemo(
-    () => dailyQuery.data ?? [],
-    [dailyQuery.data],
-  );
+  // Use a stable empty-array constant so the downstream useMemo doesn't
+  // see a new array reference on every render while the query is in
+  // `undefined` state. The previous `dailyQuery.data ?? []` returned a
+  // fresh `[]` each evaluation, which made `activeMarkets`'s useMemo
+  // re-run and recompute `.filter` on every render.
+  const dailyMarkets = dailyQuery.data ?? EMPTY_DAILY_MARKETS;
 
   const activeMarkets = useMemo(
     () => dailyMarkets.filter((m) => activeMarketIds.includes(m.id)),
@@ -106,7 +115,6 @@ export function DailyPredictionCard() {
   const handleSubmit = async () => {
     if (!account || !client || !isComplete) return;
     setSubmitting(true);
-    let lastDigest: string | null = null;
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
@@ -116,16 +124,20 @@ export function DailyPredictionCard() {
       if (!coin) {
         throw new Error("No DBUSDC — request from DeepBook testnet form");
       }
-      // Mint YES+NO on each selected market (uses 1 DBUSDC per market).
-      for (const marketId of activeMarketIds) {
-        const tx = buildMintSharesTx(marketId, coin.objectId);
-        const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        lastDigest = txDigest(r);
-      }
+      // Single PTB: split the input coin N ways and mint into each market.
+      // Sequential txs would consume the coin in the first tx, leaving the
+      // rest with a stale object reference and a runtime error.
+      const amountPerMarket = BigInt(1_000_000); // 1 DBUSDC
+      const tx = buildMintSharesBatchTx({
+        marketIds: activeMarketIds,
+        vaultId: FEE_VAULT_ID,
+        quoteIn: coin.objectId,
+        amountPerMarket,
+      });
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest = txDigest(r);
       toast.success(
-        `Predictions locked across ${activeMarketIds.length} markets${
-          lastDigest ? ` — ${lastDigest.slice(0, 12)}…` : ""
-        }`,
+        `Predictions locked across ${activeMarketIds.length} markets — ${digest.slice(0, 12)}…`,
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");

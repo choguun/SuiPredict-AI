@@ -11,7 +11,7 @@ import {
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 
-const PAUSE_UTILIZATION = Number(process.env.RISK_PAUSE_UTILIZATION ?? 0.002);
+const PAUSE_UTILIZATION = Number(process.env.RISK_PAUSE_UTILIZATION ?? 0.80);
 
 export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   const vault = await getVaultSummary();

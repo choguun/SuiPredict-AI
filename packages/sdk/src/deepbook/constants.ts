@@ -12,8 +12,8 @@ export const DEEP_TYPE =
   "0x36dbef866a1d62bf7328989a10fb2f07d769f4ee587c0de4a0a256e57e0a58a8::deep::DEEP";
 
 export const VLP_TYPE =
-  process.env.MARKET_PACKAGE_ID
-    ? `${process.env.MARKET_PACKAGE_ID}::vlp::VLP`
+  process.env.AGENT_POLICY_PACKAGE_ID
+    ? `${process.env.AGENT_POLICY_PACKAGE_ID}::vlp::VLP`
     : "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8::vlp::VLP";
 
 export const POOL_SUI_DBUSDC = "SUI_DBUSDC";

@@ -181,27 +181,37 @@ public fun fund_pool<PrizeCoin>(
 
 // ============================================================
 // Pool admin: rotate week, settle, configure distribution
+//
+// These functions gate on the shared `PrizeAdmin` capability rather
+// than the per-pool `admin` address field. The pool's `admin` field is
+// retained for reference / event payloads but is no longer the
+// authorization source. The deployer rotates the address via
+// `rotate_admin` and the pubkey via `rotate_pubkey`.
 // ============================================================
 
 /// Rotate the pool to a new week. The previous week's `weekly_prize` is
-/// captured and the new week starts at 0.
+/// captured and the new week starts at 0. Requires the `PrizeAdmin`
+/// capability held by the deployer/backend hot-wallet.
 public fun rotate_week<PrizeCoin>(
     pool: &mut PrizePool<PrizeCoin>,
+    admin_cap: &PrizeAdmin,
     new_week: u64,
     ctx: &TxContext,
 ) {
-    assert!(ctx.sender() == pool.admin, ENotAdmin);
+    assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
     pool.current_week = new_week;
     pool.weekly_prize = 0;
 }
 
 /// Mark `week_index` as settled. After this, `claim_prize` aborts for that week.
+/// Requires the `PrizeAdmin` capability.
 public fun settle_week<PrizeCoin>(
     pool: &mut PrizePool<PrizeCoin>,
+    admin_cap: &PrizeAdmin,
     week_index: u64,
     ctx: &TxContext,
 ) {
-    assert!(ctx.sender() == pool.admin, ENotAdmin);
+    assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
     if (!table::contains(&pool.settled, week_index)) {
         table::add(&mut pool.settled, week_index, true);
     } else {
@@ -215,12 +225,14 @@ public fun settle_week<PrizeCoin>(
 }
 
 /// Replace the distribution curve. The vector must sum to BPS.
+/// Requires the `PrizeAdmin` capability.
 public fun set_distribution<PrizeCoin>(
     pool: &mut PrizePool<PrizeCoin>,
+    admin_cap: &PrizeAdmin,
     new_dist: vector<u64>,
     ctx: &TxContext,
 ) {
-    assert!(ctx.sender() == pool.admin, ENotAdmin);
+    assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
     let mut sum = 0;
     let mut i = 0;
     let len = vector::length(&new_dist);
@@ -233,6 +245,7 @@ public fun set_distribution<PrizeCoin>(
 }
 
 /// Rotate the prize admin's ed25519 pubkey (e.g. after backend key rotation).
+/// Requires the holder of the `PrizeAdmin` (i.e. the same address).
 public fun rotate_pubkey(
     admin_cap: &mut PrizeAdmin,
     new_pubkey: vector<u8>,
@@ -240,6 +253,19 @@ public fun rotate_pubkey(
 ) {
     assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
     admin_cap.pubkey = new_pubkey;
+}
+
+/// Rotate the prize admin's address (e.g. when the backend hot-wallet
+/// is moved to a new key). The pubkey is preserved; after the rotation
+/// the new address must sign all subsequent admin operations and
+/// `claim_prize` signatures. Requires the current `PrizeAdmin.admin`.
+public fun rotate_admin(
+    admin_cap: &mut PrizeAdmin,
+    new_admin: address,
+    ctx: &TxContext,
+) {
+    assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
+    admin_cap.admin = new_admin;
 }
 
 // ============================================================

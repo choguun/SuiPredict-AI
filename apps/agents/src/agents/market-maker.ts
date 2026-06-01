@@ -16,7 +16,38 @@ import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 
 const SPREAD_THRESHOLD_BPS = Number(process.env.MM_SPREAD_THRESHOLD_BPS ?? 400);
 const QUOTE_SIZE = Number(process.env.MM_QUOTE_SIZE ?? 10_000_000);
-const BALANCE_MANAGER_ID = process.env.BALANCE_MANAGER_ID;
+
+/**
+ * BalanceManager ID resolution order:
+ *   1. `BALANCE_MANAGER_ID` env (the production override)
+ *   2. `BALANCE_MANAGER_ID_FILE` file path (written by bootstrap-gamification)
+ *   3. `.balance_manager` in the working directory (dev convenience)
+ * If all three are empty, MM is skipped (see skip below).
+ */
+function loadBalanceManagerId(): string | undefined {
+  const env = process.env.BALANCE_MANAGER_ID?.trim();
+  if (env) return env;
+  const file = process.env.BALANCE_MANAGER_ID_FILE?.trim();
+  if (file) {
+    try {
+      const fs = require("node:fs") as typeof import("node:fs");
+      const v = fs.readFileSync(file, "utf8").trim();
+      if (v) return v;
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const v = fs.readFileSync(".balance_manager", "utf8").trim();
+    if (v) return v;
+  } catch {
+    /* not present */
+  }
+  return undefined;
+}
+
+const BALANCE_MANAGER_ID = loadBalanceManagerId();
 const AGENT_POLICY_ID = process.env.AGENT_POLICY_ID ?? "";
 // Estimated DBUSDC notional per side per cycle: price*qty. Used for authorize_spend.
 const PER_ORDER_NOTIONAL_DOLLARS = Math.max(

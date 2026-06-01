@@ -49,7 +49,7 @@ async function main() {
 
   const client = createClient();
   const signer = keypairFromPrivateKey(currentPk);
-  const tx = buildRotatePubkeyTx(poolId, adminCapId, newPubkey);
+  const tx = buildRotatePubkeyTx(adminCapId, newPubkey);
   const r = await executeTransaction(client, tx, signer);
   console.log(`rotate_pubkey tx digest: ${r.digest}`);
   console.log("\nNext steps:");

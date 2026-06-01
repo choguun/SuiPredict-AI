@@ -174,7 +174,7 @@ export default async function HomePage() {
             title="No Featured Markets"
             description="Start the agents service to seed demo markets or connect to the live network."
             actionLabel="View All Markets"
-            onAction={() => {}} // Note: EmptyState needs a generic link or we just pass action handler
+            href="/markets"
           />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">

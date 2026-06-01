@@ -26,6 +26,7 @@ import { recordResult } from "../lib.js";
 import { weekIndexFor } from "../gamification/store.js";
 
 const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
+const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
 const PRIZE_FUND_AMOUNT = BigInt(
   process.env.PRIZE_FUND_AMOUNT ?? process.env.PRIZE_WEEKLY_AMOUNT ?? "0",
 );
@@ -96,10 +97,18 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   // Step 2: settle the prior week
   try {
     const priorWeek = weekIndexFor(Date.now()) - 1;
-    const settleTx = buildSettleWeekTx(PRIZE_POOL_ID, BigInt(priorWeek));
-    const r = await executeTransaction(client, settleTx, ctx.signer);
-    settledWeek = priorWeek;
-    notes.push(`settled week ${priorWeek}: ${r.digest.slice(0, 12)}…`);
+    if (!PRIZE_ADMIN_ID) {
+      notes.push("PRIZE_ADMIN_ID not configured; skipping settle.");
+    } else {
+      const settleTx = buildSettleWeekTx(
+        PRIZE_POOL_ID,
+        PRIZE_ADMIN_ID,
+        BigInt(priorWeek),
+      );
+      const r = await executeTransaction(client, settleTx, ctx.signer);
+      settledWeek = priorWeek;
+      notes.push(`settled week ${priorWeek}: ${r.digest.slice(0, 12)}…`);
+    }
   } catch (err) {
     notes.push(
       `settle failed: ${err instanceof Error ? err.message : String(err)}`,

@@ -3,15 +3,13 @@
  * for all markets that have a referral_id set.
  *
  * Run on a schedule (e.g. every 15 min). Rewards accumulate in the
- * DeepBook pool's referral ledger; this agent sweeps them to the
- * protocol treasury address.
+ * DeepBook pool's referral ledger and are paid to the agent's
+ * signer; the agent then forwards them to the treasury.
  */
 import { buildClaimReferralRewardsTx, createClient, executeTransaction, REFERRAL_TREASURY_ADDRESS } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { listMarkets, upsertMarket } from "../markets/store.js";
-
-const TREASURY_ADDRESS = REFERRAL_TREASURY_ADDRESS;
 
 export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult> {
   const markets = listMarkets().filter(
@@ -38,7 +36,6 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
       const tx = buildClaimReferralRewardsTx(
         market.deepbook_pool_id,
         market.referral_id,
-        TREASURY_ADDRESS,
       );
       const result = await executeTransaction(client, tx, ctx.signer);
       results.push(

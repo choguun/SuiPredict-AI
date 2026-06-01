@@ -105,20 +105,57 @@ export function buildCreateMarketTx(params: {
  * Build `mint_shares` transaction.
  *
  * Deposits collateral (DBUSDC) and receives equal YES + NO tokens.
- * Takes a 1% protocol fee.
+ * Takes a 1% protocol fee, routed to the shared `FeeVault<DBUSDC>`.
  *
  * @param marketId - PredictionMarket object ID
+ * @param vaultId  - FeeVault<DBUSDC> object ID (set after `init_fee_vault<DBUSDC>`)
  * @param quoteIn  - Coin<DBUSDC> to deposit
  */
 export function buildMintSharesTx(
   marketId: string,
+  vaultId: string,
   quoteIn: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(quoteIn)],
+    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(quoteIn)],
+  });
+  return tx;
+}
+
+/**
+ * Build a single PTB that mints `amountPerMarket` of DBUSDC into each of
+ * `marketIds` in one transaction. The input coin is split in-PTB so the
+ * caller only needs to provide a single Coin<DBUSDC> with
+ * `amountPerMarket * marketIds.length` atoms of balance.
+ *
+ * Used by the daily-prediction card where the user locks in 3-5 markets
+ * at once; submitting them sequentially would consume the same Coin
+ * object in tx #1, leaving tx #2..N with a stale reference.
+ */
+export function buildMintSharesBatchTx(params: {
+  marketIds: string[];
+  vaultId: string;
+  quoteIn: string;
+  amountPerMarket: bigint;
+}): Transaction {
+  const tx = new Transaction();
+  if (params.marketIds.length === 0) return tx;
+  const [primaryCoin, ...splitCoins] = tx.splitCoins(tx.object(params.quoteIn), [
+    tx.pure.u64(params.amountPerMarket),
+    ...params.marketIds.slice(1).map(() => tx.pure.u64(params.amountPerMarket)),
+  ]);
+  const coins = [primaryCoin, ...splitCoins];
+  params.marketIds.forEach((marketId, i) => {
+    const coinArg = coins[i];
+    if (!coinArg) return;
+    tx.moveCall({
+      target: `${PKG()}::prediction_market::mint_shares`,
+      typeArguments: [DBUSDC_TYPE],
+      arguments: [tx.object(marketId), tx.object(params.vaultId), coinArg],
+    });
   });
   return tx;
 }
@@ -150,26 +187,28 @@ export function buildResolveMarketTx(
  * Build `redeem` (YES winning) transaction.
  *
  * @param marketId    - PredictionMarket object ID
+ * @param vaultId     - FeeVault<DBUSDC> object ID
  * @param winningCoin - Coin<YES<DBUSDC>> to redeem
  */
 export function buildRedeemTx(
   marketId: string,
+  vaultId: string,
   winningCoin: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(winningCoin)],
+    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
   });
   return tx;
 }
 
 /**
  * Build `dispute_market` transaction. Files a dispute against a resolved
- * market. Anyone can call within the off-chain 1-hour window. The market
- * is frozen (redeem aborts) until `resolve_dispute` is invoked by the
- * creator.
+ * market. Anyone can call within the on-chain 1-hour window after
+ * `resolve_market`. The market is frozen (redeem aborts) until
+ * `resolve_dispute` is invoked by the creator.
  *
  * @param marketId     - PredictionMarket object ID
  * @param evidenceUri  - String or bytes containing the dispute evidence
@@ -185,7 +224,11 @@ export function buildDisputeMarketTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::dispute_market`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.pure.vector("u8", Array.from(evidence))],
+    arguments: [
+      tx.object(marketId),
+      tx.pure.vector("u8", Array.from(evidence)),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
   });
   return tx;
 }
@@ -211,17 +254,19 @@ export function buildResolveDisputeTx(
  * Build `redeem_no` (NO winning) transaction.
  *
  * @param marketId    - PredictionMarket object ID
+ * @param vaultId     - FeeVault<DBUSDC> object ID
  * @param winningCoin - Coin<NO<DBUSDC>> to redeem
  */
 export function buildRedeemNoTx(
   marketId: string,
+  vaultId: string,
   winningCoin: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_no`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(winningCoin)],
+    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
   });
   return tx;
 }
@@ -257,20 +302,21 @@ export function buildSetupReferralTx(
 /**
  * Build `claim_referral_rewards` transaction.
  *
+ * Move signs the reward coins to `ctx.sender()` — the caller is the
+ * recipient. To route to a treasury, sign the tx with the treasury key.
+ *
  * @param poolId     - DeepBook Pool object ID
  * @param referralId - DeepBookPoolReferral object ID
- * @param treasury   - Address to receive the accumulated referral rewards (DEEP + DBUSDC)
  */
 export function buildClaimReferralRewardsTx(
   poolId: string,
   referralId: string,
-  treasury: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
     typeArguments: [DBUSDC_TYPE],
-    arguments: [tx.object(poolId), tx.object(referralId), tx.pure.address(treasury)],
+    arguments: [tx.object(poolId), tx.object(referralId)],
   });
   return tx;
 }
@@ -290,6 +336,28 @@ export function buildWithdrawFeesTx(
     target: `${PKG()}::prediction_market::withdraw_fees`,
     typeArguments: [DBUSDC_TYPE],
     arguments: [tx.object(vaultId), tx.pure.u64(amount)],
+  });
+  return tx;
+}
+
+/**
+ * Build `init_fee_vault` transaction. Called once per quote-coin type
+ * by the holder of the `ProtocolAdminCap`. The shared vault object is
+ * returned; its `objectId` must be stored in `FEE_VAULT_ID` for later
+ * mint/redeem/withdraw-fees calls.
+ *
+ * @param adminCapId   - ProtocolAdminCap object ID
+ * @param vaultAdmin   - Address that will own withdrawals from the vault
+ */
+export function buildInitFeeVaultTx(
+  adminCapId: string,
+  vaultAdmin: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::init_fee_vault`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(adminCapId), tx.pure.address(vaultAdmin)],
   });
   return tx;
 }
@@ -451,4 +519,84 @@ export function createMarketDeepBookClient(
     balanceManagerId: balanceManagerId ?? null,
     market: marketConfig,
   });
+}
+
+// ─── Vault builders ───────────────────────────────────────────────────────────
+
+/**
+ * Build `vault::deposit` transaction. Deposits `Coin<QuoteCoin>` into the
+ * `ProtocolVault<QuoteCoin>` and returns a freshly-minted `Coin<VLP>` to
+ * the caller. Use `buildVaultWithdrawTx` to redeem.
+ *
+ * @param vaultId     - ProtocolVault<QuoteCoin> object ID
+ * @param coinId      - Object ID of a Coin<QuoteCoin> with amount > 0
+ * @param quoteType   - The quote coin type (e.g. DBUSDC_TYPE or DUSDC_TYPE)
+ * @param recipient   - Address to receive the VLP coin (defaults to tx sender)
+ */
+export function buildVaultDepositTx(
+  vaultId: string,
+  coinId: string,
+  quoteType: string = DBUSDC_TYPE,
+  recipient?: string,
+): Transaction {
+  const tx = new Transaction();
+  const vlp = tx.moveCall({
+    target: `${PKG()}::vault::deposit`,
+    typeArguments: [quoteType],
+    arguments: [tx.object(vaultId), tx.object(coinId)],
+  });
+  tx.transferObjects([vlp], tx.pure.address(recipient ?? "@{sender}"));
+  return tx;
+}
+
+/**
+ * Build `vault::withdraw` transaction. Burns a `Coin<VLP>` and returns
+ * `Coin<QuoteCoin>` to the caller. Withdraw is bounded by
+ * `available_balance` (i.e. excludes the `allocated` reserve).
+ */
+export function buildVaultWithdrawTx(
+  vaultId: string,
+  vlpCoinId: string,
+  quoteType: string = DBUSDC_TYPE,
+): Transaction {
+  const tx = new Transaction();
+  const out = tx.moveCall({
+    target: `${PKG()}::vault::withdraw`,
+    typeArguments: [quoteType],
+    arguments: [tx.object(vaultId), tx.object(vlpCoinId)],
+  });
+  tx.transferObjects([out], tx.pure.address("@{sender}"));
+  return tx;
+}
+
+// ─── Registry builders ────────────────────────────────────────────────────────
+
+/**
+ * Build `registry::create_registry` transaction. Anyone can call;
+ * `ctx.sender()` becomes the registry admin.
+ */
+export function buildCreateRegistryTx(): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::registry::create_registry`,
+    arguments: [],
+  });
+  return tx;
+}
+
+/**
+ * Build `registry::register_market` transaction. Only the registry
+ * admin may invoke. Typically called by the market creator after
+ * each successful `create_market`.
+ */
+export function buildRegisterMarketTx(
+  registryId: string,
+  marketObjectId: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::registry::register_market`,
+    arguments: [tx.object(registryId), tx.pure.id(marketObjectId)],
+  });
+  return tx;
 }

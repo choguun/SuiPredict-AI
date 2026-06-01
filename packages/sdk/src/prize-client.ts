@@ -14,9 +14,8 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { fromBase64 } from "@mysten/sui/utils";
-import { DUSDC_TYPE } from "./constants.js";
+import { AGENT_POLICY_PACKAGE_ID, DUSDC_TYPE } from "./constants.js";
 
-const AGENT_POLICY_PACKAGE_ID = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
 // Mirror on-chain DEFAULT_DISTRIBUTION_BPS.
@@ -46,11 +45,12 @@ export interface SignedClaim {
 export function buildFundPoolTx(
   poolId: string,
   coinId: string,
+  prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::fund_pool`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: [prizeCoinType],
     arguments: [tx.object(poolId), tx.object(coinId)],
   });
   return tx;
@@ -70,11 +70,12 @@ export function buildClaimPrizeTx(params: {
   amount: bigint;
   signatureB64: string;
   poolIdForSig: string; // must equal poolId
+  prizeCoinType?: string; // defaults to DUSDC_TYPE; set to DBUSDC_TYPE for DBUSDC pools
 }): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
     arguments: [
       tx.object(params.poolId),
       tx.object(params.prizeAdminId),
@@ -89,22 +90,32 @@ export function buildClaimPrizeTx(params: {
   return tx;
 }
 
-export function buildSettleWeekTx(poolId: string, weekIndex: bigint): Transaction {
+export function buildSettleWeekTx(
+  poolId: string,
+  adminCapId: string,
+  weekIndex: bigint,
+  prizeCoinType: string = DUSDC_TYPE,
+): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::settle_week`,
-    typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(poolId), tx.pure.u64(weekIndex)],
+    typeArguments: [prizeCoinType],
+    arguments: [tx.object(poolId), tx.object(adminCapId), tx.pure.u64(weekIndex)],
   });
   return tx;
 }
 
-export function buildRotateWeekTx(poolId: string, newWeek: bigint): Transaction {
+export function buildRotateWeekTx(
+  poolId: string,
+  adminCapId: string,
+  newWeek: bigint,
+  prizeCoinType: string = DUSDC_TYPE,
+): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_week`,
-    typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(poolId), tx.pure.u64(newWeek)],
+    typeArguments: [prizeCoinType],
+    arguments: [tx.object(poolId), tx.object(adminCapId), tx.pure.u64(newWeek)],
   });
   return tx;
 }
@@ -124,16 +135,40 @@ export function buildRotatePubkeyTx(
   return tx;
 }
 
+/**
+ * Build `rotate_admin` transaction. Rotates the `PrizeAdmin.admin`
+ * address (e.g. when the backend hot-wallet moves). The current admin
+ * (signer) must call this; the new admin takes over immediately and
+ * must re-sign all subsequent admin operations.
+ *
+ * @param prizeAdminId - Shared PrizeAdmin object ID
+ * @param newAdmin     - Address to take over admin duties
+ */
+export function buildRotateAdminTx(
+  prizeAdminId: string,
+  newAdmin: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prize_pool::rotate_admin`,
+    arguments: [tx.object(prizeAdminId), tx.pure.address(newAdmin)],
+  });
+  return tx;
+}
+
 export function buildSetDistributionTx(
   poolId: string,
+  adminCapId: string,
   bps: number[],
+  prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::set_distribution`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: [prizeCoinType],
     arguments: [
       tx.object(poolId),
+      tx.object(adminCapId),
       tx.pure.vector("u64", bps.map((b) => BigInt(b))),
     ],
   });

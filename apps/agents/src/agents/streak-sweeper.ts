@@ -14,7 +14,12 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
-import { createClient, executeTransaction } from "@suipredict/sdk";
+import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "@suipredict/sdk";
+import {
+  createClient,
+  executeTransaction,
+  streakIdForUser,
+} from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { recordDailyScore, dayIndexFor } from "../gamification/store.js";
@@ -24,8 +29,6 @@ const PTB_BATCH = 20;
 
 const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
 const STREAK_ADMIN_ID = process.env.STREAK_ADMIN_ID ?? "";
-const PREDICT_PACKAGE_ID = process.env.PREDICT_PACKAGE_ID ?? "";
-const CLOCK_OBJECT_ID = process.env.SUI_CLOCK_OBJECT_ID ?? "0x6";
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
   | "mainnet"
@@ -97,7 +100,7 @@ async function queryAllEvents(
 export async function resolveDayOutcomes(
   dayIndex: number,
 ): Promise<ResolvedUser[]> {
-  if (!PREDICT_PACKAGE_ID) return [];
+  if (!AGENT_POLICY_PACKAGE_ID) return [];
   const client = new SuiJsonRpcClient({
     url: getJsonRpcFullnodeUrl(SUI_NETWORK),
     network: SUI_NETWORK,
@@ -107,7 +110,7 @@ export async function resolveDayOutcomes(
 
   // 1. Daily markets
   const createdRaw = await queryAllEvents(client, {
-    MoveEventType: `${PREDICT_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
+    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
   });
   const dailyMarketIds = new Set<string>();
   for (const e of createdRaw) {
@@ -122,7 +125,7 @@ export async function resolveDayOutcomes(
 
   // 2. Resolutions for daily markets
   const resolvedRaw = await queryAllEvents(client, {
-    MoveEventType: `${PREDICT_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
+    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
   });
   const resolvedMap = new Map<string, 1 | 2>();
   for (const e of resolvedRaw) {
@@ -136,7 +139,7 @@ export async function resolveDayOutcomes(
 
   // 3. Mints on daily markets within the day window
   const mintedRaw = await queryAllEvents(client, {
-    MoveEventType: `${PREDICT_PACKAGE_ID}::prediction_market::MintedEvent`,
+    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MintedEvent`,
   });
   const userMarkets = new Map<string, Set<string>>();
   for (const e of mintedRaw) {
@@ -206,7 +209,6 @@ export async function resolveDayOutcomes(
 }
 
 function buildSweepTx(
-  pkg: string,
   registryId: string,
   adminId: string,
   users: ResolvedUser[],
@@ -214,39 +216,26 @@ function buildSweepTx(
 ): Transaction {
   const tx = new Transaction();
   for (const u of users) {
-    if (u.streakId) {
-      tx.moveCall({
-        target: `${pkg}::streak_system::record_participation`,
-        arguments: [
-          tx.object(adminId),
-          tx.object(registryId),
-          tx.object(u.streakId),
-          tx.pure.u64(dayIndex),
-          tx.pure.u8(u.outcome),
-          tx.pure.u8(u.category),
-          tx.object(CLOCK_OBJECT_ID),
-        ],
-      });
-    } else {
-      // Lazy-create: call `create_streak` first, then pass the resulting
-      // object to `record_participation` in the same PTB.
-      const created = tx.moveCall({
-        target: `${pkg}::streak_system::create_streak`,
-        arguments: [tx.object(registryId)],
-      });
-      tx.moveCall({
-        target: `${pkg}::streak_system::record_participation`,
-        arguments: [
-          tx.object(adminId),
-          tx.object(registryId),
-          created,
-          tx.pure.u64(dayIndex),
-          tx.pure.u8(u.outcome),
-          tx.pure.u8(u.category),
-          tx.object(CLOCK_OBJECT_ID),
-        ],
-      });
+    if (!u.streakId) {
+      // User has no streak yet — record_participation requires an
+      // existing UserStreak, and lazy-creating here would mis-attribute
+      // ownership to the backend signer. The StreakWelcomeBanner in
+      // apps/web prompts the user to call create_streak from their own
+      // wallet; once they do, the next sweep picks them up.
+      continue;
     }
+    tx.moveCall({
+      target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
+      arguments: [
+        tx.object(adminId),
+        tx.object(registryId),
+        tx.object(u.streakId),
+        tx.pure.u64(dayIndex),
+        tx.pure.u8(u.outcome),
+        tx.pure.u8(u.category),
+        tx.object(CLOCK_OBJECT_ID),
+      ],
+    });
   }
   return tx;
 }
@@ -272,14 +261,34 @@ export async function runStreakSweeper(
     });
   }
 
+  // Look up each user's streakId. Users without a streak are skipped
+  // (they need to call create_streak from the frontend first).
   const client = createClient();
+  const withStreak: ResolvedUser[] = [];
+  for (const u of users) {
+    try {
+      u.streakId = (await streakIdForUser(client, STREAK_REGISTRY_ID, u.user)) ?? undefined;
+    } catch {
+      // streakIdForUser swallows its own errors; any other failure is non-fatal
+      u.streakId = undefined;
+    }
+    if (u.streakId) withStreak.push(u);
+  }
+
+  if (withStreak.length === 0) {
+    return recordResult("StreakSweeper", {
+      action: "noop",
+      reasoning: `Day ${dayIndex}: ${users.length} minted but none have an on-chain streak yet.`,
+      confidence: 100,
+    });
+  }
+
   let sent = 0;
   let failed = 0;
 
-  for (let i = 0; i < users.length; i += PTB_BATCH) {
-    const batch = users.slice(i, i + PTB_BATCH);
+  for (let i = 0; i < withStreak.length; i += PTB_BATCH) {
+    const batch = withStreak.slice(i, i + PTB_BATCH);
     const tx = buildSweepTx(
-      PREDICT_PACKAGE_ID,
       STREAK_REGISTRY_ID,
       STREAK_ADMIN_ID,
       batch,
@@ -312,7 +321,7 @@ export async function runStreakSweeper(
 
   return recordResult("StreakSweeper", {
     action: "sweep",
-    reasoning: `Day ${dayIndex}: ${sent} ok, ${failed} failed (PTB size ${PTB_BATCH}).`,
+    reasoning: `Day ${dayIndex}: ${sent} ok, ${failed} failed (PTB size ${PTB_BATCH}; ${users.length - withStreak.length} users had no on-chain streak).`,
     confidence: 100,
   });
 }

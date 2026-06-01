@@ -14,11 +14,13 @@
  */
 import {
   archiveWeekly,
+  claimedUsersForWeek,
   clearDailyScoresBefore,
   listAllDailyScores,
   type DailyScore,
   type WeeklyRow,
   weekIndexFor,
+  weekIndexForDay,
 } from "../gamification/store.js";
 import type { AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
@@ -34,7 +36,7 @@ function aggregateWeek(
     { correct_days: number; longest_streak: number; category: number }
   >();
   for (const r of rows) {
-    if (weekIndexFor(r.day_index * 86_400_000) !== weekIndex) continue;
+    if (weekIndexForDay(r.day_index) !== weekIndex) continue;
     const cur = bucket.get(r.user) ?? {
       correct_days: 0,
       longest_streak: 0,
@@ -99,6 +101,10 @@ export function liveRollup(weekIndex: number, category?: number): WeeklyRow[] {
     weekly = weekly.filter((r) => r.category === category);
     weekly.forEach((r, i) => (r.rank = i + 1));
   }
+  // Annotate `claimed` from prize_claims so the UI can render a "Claimed"
+  // pill instead of a claim button for users who already redeemed.
+  const claimed = claimedUsersForWeek(weekIndex);
+  for (const r of weekly) r.claimed = claimed.has(r.user);
   return weekly;
 }
 

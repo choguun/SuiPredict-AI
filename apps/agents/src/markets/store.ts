@@ -76,6 +76,8 @@ export function getDb(): Database.Database {
         price INTEGER NOT NULL,
         quantity INTEGER NOT NULL,
         timestamp_ms INTEGER NOT NULL,
+        cancelled_at_ms INTEGER,
+        filled_quantity INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (market_id, order_id)
       );
       CREATE TABLE IF NOT EXISTS settlements (
@@ -451,6 +453,26 @@ export function recordSettlement(s: {
        VALUES (@market_id, @pool_id, @trader, @timestamp_ms)`,
     )
     .run(s);
+}
+
+/**
+ * Mark a chain order as cancelled. Idempotent: a second call for the
+ * same `(market_id, order_id)` is a no-op. Required by the UI's
+ * "open orders" view, which otherwise keeps a cancelled row visible
+ * until the next page load.
+ */
+export function markOrderCancelled(
+  marketId: string,
+  orderId: string,
+  timestampMs: number,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE chain_orders
+         SET cancelled_at_ms = ?
+       WHERE market_id = ? AND order_id = ? AND cancelled_at_ms IS NULL`,
+    )
+    .run(timestampMs, marketId, orderId);
 }
 
 export function listChainOrders(

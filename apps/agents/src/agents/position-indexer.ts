@@ -25,8 +25,10 @@ import {
   getDb,
   getMarket,
   markMarketResolved,
+  markOrderCancelled,
   recordChainOrder,
   recordSettlement,
+  upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
 
@@ -76,6 +78,21 @@ interface MarketResolvedJson {
   market_id: string;
   outcome: string | number;
   resolver?: string;
+}
+interface MarketCreatedJson {
+  market_id: string;
+  creator?: string;
+  title?: string;
+  description?: string;
+  category?: string;
+  expiry_ms?: string | number;
+  resolution_source?: string;
+  pool_id?: string;
+}
+interface OrderCancelledJson {
+  market_id: string;
+  pool_id?: string;
+  order_id: string | number;
 }
 interface EventEnvelope {
   id: { txDigest: string; eventSeq: string };
@@ -140,6 +157,8 @@ export async function runPositionIndexer(
   let minted = 0;
   let redeemed = 0;
   let orders = 0;
+  let cancellations = 0;
+  let created = 0;
   let settlements = 0;
   let resolutions = 0;
   try {
@@ -249,6 +268,75 @@ export async function runPositionIndexer(
     });
   }
 
+  // MarketCreatedEvent — fired when any caller (this agent, another
+  // agent, or a one-off script) calls `create_market`. Indexing it
+  // ensures the REST `/markets` list and `/markets/:id` page see
+  // markets the local agent did not create, and that the first-ever
+  // market shows up before this agent's MarketCreator tick fires.
+  try {
+    created = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
+      "position_indexer.market_created",
+      (ev) => {
+        const j = ev.parsedJson as MarketCreatedJson;
+        if (!j?.market_id) return;
+        // Don't clobber a richer row written by the local MarketCreator
+        // (which also knows the deepbook pool/referral IDs). Only fill
+        // in fields the indexer can see in the event.
+        const existing = getMarket(j.market_id);
+        upsertMarket({
+          id: j.market_id,
+          title: existing?.title ?? j.title ?? "",
+          description: existing?.description ?? j.description ?? "",
+          category: existing?.category ?? j.category ?? "general",
+          expiry_ms: existing?.expiry_ms ?? Number(j.expiry_ms ?? 0),
+          resolution_source:
+            existing?.resolution_source ?? j.resolution_source ?? "",
+          status: existing?.status ?? "active",
+          pool_id: existing?.pool_id ?? j.pool_id ?? null,
+          deepbook_pool_id: existing?.deepbook_pool_id ?? j.pool_id ?? null,
+          deepbook_pool_key:
+            existing?.deepbook_pool_key ??
+            (j.pool_id ? `market_${j.market_id.slice(0, 8)}` : null),
+          deepbook_base_coin_type: existing?.deepbook_base_coin_type ?? null,
+          deepbook_quote_coin_type: existing?.deepbook_quote_coin_type ?? null,
+          deepbook_base_scalar: existing?.deepbook_base_scalar ?? 1_000_000,
+          deepbook_quote_scalar: existing?.deepbook_quote_scalar ?? 1_000_000,
+          referral_id: existing?.referral_id ?? null,
+          created_at_ms: existing?.created_at_ms ?? Date.now(),
+        });
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `MarketCreated poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  // OrderCancelledEvent — fired by `cancel_order` / `cancel_all_orders`.
+  // We mark the matching `chain_orders` row cancelled so the UI can
+  // drop it from the "open orders" view.
+  try {
+    cancellations = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::OrderCancelledEvent`,
+      "position_indexer.order_cancelled",
+      (ev) => {
+        const j = ev.parsedJson as OrderCancelledJson;
+        if (!j?.market_id || j?.order_id == null) return;
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        markOrderCancelled(j.market_id, String(j.order_id), ts);
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `OrderCancelled poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
   // MarketResolvedEvent — fired when the resolver/admin calls `resolve_market`.
   // Must run BEFORE RedeemedEvent so `decrementPosition` can look up the
   // winning side. We also poll it after Redeemed below — running it first
@@ -276,7 +364,7 @@ export async function runPositionIndexer(
 
   return recordResult("PositionIndexer", {
     action: "index",
-    reasoning: `Indexed ${minted} mints, ${redeemed} redeems, ${orders} orders, ${settlements} settlements, ${resolutions} resolutions.`,
+    reasoning: `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions.`,
     confidence: 100,
   });
 }

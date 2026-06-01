@@ -7,7 +7,6 @@ export {
   encodeUtf8,
 } from "./markets/constants.js";
 export * from "./markets/types.js";
-export * from "./markets/factory-client.js";
 export * from "./markets/indexer-client.js";
 export {
   DEEPBOOK_PACKAGE_ID,
@@ -37,15 +36,12 @@ export {
 export type { SuiClient, TxResult } from "./predict-client.js";
 
 // Prediction Market (DeepBook V3 integrated)
-// Re-export only the NEW functions that don't conflict with legacy exports.
-// getOrderBookDepth, getMidPrice, PREDICT_DEEPBOOK_POOL_KEY live in deepbook/client.ts
-// createMarketDeepBookClient, buildPlaceYesLimitOrderTx, buildWithdrawSettledTx, DeepBookClient
-// live in prediction-market-client.ts
 export {
   createMarketDeepBookClient,
   buildPlaceYesLimitOrderTx,
   buildWithdrawSettledTx,
   buildMintSharesTx,
+  buildMintSharesBatchTx,
   buildSetupReferralTx,
   buildCreateMarketTx,
   buildResolveMarketTx,
@@ -54,16 +50,16 @@ export {
   buildDisputeMarketTx,
   buildResolveDisputeTx,
   buildClaimReferralRewardsTx,
+  buildCreateRegistryTx,
+  buildRegisterMarketTx,
+  buildVaultDepositTx,
+  buildVaultWithdrawTx,
   yesCoinType,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,
   FEE_VAULT_ID,
   REFERRAL_TREASURY_ADDRESS,
 } from "./prediction-market-client.js";
-
-// buildCreateMarketTx lives in both prediction-market-client.js and
-// markets/factory-client.js. Import from prediction-market-client.js directly:
-//   import { buildCreateMarketTx } from "@suipredict/sdk/prediction-market-client";
 
 export {
   getOrderBookDepth,

@@ -3,9 +3,9 @@ import {
   buildMintSharesTx,
   buildRegisterMarketTx,
   buildSetupReferralTx,
-  extractCreatedObjectId,
-  PREDICT_MARKET_PACKAGE_ID,
   DBUSDC_TYPE,
+  extractCreatedObjectId,
+  yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -15,6 +15,7 @@ import { listMarkets, upsertMarket } from "../markets/store.js";
 const MAX_ACTIVE = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
 const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
 const MARKET_REGISTRY_ID = process.env.MARKET_REGISTRY_ID ?? "";
+const FEE_VAULT_ID = process.env.FEE_VAULT_ID ?? "";
 const INITIAL_MINT_ATOMS = BigInt(
   process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
 ); // 10 DBUSDC default — seeds the order book with an initial position
@@ -177,9 +178,15 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
           .filter((c) => BigInt(c.balance) >= INITIAL_MINT_ATOMS)
           .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
         if (dbusdcCoin) {
-          const mintTx = buildMintSharesTx(marketId, dbusdcCoin.objectId);
-          const mintResult = await executeTransaction(client, mintTx, ctx.signer);
-          initialMintDigest = mintResult.digest;
+          if (!FEE_VAULT_ID) {
+            console.warn(
+              `[market-creator] FEE_VAULT_ID not configured — skipping initial mint for ${marketId}`,
+            );
+          } else {
+            const mintTx = buildMintSharesTx(marketId, FEE_VAULT_ID, dbusdcCoin.objectId);
+            const mintResult = await executeTransaction(client, mintTx, ctx.signer);
+            initialMintDigest = mintResult.digest;
+          }
         } else {
           console.warn(
             `[market-creator] no DBUSDC coin with >= ${INITIAL_MINT_ATOMS} atoms — skipping initial mint for ${marketId}`,
@@ -204,10 +211,8 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       pool_id: poolId ?? null,
       deepbook_pool_key: poolId ? `market_${marketId.slice(0, 8)}` : null,
       deepbook_pool_id: poolId ?? null,
-      deepbook_base_coin_type: poolId
-        ? `${PREDICT_MARKET_PACKAGE_ID}::prediction_market::YES<0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC>`
-        : null,
-      deepbook_quote_coin_type: "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC",
+      deepbook_base_coin_type: poolId ? yesCoinType() : null,
+      deepbook_quote_coin_type: poolId ? DBUSDC_TYPE : null,
       deepbook_base_scalar: 1_000_000,
       deepbook_quote_scalar: 1_000_000,
       referral_id: referralId,

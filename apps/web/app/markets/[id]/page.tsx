@@ -14,6 +14,8 @@ import {
   buildDeepBookPlaceLimitOrderTx,
   buildDeepBookWithdrawSettledTx,
   buildMintSharesTx,
+  DBUSDC_TYPE,
+  extractCreatedObjectId,
   buildRedeemNoTx,
   buildRedeemNoWithStreakTx,
   buildRedeemTx,
@@ -41,8 +43,11 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
 }
 
-const DBUSDC =
-  "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
+const DBUSDC = DBUSDC_TYPE;
+
+const FEE_VAULT_ID =
+  process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 function clampProbability(value: number) {
   if (Number.isNaN(value)) return 0.5;
@@ -84,6 +89,10 @@ export default function MarketDetailPage() {
   const [qty, setQty] = useState(1);
   const [loading, setLoading] = useState(false);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  const [loadError, setLoadError] = useState<{
+    kind: "not_found" | "fetch_failed";
+    message: string;
+  } | null>(null);
   const [position, setPosition] = useState({ yes: 0, no: 0 });
   const [balanceManagerId, setBalanceManagerId] = useState("");
   const [tradeCapId, setTradeCapId] = useState("");
@@ -102,7 +111,22 @@ export default function MarketDetailPage() {
   clientRef.current = client;
 
   const refresh = useCallback(async () => {
-    const m = await getMarket(marketId);
+    let m: MarketInfo;
+    try {
+      m = await getMarket(marketId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // The indexer returns 404 for unknown ids; treat that distinctly
+      // from a transport / 5xx failure so the UI can say "not found"
+      // instead of "loading…" forever.
+      const kind: "not_found" | "fetch_failed" = msg.includes("404")
+        ? "not_found"
+        : "fetch_failed";
+      setMarket(null);
+      setLoadError({ kind, message: msg });
+      return;
+    }
+    setLoadError(null);
     setMarket(m);
     const cfg = deepBookMarketRef.current;
     let b: OrderBookSnapshot | null = null;
@@ -260,7 +284,7 @@ export default function MarketDetailPage() {
       });
       const coin = objects[0];
       if (!coin) throw new Error("No DBUSDC — request from DeepBook testnet form");
-      const tx = buildMintSharesTx(market.id, coin.objectId);
+      const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Minted YES + NO: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
@@ -272,7 +296,17 @@ export default function MarketDetailPage() {
   }
 
   async function mergeCollateral() {
-    toast.error("Merge to USDC is not supported in v2. Sell via the order book instead.");
+    // The on-chain prediction_market module has no merge_pair entry; the
+    // canonical way to exit a position pre-resolution is to sell YES and
+    // NO separately on the DeepBook order book. Send the user to the
+    // dedicated "Sell shares" card below to do that, rather than
+    // pretending a stub click is real.
+    toast.message(
+      "To exit, sell YES and NO on the order book below. There is no on-chain merge.",
+    );
+    document
+      .getElementById("trade-card")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function placeOrder() {
@@ -324,8 +358,23 @@ export default function MarketDetailPage() {
       });
       const tx = buildDeepBookCreateBalanceManagerTx(dbClient, account.address);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest = txDigest(r);
+      // Discover the new shared BalanceManager ID from the tx effects
+      // and persist it so subsequent deposit/place-order calls find it.
+      const managerId = await extractCreatedObjectId(
+        client,
+        digest,
+        "balance_manager::BalanceManager",
+      );
+      if (managerId) {
+        setBalanceManagerId(managerId);
+        window.localStorage.setItem(
+          `suipredict.deepbook.${account.address}.manager`,
+          managerId,
+        );
+      }
       toast.success(
-        `BalanceManager created: ${txDigest(r).slice(0, 16)}...`, { id: toastId }
+        `BalanceManager created: ${digest.slice(0, 16)}...`, { id: toastId }
       );
       // Wait a moment for indexer before refreshing
       setTimeout(() => setRefreshCounter(c => c + 1), 2000);
@@ -419,11 +468,11 @@ export default function MarketDetailPage() {
       const tx =
         winningSide === "yes"
           ? streakId
-            ? buildRedeemWithStreakTx(market.id, coin.objectId, streakId)
-            : buildRedeemTx(market.id, coin.objectId)
+            ? buildRedeemWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemTx(market.id, FEE_VAULT_ID, coin.objectId)
           : streakId
-            ? buildRedeemNoWithStreakTx(market.id, coin.objectId, streakId)
-            : buildRedeemNoTx(market.id, coin.objectId);
+            ? buildRedeemNoWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemNoTx(market.id, FEE_VAULT_ID, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Redeemed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
@@ -435,6 +484,43 @@ export default function MarketDetailPage() {
   }
 
   if (!market) {
+    if (loadError) {
+      const isNotFound = loadError.kind === "not_found";
+      return (
+        <Card>
+          <div className="space-y-3 py-2">
+            <h2 className="text-lg font-semibold text-white">
+              {isNotFound ? "Market not found" : "Could not load market"}
+            </h2>
+            <p className="text-sm text-zinc-400">
+              {isNotFound
+                ? `No market exists with id ${marketId.slice(0, 16)}… on this network.`
+                : "The agents indexer is unreachable. Start it with `pnpm dev:agents` and refresh."}
+            </p>
+            <div className="flex gap-2">
+              <Link
+                href="/markets"
+                className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+              >
+                Back to markets
+              </Link>
+              {!isNotFound && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoadError(null);
+                    setRefreshCounter((c) => c + 1);
+                  }}
+                  className="rounded-md bg-gradient-to-r from-violet-600 to-cyan-600 px-3 py-1.5 text-xs font-semibold text-white"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          </div>
+        </Card>
+      );
+    }
     return (
       <Card>
         <p className="text-zinc-400">Loading market…</p>

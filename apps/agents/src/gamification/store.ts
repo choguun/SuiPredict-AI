@@ -39,6 +39,7 @@ export interface WeeklyRow {
   correct_days: number;
   longest_streak: number;
   category: number;
+  claimed?: boolean;
 }
 
 export interface PrizeClaim {
@@ -153,32 +154,43 @@ export function listWeeklyLeaderboard(
   limit = 100,
   category?: number,
 ): WeeklyRow[] {
-  if (category != null && category > 0) {
-    return getDb()
-      .prepare(
-        `SELECT * FROM weekly_archive
-         WHERE week_index = ? AND category = ?
-         ORDER BY score DESC LIMIT ?`,
-      )
-      .all(weekIndex, category, limit) as WeeklyRow[];
-  }
-  return getDb()
-    .prepare(
-      `SELECT * FROM weekly_archive WHERE week_index = ?
-       ORDER BY score DESC LIMIT ?`,
-    )
-    .all(weekIndex, limit) as WeeklyRow[];
+  const baseSelect = `
+    SELECT w.*, CASE WHEN c.user IS NULL THEN 0 ELSE 1 END AS claimed
+    FROM weekly_archive w
+    LEFT JOIN prize_claims c
+      ON c.user = w.user AND c.week_index = w.week_index
+    WHERE w.week_index = ?
+  `;
+  const rows =
+    category != null && category > 0
+      ? (getDb()
+          .prepare(`${baseSelect} AND w.category = ? ORDER BY w.score DESC LIMIT ?`)
+          .all(weekIndex, category, limit) as WeeklyRow[])
+      : (getDb()
+          .prepare(`${baseSelect} ORDER BY w.score DESC LIMIT ?`)
+          .all(weekIndex, limit) as WeeklyRow[]);
+  return rows.map(decorateClaimed);
 }
 
 export function getUserWeekRank(
   user: string,
   weekIndex: number,
 ): WeeklyRow | null {
-  return (
-    (getDb()
-      .prepare(`SELECT * FROM weekly_archive WHERE user = ? AND week_index = ?`)
-      .get(user, weekIndex) as WeeklyRow | undefined) ?? null
-  );
+  const row = getDb()
+    .prepare(
+      `SELECT w.*, CASE WHEN c.user IS NULL THEN 0 ELSE 1 END AS claimed
+       FROM weekly_archive w
+       LEFT JOIN prize_claims c
+         ON c.user = w.user AND c.week_index = w.week_index
+       WHERE w.user = ? AND w.week_index = ?`,
+    )
+    .get(user, weekIndex) as WeeklyRow | undefined;
+  return row ? decorateClaimed(row) : null;
+}
+
+function decorateClaimed(row: WeeklyRow): WeeklyRow {
+  row.claimed = Boolean((row as WeeklyRow & { claimed?: number }).claimed);
+  return row;
 }
 
 export function recordPrizeClaim(claim: PrizeClaim): void {
@@ -205,6 +217,19 @@ export function listPrizeClaims(weekIndex?: number): PrizeClaim[] {
     .all() as PrizeClaim[];
 }
 
+/**
+ * Set of user addresses that have a recorded `prize_claims` row for the
+ * given `weekIndex`. Used by live rollups (which aggregate from
+ * `daily_scores`, not the archive) to annotate `claimed` on each row
+ * before the leaderboard REST endpoint returns them.
+ */
+export function claimedUsersForWeek(weekIndex: number): Set<string> {
+  const rows = getDb()
+    .prepare(`SELECT user FROM prize_claims WHERE week_index = ?`)
+    .all(weekIndex) as { user: string }[];
+  return new Set(rows.map((r) => r.user));
+}
+
 /** Returns the UTC day index for `tsMs`. */
 export function dayIndexFor(tsMs: number): number {
   return Math.floor(tsMs / 86_400_000);
@@ -213,6 +238,16 @@ export function dayIndexFor(tsMs: number): number {
 /** Returns the UTC week index (Monday 00:00 UTC = boundary) for `tsMs`. */
 export function weekIndexFor(tsMs: number): number {
   return Math.floor(tsMs / (7 * 86_400_000));
+}
+
+/**
+ * Returns the UTC week index for a UTC day index. Equivalent to
+ * `weekIndexFor(dayIndex * 86_400_000)` but with explicit semantics so
+ * callers don't have to remember that `DailyScore.day_index` is days,
+ * not milliseconds.
+ */
+export function weekIndexForDay(dayIndex: number): number {
+  return Math.floor(dayIndex / 7);
 }
 
 /** All distinct day_indices present in the daily_scores table (ascending). */
