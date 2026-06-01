@@ -1,4 +1,5 @@
 export const MARKET_PACKAGE_ID =
+  process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
   process.env.MARKET_PACKAGE_ID ??
   process.env.AGENT_POLICY_PACKAGE_ID ??
   "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";

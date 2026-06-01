@@ -38,8 +38,12 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** PredictionMarket package ID — override via PREDICT_MARKET_PACKAGE_ID env */
+/** PredictionMarket package ID — override via PREDICT_MARKET_PACKAGE_ID env.
+ *  The NEXT_PUBLIC_ variants are read first so Next.js inlines them into
+ *  the client bundle; the bare variants are the server/agents fallbacks.
+ */
 export const PREDICT_MARKET_PACKAGE_ID =
+  process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
   process.env.PREDICT_MARKET_PACKAGE_ID ??
   process.env.MARKET_PACKAGE_ID ??
   "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";
@@ -57,6 +61,7 @@ export const FEE_VAULT_ID =
 
 /** Protocol treasury address for withdrawing accumulated fees and claiming referral rewards */
 export const REFERRAL_TREASURY_ADDRESS =
+  process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
   process.env.REFERRAL_TREASURY_ADDRESS ??
   process.env.PROTOCOL_TREASURY_ADDRESS ??
   "0x0000000000000000000000000000000000000000000000000000000000000000";

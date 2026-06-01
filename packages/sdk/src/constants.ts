@@ -15,6 +15,7 @@ export const PREDICT_OBJECT_ID =
   "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a";
 
 export const DUSDC_PACKAGE_ID =
+  process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
   process.env.DUSDC_PACKAGE_ID ??
   "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705";
 
@@ -44,7 +45,10 @@ export const DUSDC_SCALE = 1_000_000n;
  * to publish a fresh package and overwrite this via env.
  */
 export const AGENT_POLICY_PACKAGE_ID =
+  process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
   process.env.AGENT_POLICY_PACKAGE_ID ??
+  process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+  process.env.MARKET_PACKAGE_ID ??
   "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";
 
 export const SUI_GRPC_URL = "https://fullnode.testnet.sui.io:443";
