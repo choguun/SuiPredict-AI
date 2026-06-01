@@ -166,6 +166,48 @@ export function buildRedeemTx(
 }
 
 /**
+ * Build `dispute_market` transaction. Files a dispute against a resolved
+ * market. Anyone can call within the off-chain 1-hour window. The market
+ * is frozen (redeem aborts) until `resolve_dispute` is invoked by the
+ * creator.
+ *
+ * @param marketId     - PredictionMarket object ID
+ * @param evidenceUri  - String or bytes containing the dispute evidence
+ *                       (URL, IPFS hash, or JSON blob). Must be non-empty.
+ */
+export function buildDisputeMarketTx(
+  marketId: string,
+  evidenceUri: string | Uint8Array,
+): Transaction {
+  const evidence =
+    typeof evidenceUri === "string" ? encodeUtf8(evidenceUri) : evidenceUri;
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::dispute_market`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(marketId), tx.pure.vector("u8", Array.from(evidence))],
+  });
+  return tx;
+}
+
+/**
+ * Build `resolve_dispute` transaction. Settles a previously-disputed
+ * market. Only the creator may invoke.
+ */
+export function buildResolveDisputeTx(
+  marketId: string,
+  finalOutcome: 1 | 2,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::resolve_dispute`,
+    typeArguments: [DBUSDC_TYPE],
+    arguments: [tx.object(marketId), tx.pure.u8(finalOutcome)],
+  });
+  return tx;
+}
+
+/**
  * Build `redeem_no` (NO winning) transaction.
  *
  * @param marketId    - PredictionMarket object ID

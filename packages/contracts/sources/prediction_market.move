@@ -13,6 +13,7 @@ use deepbook::balance_manager::{
     BalanceManager,
     TradeProof,
     DeepBookPoolReferral,
+    deposit,
 };
 use deepbook::order_info;
 use deepbook::pool::{Self, Pool};
@@ -25,6 +26,7 @@ use sui::event;
 use sui::object::{Self, ID, UID};
 use sui::transfer;
 use sui::tx_context::TxContext;
+use suipredict_agent_policy::streak_system;
 
 // ============================================================
 // Fee constants (basis points)
@@ -50,6 +52,10 @@ const EReferralAlreadySet: u64 = 6;
 const ENotAdmin: u64 = 7;
 const EInvalidPrice: u64 = 8;
 const EInvalidQuantity: u64 = 9;
+const EWrongOutcome: u64 = 10;
+const ENotDisputed: u64 = 11;
+const EAlreadyDisputed: u64 = 12;
+const EWrongStreakOwner: u64 = 13;
 
 // ============================================================
 // DeepBook order type constants (for reference)
@@ -122,6 +128,12 @@ public struct PredictionMarket<phantom Q> has key {
     referral_id: Option<ID>,
     /// Timestamp (ms) when the market was created
     created_ms: u64,
+    /// Has this market been disputed? (PRD §7: 1-hour dispute window)
+    disputed: bool,
+    /// URI/URL of the dispute evidence (e.g. IPFS link)
+    dispute_evidence_uri: vector<u8>,
+    /// Number of disputes filed against this market
+    dispute_count: u64,
 }
 
 // ============================================================
@@ -189,6 +201,18 @@ public struct OrderCancelledEvent has copy, drop {
     order_id: u128,
 }
 
+public struct OrdersBatchCancelledEvent has copy, drop {
+    market_id: ID,
+    pool_id: ID,
+    order_ids: vector<u128>,
+}
+
+public struct SettledEvent has copy, drop {
+    market_id: ID,
+    pool_id: ID,
+    trader: address,
+}
+
 public struct ReferralSetEvent has copy, drop {
     market_id: ID,
     referral_id: ID,
@@ -197,6 +221,19 @@ public struct ReferralSetEvent has copy, drop {
 public struct FeesWithdrawnEvent has copy, drop {
     admin: address,
     amount: u64,
+}
+
+public struct MarketDisputedEvent has copy, drop {
+    market_id: ID,
+    disputer: address,
+    evidence_uri: vector<u8>,
+    dispute_count: u64,
+}
+
+public struct MarketUndisputedEvent has copy, drop {
+    market_id: ID,
+    final_outcome: u8,
+    resolver: address,
 }
 
 // ============================================================
@@ -312,6 +349,9 @@ public fun create_market<Q>(
         balance_manager_id,
         referral_id: option::none(),
         created_ms: ctx.epoch_timestamp_ms(),
+        disputed: false,
+        dispute_evidence_uri: vector[],
+        dispute_count: 0,
     };
 
     let market_id = object::id(&market);
@@ -404,6 +444,49 @@ public fun resolve_market<Q>(
     });
 }
 
+/// File a dispute against a resolved market. Anyone can dispute (within the
+/// off-chain 1-hour window). Freezes the market so `redeem` aborts until
+/// `resolve_dispute` is called.
+public fun dispute_market<Q>(
+    market: &mut PredictionMarket<Q>,
+    evidence_uri: vector<u8>,
+    ctx: &TxContext,
+) {
+    assert!(market.resolved, EMarketNotActive);
+    assert!(vector::length(&evidence_uri) > 0, EZeroAmount);
+    market.disputed = true;
+    market.dispute_count = market.dispute_count + 1;
+    market.dispute_evidence_uri = evidence_uri;
+
+    event::emit(MarketDisputedEvent {
+        market_id: object::id(market),
+        disputer: ctx.sender(),
+        evidence_uri: market.dispute_evidence_uri,
+        dispute_count: market.dispute_count,
+    });
+}
+
+/// Settle a disputed market. Only the creator can resolve the dispute.
+public fun resolve_dispute<Q>(
+    market: &mut PredictionMarket<Q>,
+    final_outcome: u8,
+    ctx: &TxContext,
+) {
+    assert!(ctx.sender() == market.creator, ENotCreator);
+    assert!(market.disputed, ENotDisputed);
+    assert!(final_outcome == 1 || final_outcome == 2, EInvalidOutcome);
+
+    market.resolved = true;
+    market.outcome = final_outcome;
+    market.disputed = false;
+
+    event::emit(MarketUndisputedEvent {
+        market_id: object::id(market),
+        final_outcome,
+        resolver: ctx.sender(),
+    });
+}
+
 // ============================================================
 // Settlement - redeem YES winning position (0.5% fee)
 // ============================================================
@@ -416,6 +499,7 @@ public fun redeem<Q>(
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
+    assert!(!market.disputed, EAlreadyDisputed);
     let gross = coin::value(&winning_coin);
     assert!(gross > 0, EZeroAmount);
 
@@ -443,17 +527,94 @@ public fun redeem<Q>(
 
 /// Redeem NO winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee.
+/// Only valid when the market resolved to NO (outcome = 2).
 public fun redeem_no<Q>(
     market: &mut PredictionMarket<Q>,
     winning_coin: Coin<NO<Q>>,
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
+    assert!(market.outcome == 2, EWrongOutcome);
+    assert!(!market.disputed, EAlreadyDisputed);
     let gross = coin::value(&winning_coin);
     assert!(gross > 0, EZeroAmount);
 
     let fee = (gross * REDEEM_FEE_BPS) / BPS;
     let net = gross - fee;
+
+    coin::burn(&mut market.no_cap, winning_coin);
+
+    market.fee_balance.join(market.collateral.split(fee));
+    let out = balance::split(&mut market.collateral, net);
+
+    event::emit(RedeemedEvent {
+        market_id: object::id(market),
+        user: ctx.sender(),
+        winning_amount: gross,
+        fee,
+        collateral_returned: net,
+    });
+
+    transfer::public_transfer(coin::from_balance(out, ctx), ctx.sender());
+}
+
+/// Redeem YES winning position with a streak multiplier applied. The
+/// sender's `UserStreak` must belong to the sender. The multiplier is
+/// sourced from `streak_system::get_multiplier_bps`.
+public fun redeem_with_streak<Q>(
+    market: &mut PredictionMarket<Q>,
+    winning_coin: Coin<YES<Q>>,
+    user_streak: &streak_system::UserStreak,
+    ctx: &mut TxContext,
+) {
+    assert!(market.resolved, EMarketNotActive);
+    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(ctx.sender() == streak_system::owner_of(user_streak), EWrongStreakOwner);
+
+    let gross = coin::value(&winning_coin);
+    assert!(gross > 0, EZeroAmount);
+
+    // Apply streak multiplier first, then take the fee on the boosted amount.
+    let multiplier = streak_system::get_multiplier_bps(user_streak);
+    let boosted = (gross * multiplier) / 10_000;
+    let fee = (boosted * REDEEM_FEE_BPS) / BPS;
+    let net = boosted - fee;
+
+    coin::burn(&mut market.yes_cap, winning_coin);
+
+    market.fee_balance.join(market.collateral.split(fee));
+    let out = balance::split(&mut market.collateral, net);
+
+    event::emit(RedeemedEvent {
+        market_id: object::id(market),
+        user: ctx.sender(),
+        winning_amount: gross,
+        fee,
+        collateral_returned: net,
+    });
+
+    transfer::public_transfer(coin::from_balance(out, ctx), ctx.sender());
+}
+
+/// Redeem NO winning position with a streak multiplier applied.
+public fun redeem_no_with_streak<Q>(
+    market: &mut PredictionMarket<Q>,
+    winning_coin: Coin<NO<Q>>,
+    user_streak: &streak_system::UserStreak,
+    ctx: &mut TxContext,
+) {
+    assert!(market.resolved, EMarketNotActive);
+    assert!(market.outcome == 2, EWrongOutcome);
+    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(ctx.sender() == streak_system::owner_of(user_streak), EWrongStreakOwner);
+
+    let gross = coin::value(&winning_coin);
+    assert!(gross > 0, EZeroAmount);
+
+    let multiplier = streak_system::get_multiplier_bps(user_streak);
+    let boosted = (gross * multiplier) / 10_000;
+    let fee = (boosted * REDEEM_FEE_BPS) / BPS;
+    let net = boosted - fee;
 
     coin::burn(&mut market.no_cap, winning_coin);
 
@@ -621,17 +782,74 @@ public fun cancel_orders<Q>(
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
 
     pool::cancel_live_orders<YES<Q>, Q>(pool, balance_manager, &proof, order_ids, clock, ctx);
+
+    event::emit(OrdersBatchCancelledEvent {
+        market_id: object::id(market),
+        pool_id: market.pool_id,
+        order_ids,
+    });
 }
 
 /// Withdraw settled amounts from the pool back to BalanceManager.
 public fun withdraw_settled<Q>(
-    _market: &mut PredictionMarket<Q>,
+    market: &mut PredictionMarket<Q>,
     pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     ctx: &mut TxContext,
 ) {
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
     pool::withdraw_settled_amounts<YES<Q>, Q>(pool, balance_manager, &proof);
+
+    event::emit(SettledEvent {
+        market_id: object::id(market),
+        pool_id: market.pool_id,
+        trader: ctx.sender(),
+    });
+}
+
+// ============================================================
+// DeepBook Trading - cancel all orders
+// ============================================================
+
+/// Cancel ALL open orders for this market's BalanceManager on the pool.
+public fun cancel_all_orders<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
+    balance_manager: &mut BalanceManager,
+    clock: &Clock,
+    ctx: &TxContext,
+) {
+    assert!(!market.resolved, EMarketNotActive);
+
+    let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
+    pool::cancel_all_orders<YES<Q>, Q>(pool, balance_manager, &proof, clock, ctx);
+}
+
+// ============================================================
+// DeepBook Trading - BalanceManager funding
+//
+// Before placing orders the BalanceManager must have:
+//   1. Q (quote coin) deposited for order collateral
+//   2. YES<Q> deposited as base asset for asks
+//   3. DEEP deposited for trading fees (if pay_with_deep = true)
+//
+// All three are deposited via deposit_for_trading below.
+// ============================================================
+
+/// Deposit quote coin and YES base coin into the BalanceManager for trading.
+/// Also deposits DEEP for trading fees.
+/// Call this before place_order / place_market_order.
+public fun deposit_for_trading<Q>(
+    _market: &PredictionMarket<Q>,
+    balance_manager: &mut BalanceManager,
+    base_coin: Coin<YES<Q>>,
+    quote_coin: Coin<Q>,
+    deep_coin: Coin<DEEP>,
+    ctx: &mut TxContext,
+) {
+    deposit(balance_manager, base_coin, ctx);
+    deposit(balance_manager, quote_coin, ctx);
+    deposit(balance_manager, deep_coin, ctx);
 }
 
 // ============================================================
@@ -726,6 +944,18 @@ public fun pool_id<Q>(market: &PredictionMarket<Q>): ID {
 
 public fun referral_id<Q>(market: &PredictionMarket<Q>): Option<ID> {
     market.referral_id
+}
+
+public fun is_disputed<Q>(market: &PredictionMarket<Q>): bool {
+    market.disputed
+}
+
+public fun dispute_count<Q>(market: &PredictionMarket<Q>): u64 {
+    market.dispute_count
+}
+
+public fun dispute_evidence_uri<Q>(market: &PredictionMarket<Q>): &vector<u8> {
+    &market.dispute_evidence_uri
 }
 
 // ============================================================

@@ -5,9 +5,13 @@ import { runMarketCreator } from "./agents/market-creator.js";
 import { runMarketMaker } from "./agents/market-maker.js";
 import { runMarketResolver } from "./agents/market-resolver.js";
 import { runRiskMonitor } from "./agents/risk-monitor.js";
+import { runStreakSweeper } from "./agents/streak-sweeper.js";
+import { runLeaderboardWorker } from "./agents/leaderboard-worker.js";
+import { runPrizeDistributor } from "./agents/prize-distributor.js";
 import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
+import { handleGamificationRoute } from "./gamification/routes.js";
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
@@ -34,6 +38,9 @@ async function runCycle(ctx: AgentContext) {
     runMarketCreator,
     runMarketMaker,
     runRiskMonitor,
+    runStreakSweeper,
+    runLeaderboardWorker,
+    runPrizeDistributor,
   ] as const;
 
   for (const agent of agents) {
@@ -51,6 +58,7 @@ function startHealthServer() {
   createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     if (handleMarketsRoute(req, res, url)) return;
+    if (handleGamificationRoute(req, res, url)) return;
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));

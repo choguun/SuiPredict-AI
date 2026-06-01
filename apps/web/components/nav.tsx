@@ -7,6 +7,7 @@ import { ConnectModal } from "@/components/ConnectModal";
 const links = [
   { href: "/", label: "Home" },
   { href: "/markets", label: "Markets" },
+  { href: "/leaderboard", label: "Leaderboard" },
   { href: "/vault", label: "Vault" },
   { href: "/portfolio", label: "Portfolio" },
 ];
@@ -25,6 +26,7 @@ export function Nav() {
             const active =
               pathname === l.href ||
               (l.href === "/markets" && pathname.startsWith("/markets/")) ||
+              (l.href === "/dispute" && pathname.startsWith("/dispute/")) ||
               (l.href.startsWith("/legacy") && pathname.startsWith("/legacy"));
             return (
               <Link

@@ -9,6 +9,46 @@ public fun unset(): u8 { 0 }
 public fun yes_wins(): u8 { 1 }
 public fun no_wins(): u8 { 2 }
 
+const RESOLUTION_PYTH: u8 = 0;
+const RESOLUTION_SUPRA: u8 = 1;
+const RESOLUTION_ADMIN_MULTISIG: u8 = 2;
+
+/// Describes how a market resolves.
+/// `kind` 0 = Pyth, 1 = Supra, 2 = Admin multisig.
+/// `feed_id` is the oracle feed identifier (32-byte hex for Pyth/Supra).
+/// `oracle_addresses` is the set of multisig signers (kind=2 only).
+public struct ResolutionSource has copy, drop, store {
+    kind: u8,
+    feed_id: vector<u8>,
+    oracle_addresses: vector<address>,
+    threshold: u8,
+}
+
+public fun new_pyth_source(feed_id: vector<u8>): ResolutionSource {
+    ResolutionSource { kind: RESOLUTION_PYTH, feed_id, oracle_addresses: vector[], threshold: 0 }
+}
+
+public fun new_supra_source(feed_id: vector<u8>): ResolutionSource {
+    ResolutionSource { kind: RESOLUTION_SUPRA, feed_id, oracle_addresses: vector[], threshold: 0 }
+}
+
+public fun new_admin_multisig_source(
+    signers: vector<address>,
+    threshold: u8,
+): ResolutionSource {
+    ResolutionSource {
+        kind: RESOLUTION_ADMIN_MULTISIG,
+        feed_id: vector[],
+        oracle_addresses: signers,
+        threshold,
+    }
+}
+
+public fun resolution_kind(src: &ResolutionSource): u8 { src.kind }
+public fun resolution_feed_id(src: &ResolutionSource): &vector<u8> { &src.feed_id }
+public fun resolution_oracle_addresses(src: &ResolutionSource): &vector<address> { &src.oracle_addresses }
+public fun resolution_threshold(src: &ResolutionSource): u8 { src.threshold }
+
 public struct UserPosition has store {
     yes: u64,
     no: u64,

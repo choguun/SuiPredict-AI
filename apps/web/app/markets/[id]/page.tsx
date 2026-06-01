@@ -178,7 +178,6 @@ export default function MarketDetailPage() {
     market?.deepbook_base_scalar,
     market?.deepbook_quote_scalar,
   ]);
-  const hasDeepBookPool = Boolean(deepBookMarket);
   const useDeepBookRoute = Boolean(deepBookMarket && balanceManagerId);
   const quantityAtoms = BigInt(Math.floor(qty * 1_000_000));
   const quoteAtoms = (quantityAtoms * BigInt(priceBps)) / BigInt(10_000);
@@ -779,14 +778,24 @@ export default function MarketDetailPage() {
               <Stat label="NO" value={(position.no / 1e6).toFixed(4)} />
             </div>
             {market.status === "resolved" && (
-              <button
-                type="button"
-                disabled={loading || !account || market.id.startsWith("demo-")}
-                onClick={redeemWinner}
-                className="w-fit rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
-              >
-                Redeem winner
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={loading || !account || market.id.startsWith("demo-")}
+                  onClick={redeemWinner}
+                  className="w-fit rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
+                >
+                  Redeem winner
+                </button>
+                {!market.id.startsWith("demo-") && (
+                  <Link
+                    href={`/dispute/${encodeURIComponent(market.id)}`}
+                    className="w-fit rounded-md border border-amber-500/40 bg-amber-500/10 px-5 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20"
+                  >
+                    Dispute outcome
+                  </Link>
+                )}
+              </div>
             )}
           </div>
         </Card>

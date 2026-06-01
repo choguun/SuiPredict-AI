@@ -15,7 +15,8 @@ export const PREDICT_OBJECT_ID =
   "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a";
 
 export const DUSDC_PACKAGE_ID =
-  "0xe95040085976bfd54a1a07225cd46c8a2b4e8e2b6732f140a0fc49850ba73e1a";
+  process.env.DUSDC_PACKAGE_ID ??
+  "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705";
 
 export const DUSDC_TYPE = `${DUSDC_PACKAGE_ID}::dusdc::DUSDC`;
 
@@ -29,7 +30,19 @@ export const CLOCK_OBJECT_ID = "0x6";
 export const PRICE_SCALE = 1_000_000_000n;
 export const DUSDC_SCALE = 1_000_000n;
 
-/** Published agent_policy.move on Sui testnet */
+/**
+ * Published `agent_policy` package ID (the package that also contains
+ * `streak_system`, `prize_pool`, `prediction_market`, `types`).
+ *
+ * Set via env at deploy time:
+ *   AGENT_POLICY_PACKAGE_ID=0x...
+ *
+ * The default below is a *legacy* testnet address from a prior publish
+ * and is **not** guaranteed to contain the gamification modules
+ * (`streak_system`, `prize_pool`, `redeem_with_streak`,
+ * `dispute_market`). Run `pnpm --filter @suipredict/agents bootstrap`
+ * to publish a fresh package and overwrite this via env.
+ */
 export const AGENT_POLICY_PACKAGE_ID =
   process.env.AGENT_POLICY_PACKAGE_ID ??
   "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";

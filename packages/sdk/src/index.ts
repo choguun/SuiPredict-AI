@@ -51,6 +51,8 @@ export {
   buildResolveMarketTx,
   buildRedeemTx,
   buildRedeemNoTx,
+  buildDisputeMarketTx,
+  buildResolveDisputeTx,
   buildClaimReferralRewardsTx,
   PREDICT_MARKET_PACKAGE_ID,
   FEE_VAULT_ID,
@@ -68,6 +70,10 @@ export {
   type DeepBookClient,
   type BalanceManager,
 } from "./deepbook/client.js";
+
+// Streak + prize pool (gamification)
+export * from "./streak-client.js";
+export * from "./prize-client.js";
 
 // Legacy DeepBook Predict
 export * as predict from "./predict/index.js";
