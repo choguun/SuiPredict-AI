@@ -1,0 +1,426 @@
+#!/usr/bin/env tsx
+/**
+ * Resume bootstrap: assume the package is already published (its
+ * `Published.toml` reflects the current chain state) and finish the
+ * remaining bootstrap steps:
+ *
+ *   1. init_fee_vault<DBUSDC>(admin_cap, vault_admin)  → shared FeeVault
+ *   2. set PrizeAdmin pubkey on-chain
+ *   3. create_pool<DBUSDC>(seed, week)               → shared PrizePool
+ *   4. create_registry                                 → shared MarketRegistry
+ *   5. create_vault<DBUSDC>(vlp_cap)                   → shared ProtocolVault
+ *   6. create_policy(agent, budget, expiry)           → shared AgentPolicy
+ *   7. write all new IDs back to .env / apps/web/.env.local
+ *
+ * Use this after a manual `sui client publish` if you don't want to
+ * pay the publish gas twice. The full bootstrap is `bootstrap.ts`.
+ */
+import { config as loadEnv } from "dotenv";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Transaction } from "@mysten/sui/transactions";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import {
+  createClient,
+  DUSDC_TYPE,
+  executeTransaction,
+  keypairFromPrivateKey,
+} from "@suipredict/sdk";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "../../..");
+const PKG_DIR = resolve(REPO_ROOT, "packages/contracts");
+const AGENTS_ENV = resolve(REPO_ROOT, ".env");
+const WEB_ENV = resolve(REPO_ROOT, "apps/web/.env.local");
+const PUBLISHED_TOML = join(PKG_DIR, "Published.toml");
+
+loadEnv({ path: AGENTS_ENV });
+
+const NETWORK = process.env.SUI_NETWORK ?? "testnet";
+const RPC_URL =
+  NETWORK === "mainnet"
+    ? "https://fullnode.mainnet.sui.io:443"
+    : NETWORK === "devnet"
+      ? "https://fullnode.devnet.sui.io:443"
+      : "https://fullnode.testnet.sui.io:443";
+const INITIAL_WEEK = Math.floor(Date.now() / (7 * 86_400_000));
+const PRIZE_WEEKLY_AMOUNT = BigInt(
+  process.env.PRIZE_WEEKLY_AMOUNT ?? "1000000000",
+);
+
+function log(msg: string) {
+  console.log(`[resume] ${msg}`);
+}
+function err(msg: string): never {
+  console.error(`[resume] ERROR: ${msg}`);
+  process.exit(1);
+}
+
+function readPackageIdFromPublishedToml(): string {
+  if (!existsSync(PUBLISHED_TOML)) {
+    err(`No Published.toml at ${PUBLISHED_TOML}. Run sui client publish first.`);
+  }
+  const content = readFileSync(PUBLISHED_TOML, "utf-8");
+  const match = content.match(/published-at\s*=\s*"(0x[a-f0-9]+)"/);
+  if (!match) {
+    err(`Could not find published-at in ${PUBLISHED_TOML}.`);
+  }
+  return match[1];
+}
+
+function setEnvVar(content: string, key: string, value: string): string {
+  const re = new RegExp(`^${key}=.*$`, "m");
+  const line = `${key}=${value}`;
+  if (re.test(content)) return content.replace(re, line);
+  return content.endsWith("\n") || content.length === 0
+    ? `${content}${line}\n`
+    : `${content}\n${line}\n`;
+}
+
+function updateEnv(path: string, updates: Record<string, string>) {
+  let content = "";
+  if (existsSync(path)) content = readFileSync(path, "utf-8");
+  for (const [k, v] of Object.entries(updates)) {
+    content = setEnvVar(content, k, v);
+  }
+  writeFileSync(path, content);
+  log(`Updated env: ${path}`);
+}
+
+async function findOwnedObject(
+  client: SuiGrpcClient,
+  owner: string,
+  typeSuffix: string,
+): Promise<string | null> {
+  let cursor: string | null | undefined = undefined;
+  do {
+    const page = await client.listOwnedObjects({
+      owner,
+      cursor: cursor ?? null,
+      limit: 50,
+    });
+    for (const obj of page.objects) {
+      if (obj.type?.includes(typeSuffix) && obj.objectId) {
+        return obj.objectId;
+      }
+    }
+    cursor = page.cursor ?? null;
+  } while (cursor);
+  return null;
+}
+
+async function getSharedObjectIdFromTx(
+  client: SuiGrpcClient,
+  digest: string,
+  typeMatch: string,
+): Promise<string> {
+  const r = await client.getTransaction({
+    digest,
+    include: { effects: true, objectTypes: true },
+  });
+  if (r.$kind !== "Transaction") err(`Transaction failed: ${digest}`);
+  const hit = r.Transaction.effects.changedObjects.find(
+    (o) =>
+      o.idOperation === "Created" &&
+      o.outputOwner?.$kind === "Shared" &&
+      (r.Transaction.objectTypes?.[o.objectId] ?? "").includes(typeMatch),
+  )?.objectId;
+  if (!hit) {
+    err(
+      `No shared object of type ${typeMatch} in tx ${digest}. Got: ` +
+        JSON.stringify(r.Transaction.objectTypes ?? {}),
+    );
+  }
+  return hit;
+}
+
+async function findDusdcCoin(
+  client: SuiGrpcClient,
+  owner: string,
+  minAmount: bigint,
+): Promise<string | null> {
+  let cursor: string | null | undefined = undefined;
+  do {
+    const page = await client.listCoins({
+      owner,
+      coinType: DUSDC_TYPE,
+      cursor: cursor ?? null,
+      limit: 50,
+    });
+    for (const coin of page.objects) {
+      if (BigInt(coin.balance) >= minAmount) return coin.objectId;
+    }
+    cursor = page.cursor ?? null;
+  } while (cursor);
+  return null;
+}
+
+async function main() {
+  if (!process.env.AGENT_PRIVATE_KEY) {
+    err("AGENT_PRIVATE_KEY is required (the deployer signer).");
+  }
+  const signer = keypairFromPrivateKey(process.env.AGENT_PRIVATE_KEY);
+  const signerAddr = signer.getPublicKey().toSuiAddress();
+  log(`Deployer: ${signerAddr}`);
+
+  const packageId = readPackageIdFromPublishedToml();
+  log(`Package ID (from Published.toml): ${packageId}`);
+
+  const grpc = new SuiGrpcClient({ network: NETWORK as "testnet", baseUrl: RPC_URL });
+  const txClient = createClient();
+
+  // 1) init_fee_vault<DBUSDC>
+  log("Creating FeeVault<DBUSDC> via init_fee_vault...");
+  const protocolAdminCapId = await findOwnedObject(
+    grpc,
+    signerAddr,
+    "::prediction_market::ProtocolAdminCap",
+  );
+  if (!protocolAdminCapId) {
+    err(
+      "No ProtocolAdminCap found in deployer wallet. Was the package just published? " +
+        "prediction_market::init() should have transferred one to the publisher.",
+    );
+  }
+  log(`  ProtocolAdminCap: ${protocolAdminCapId}`);
+  const initVaultDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::prediction_market::init_fee_vault`,
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    return res.digest;
+  })();
+  log(`  init_fee_vault: ${initVaultDigest}`);
+  const feeVaultId = await getSharedObjectIdFromTx(
+    grpc,
+    initVaultDigest,
+    "::prediction_market::FeeVault<",
+  );
+  log(`FeeVault:       ${feeVaultId}`);
+
+  // 2) Find StreakAdmin, StreakRegistry, PrizeAdmin from the publisher's
+  //    owned + initial shared objects. They're created at publish time
+  //    and shared, so we look them up by walking the recent shared
+  //    objects the deployer can read. Simpler: re-list owned + find
+  //    via the package's `published-as-of` epoch.
+  log("Locating StreakAdmin / StreakRegistry / PrizeAdmin from publish effects...");
+  // These are shared and won't be in owned objects. Easiest is to
+  // grab the publish transaction digest from Published.toml history.
+  // For this script we expect the user to have run bootstrap once
+  // already, or to set the env vars below manually if they're known.
+  const streakAdminId = process.env.STREAK_ADMIN_ID ?? "";
+  const streakRegistryId = process.env.STREAK_REGISTRY_ID ?? "";
+  const prizeAdminId = process.env.PRIZE_ADMIN_ID ?? "";
+  if (!streakAdminId || !streakRegistryId || !prizeAdminId) {
+    err(
+      "STREAK_ADMIN_ID, STREAK_REGISTRY_ID, and PRIZE_ADMIN_ID must be set " +
+        "in .env (these are shared objects created at publish time and need to be looked up manually).",
+    );
+  }
+  log(`  StreakAdmin:    ${streakAdminId}`);
+  log(`  StreakRegistry: ${streakRegistryId}`);
+  log(`  PrizeAdmin:     ${prizeAdminId}`);
+
+  // 3) Set PrizeAdmin pubkey
+  const existingKeyB64 = process.env.PRIZE_ADMIN_PRIVATE_KEY;
+  const prizeKey = existingKeyB64
+    ? Ed25519Keypair.fromSecretKey(existingKeyB64)
+    : new Ed25519Keypair();
+  const isNewPrizeKey = !existingKeyB64;
+  const prizePubkey = Array.from(prizeKey.getPublicKey().toRawBytes());
+  const prizePubkeyB64 = Buffer.from(prizePubkey).toString("base64");
+  log(
+    `Prize admin: ${prizeKey.getPublicKey().toSuiAddress()} (${isNewPrizeKey ? "NEW keypair generated" : "loaded from env"})`,
+  );
+  if (isNewPrizeKey) {
+    const secretB64 = Buffer.from(prizeKey.getSecretKey()).toString("base64");
+    log(`  SAVE THIS — PRIZE_ADMIN_PRIVATE_KEY (base64): ${secretB64}`);
+  }
+  log("Setting PrizeAdmin pubkey on-chain...");
+  {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::prize_pool::rotate_pubkey`,
+      arguments: [tx.object(prizeAdminId), tx.pure.vector("u8", prizePubkey)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    log(`  rotate_pubkey: ${res.digest}`);
+  }
+
+  // 4) Find DUSDC seed coin
+  log(`Looking for DUSDC coin >= ${PRIZE_WEEKLY_AMOUNT}...`);
+  let seedCoinId = await findDusdcCoin(grpc, signerAddr, PRIZE_WEEKLY_AMOUNT);
+  if (!seedCoinId) {
+    const treasuryCapId = process.env.DUSDC_TREASURY_CAP_ID;
+    if (!treasuryCapId) {
+      err(
+        `No DUSDC coin >= ${PRIZE_WEEKLY_AMOUNT} in deployer wallet and DUSDC_TREASURY_CAP_ID is unset. ` +
+          `Either fund the deployer with DUSDC or set DUSDC_TREASURY_CAP_ID and re-run.`,
+      );
+    }
+    log(`  No seed coin — minting from TreasuryCap ${treasuryCapId}...`);
+    const tx = new Transaction();
+    const minted = tx.moveCall({
+      target: "0x2::coin::mint",
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(treasuryCapId), tx.pure.u64(PRIZE_WEEKLY_AMOUNT)],
+    });
+    tx.transferObjects([minted], signerAddr);
+    const res = await executeTransaction(txClient, tx, signer);
+    log(`  mint: ${res.digest}`);
+    seedCoinId = await findDusdcCoin(grpc, signerAddr, PRIZE_WEEKLY_AMOUNT);
+    if (!seedCoinId) err("Mint succeeded but no DUSDC coin appeared.");
+  }
+  log(`  seed coin: ${seedCoinId}`);
+
+  // 5) Create PrizePool
+  log("Creating PrizePool<DBUSDC>...");
+  const createPoolDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::prize_pool::create_pool`,
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(seedCoinId), tx.pure.u64(INITIAL_WEEK)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    return res.digest;
+  })();
+  log(`  create_pool: ${createPoolDigest}`);
+  const prizePoolId = await getSharedObjectIdFromTx(
+    grpc,
+    createPoolDigest,
+    "::prize_pool::PrizePool<",
+  );
+  log(`PrizePool:      ${prizePoolId}`);
+
+  // 6) Create MarketRegistry
+  log("Creating MarketRegistry...");
+  const registryDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::registry::create_registry`,
+      arguments: [],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    return res.digest;
+  })();
+  const marketRegistryId = await getSharedObjectIdFromTx(
+    grpc,
+    registryDigest,
+    "::registry::MarketRegistry",
+  );
+  log(`MarketRegistry: ${marketRegistryId}`);
+
+  // 7) Create ProtocolVault<DBUSDC>
+  log("Looking for VLP TreasuryCap in deployer wallet...");
+  let vlpTreasuryCapId = process.env.VLP_TREASURY_CAP_ID ?? "";
+  if (!vlpTreasuryCapId) {
+    vlpTreasuryCapId = (await findOwnedObject(
+      grpc,
+      signerAddr,
+      "::vlp::TreasuryCap",
+    )) ?? "";
+  }
+  if (!vlpTreasuryCapId) {
+    err(
+      "No VLP TreasuryCap in deployer wallet (and VLP_TREASURY_CAP_ID not set). " +
+        "Set VLP_TREASURY_CAP_ID in .env to skip the auto-lookup. " +
+        "The vlp::init should have created one at publish.",
+    );
+  }
+  log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
+  log("Creating ProtocolVault<DBUSDC>...");
+  const vaultDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::vault::create_vault`,
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(vlpTreasuryCapId)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    return res.digest;
+  })();
+  const protocolVaultId = await getSharedObjectIdFromTx(
+    grpc,
+    vaultDigest,
+    "::vault::ProtocolVault<",
+  );
+  log(`ProtocolVault:  ${protocolVaultId}`);
+
+  // 8) Create AgentPolicy
+  const policyBudget = BigInt(process.env.AGENT_MAX_BUDGET_USDC ?? "500") * 1_000_000n;
+  const policyExpiryMs = Date.now() + 365 * 86_400_000;
+  log(`Creating AgentPolicy (budget=${policyBudget}, expires=${new Date(policyExpiryMs).toISOString()})...`);
+  const policyDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::agent_policy::create_policy`,
+      arguments: [
+        tx.pure.address(signerAddr),
+        tx.pure.u64(policyBudget),
+        tx.pure.u64(policyExpiryMs),
+      ],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    return res.digest;
+  })();
+  const agentPolicyId = await getSharedObjectIdFromTx(
+    grpc,
+    policyDigest,
+    "::agent_policy::AgentPolicy",
+  );
+  log(`AgentPolicy:    ${agentPolicyId}`);
+
+  // 9) Write env updates
+  const agentsUpdates: Record<string, string> = {
+    AGENT_POLICY_PACKAGE_ID: packageId,
+    MARKET_PACKAGE_ID: packageId,
+    NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
+    STREAK_REGISTRY_ID: streakRegistryId,
+    STREAK_ADMIN_ID: streakAdminId,
+    PRIZE_POOL_ID: prizePoolId,
+    PRIZE_ADMIN_ID: prizeAdminId,
+    PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
+    PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
+    DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
+    MARKET_REGISTRY_ID: marketRegistryId,
+    VAULT_OBJECT_ID: protocolVaultId,
+    FEE_VAULT_ID: feeVaultId,
+    AGENT_POLICY_ID: agentPolicyId,
+  };
+  if (isNewPrizeKey) {
+    // `getSecretKey()` returns the bech32 "suiprivkey1…" string in
+    // Mysten SDK 2.x. The SDK's `Ed25519Keypair.fromSecretKey` accepts
+    // that form directly, so write it as-is to the env.
+    const secretStr = prizeKey.getSecretKey() as unknown as string;
+    agentsUpdates.PRIZE_ADMIN_PRIVATE_KEY = secretStr;
+    log(`  Prize admin secret (suiprivkey1…): ${secretStr}`);
+  }
+  updateEnv(AGENTS_ENV, agentsUpdates);
+  updateEnv(WEB_ENV, {
+    NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
+    NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
+    NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
+    NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
+    NEXT_PUBLIC_PRIZE_ADMIN_ID: prizeAdminId,
+    NEXT_PUBLIC_FEE_VAULT_ID: feeVaultId,
+    NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
+    NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
+  });
+
+  log("\n=== Resume complete ===");
+  log(`Package:        ${packageId}`);
+  log(`FeeVault:       ${feeVaultId}`);
+  log(`PrizePool:      ${prizePoolId}`);
+  log(`MarketRegistry: ${marketRegistryId}`);
+  log(`ProtocolVault:  ${protocolVaultId}`);
+  log(`AgentPolicy:    ${agentPolicyId}`);
+  log(`Weekly amt:     ${PRIZE_WEEKLY_AMOUNT} (${Number(PRIZE_WEEKLY_AMOUNT) / 1_000_000} DUSDC)`);
+}
+
+main().catch((e) => err(e instanceof Error ? e.stack ?? e.message : String(e)));

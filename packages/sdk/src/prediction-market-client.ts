@@ -46,8 +46,12 @@ export const PREDICT_MARKET_PACKAGE_ID =
 
 const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 
-/** FeeVault<DBUSDC> object ID — set after contract deployment */
+/** FeeVault<DBUSDC> object ID — set after contract deployment. The
+ *  NEXT_PUBLIC_ variant is read first so Next.js inlines it into the
+ *  client bundle; the bare `FEE_VAULT_ID` is the server/agents variant.
+ */
 export const FEE_VAULT_ID =
+  process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
   process.env.FEE_VAULT_ID ??
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 

@@ -220,6 +220,28 @@ async function findSharedObjects(
   return out;
 }
 
+async function findOwnedObject(
+  client: SuiGrpcClient,
+  owner: string,
+  typeSuffix: string,
+): Promise<string | null> {
+  let cursor: string | null | undefined = undefined;
+  do {
+    const page = await client.listOwnedObjects({
+      owner,
+      cursor: cursor ?? null,
+      limit: 50,
+    });
+    for (const obj of page.objects) {
+      if (obj.type?.includes(typeSuffix) && obj.objectId) {
+        return obj.objectId;
+      }
+    }
+    cursor = page.cursor ?? null;
+  } while (cursor);
+  return null;
+}
+
 async function findVlpTreasuryCap(
   client: SuiGrpcClient,
   owner: string,
@@ -280,6 +302,48 @@ async function main() {
   const { packageId, objects } = runPublish();
   log(`Package ID: ${packageId}`);
 
+  // Initialize gRPC + tx clients up front (used by step 1a + 4 + 5...).
+  const grpc = new SuiGrpcClient({ network: NETWORK as "testnet", baseUrl: RPC_URL });
+  const txClient = createClient();
+
+  // 1a) init_fee_vault<DBUSDC>: prediction_market::init transfers the
+  //     ProtocolAdminCap to the publisher but does not share a
+  //     FeeVault<Q> (the type Q is unknown at init). We need to call
+  //     `init_fee_vault<DBUSDC>(admin_cap, vault_admin)` once post-publish
+  //     to create and share the vault. The vault_admin is the same
+  //     signer — it is the address authorized to call withdraw_fees
+  //     later.
+  log("Creating FeeVault<DBUSDC> via init_fee_vault...");
+  const protocolAdminCapId = await findOwnedObject(
+    grpc,
+    signerAddr,
+    "::prediction_market::ProtocolAdminCap",
+  );
+  if (!protocolAdminCapId) {
+    err(
+      "No ProtocolAdminCap found in deployer wallet. Was the package just published? " +
+        "prediction_market::init() should have transferred one to the publisher.",
+    );
+  }
+  let initVaultDigest = "";
+  {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::prediction_market::init_fee_vault`,
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    initVaultDigest = res.digest;
+    log(`  init_fee_vault: ${initVaultDigest}`);
+  }
+  const feeVaultId = await getSharedObjectIdFromTx(
+    grpc,
+    initVaultDigest,
+    "::prediction_market::FeeVault<",
+  );
+  log(`FeeVault:       ${feeVaultId}`);
+
   // 2) Extract shared objects created at init
   const streakAdminId = findSharedObject(objects, "::streak_system::StreakAdmin");
   const streakRegistryId = findSharedObject(
@@ -287,17 +351,15 @@ async function main() {
     "::streak_system::StreakRegistry",
   );
   const prizeAdminId = findSharedObject(objects, "::prize_pool::PrizeAdmin");
-  // prediction_market::init shares a FeeVault<Q>. Extract it from the
-  // publish effects; the `Q` placeholder in the type means we match by
-  // suffix.
-  const feeVaultId = findSharedObject(
-    objects,
-    "::prediction_market::FeeVault<",
-  );
+  // prediction_market::init does NOT share a FeeVault<Q> at publish
+  // time — the quote-coin type Q is unknown until the deployer picks
+  // one. We must call `init_fee_vault<DBUSDC>(admin_cap, vault_admin)`
+  // after publish to create and share the vault. The ProtocolAdminCap
+  // is transferred to the publisher, so we look it up by walking the
+  // publisher's owned objects.
   log(`StreakAdmin:    ${streakAdminId}`);
   log(`StreakRegistry: ${streakRegistryId}`);
   log(`PrizeAdmin:     ${prizeAdminId}`);
-  log(`FeeVault:       ${feeVaultId}`);
 
   // 3) Prize admin keypair
   const { keypair: prizeKey, isNew } = loadOrCreatePrizeKeypair();
@@ -308,14 +370,15 @@ async function main() {
     `Prize admin: ${prizeAddress} (${isNew ? "NEW keypair generated" : "loaded from env"})`,
   );
   if (isNew) {
-    const secretB64 = Buffer.from(prizeKey.getSecretKey()).toString("base64");
-    log(`  SAVE THIS — PRIZE_ADMIN_PRIVATE_KEY (base64): ${secretB64}`);
+    // Mysten SDK 2.x: getSecretKey() returns the bech32
+    // "suiprivkey1…" string, which Ed25519Keypair.fromSecretKey
+    // accepts directly. Save that form, not its base64.
+    const secretStr = prizeKey.getSecretKey() as unknown as string;
+    log(`  SAVE THIS — PRIZE_ADMIN_PRIVATE_KEY: ${secretStr}`);
   }
 
   // 4) Set pubkey on-chain
   log("Setting PrizeAdmin pubkey on-chain...");
-  const grpc = new SuiGrpcClient({ network: NETWORK as "testnet", baseUrl: RPC_URL });
-  const txClient = createClient();
   {
     const tx = new Transaction();
     tx.moveCall({
@@ -407,7 +470,10 @@ async function main() {
 
   // 7b) Create the ProtocolVault<DBUSDC> from the deployer's VLP TreasuryCap
   log("Looking for VLP TreasuryCap in deployer wallet...");
-  const vlpTreasuryCapId = await findVlpTreasuryCap(grpc, signerAddr);
+  let vlpTreasuryCapId = process.env.VLP_TREASURY_CAP_ID ?? "";
+  if (!vlpTreasuryCapId) {
+    vlpTreasuryCapId = (await findVlpTreasuryCap(grpc, signerAddr)) ?? "";
+  }
   if (!vlpTreasuryCapId) {
     err(
       "No VLP TreasuryCap found in deployer wallet. Was the package just published? " +
@@ -485,8 +551,8 @@ async function main() {
     agentsUpdates.DUSDC_TREASURY_CAP_ID = process.env.DUSDC_TREASURY_CAP_ID;
   }
   if (isNew) {
-    const secretB64 = Buffer.from(prizeKey.getSecretKey()).toString("base64");
-    agentsUpdates.PRIZE_ADMIN_PRIVATE_KEY = secretB64;
+    const secretStr = prizeKey.getSecretKey() as unknown as string;
+    agentsUpdates.PRIZE_ADMIN_PRIVATE_KEY = secretStr;
   }
   updateEnv(AGENTS_ENV, agentsUpdates);
   updateEnv(WEB_ENV, {

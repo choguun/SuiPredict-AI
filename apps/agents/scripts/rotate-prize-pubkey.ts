@@ -1,8 +1,11 @@
 #!/usr/bin/env tsx
 /**
- * Manual key-rotation helper for the PrizePool admin pubkey.
+ * Manual key-rotation helper for the PrizePool admin pubkey (the
+ * ed25519 public key used to verify claim_prize signatures). To
+ * rotate the *address* (hot-wallet move) instead, use
+ * `rotate-prize-admin-address.ts`.
  *
- *   $ pnpm --filter @suipredict/agents tsx scripts/rotate-prize-admin.ts
+ *   $ pnpm --filter @suipredict/agents tsx scripts/rotate-prize-pubkey.ts
  *
  * Reads PRIZE_POOL_ID and PRIZE_ADMIN_ID from env. Generates a fresh
  * ed25519 keypair (or reads PRIZE_NEW_ADMIN_PRIVATE_KEY from env),

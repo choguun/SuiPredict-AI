@@ -54,6 +54,8 @@ export {
   buildRegisterMarketTx,
   buildVaultDepositTx,
   buildVaultWithdrawTx,
+  buildWithdrawFeesTx,
+  buildInitFeeVaultTx,
   yesCoinType,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,

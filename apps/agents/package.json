@@ -8,7 +8,11 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "smoke-test": "tsx scripts/smoke-test.ts",
-    "bootstrap": "tsx scripts/bootstrap-gamification.ts"
+    "bootstrap": "tsx scripts/bootstrap-gamification.ts",
+    "resume-bootstrap": "tsx scripts/resume-bootstrap.ts",
+    "verify-config": "tsx scripts/verify-config.ts",
+    "rotate-prize-pubkey": "tsx scripts/rotate-prize-pubkey.ts",
+    "rotate-prize-admin-address": "tsx scripts/rotate-prize-admin-address.ts"
   },
   "dependencies": {
     "@mysten/sui": "^2.17.0",

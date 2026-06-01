@@ -12,7 +12,7 @@
  * Key rotation (`prize_pool::rotate_pubkey`) is exposed as a manual
  * CLI helper rather than a cron job — it requires publishing a new
  * ed25519 pubkey and is rarely needed. Run via:
- *   `apps/agents/scripts/rotate-prize-admin.ts`
+ *   `apps/agents/scripts/rotate-prize-pubkey.ts`
  */
 import {
   createClient,
