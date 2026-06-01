@@ -8,6 +8,16 @@
  *     a single PTB (first-time users), or
  *   - Calls `record_participation` only.
  *
+ * For streak owners who did NOT mint that day, the sweep:
+ *   - Always records a `NOT_SUBMITTED` row in the off-chain `daily_scores`
+ *     table (the leaderboard source of truth).
+ *   - Calls `record_participation(NOT_SUBMITTED)` on-chain ONLY when the
+ *     gap is exactly 1 day (`day_index == last_participation_day + 1`).
+ *     The on-chain contract requires consecutive days, so multi-day gaps
+ *     cannot be backfilled without a contract change. Multi-day gaps are
+ *     logged and skipped for the on-chain streak; the leaderboard still
+ *     shows the correct (broken) streak score.
+ *
  * PTBs are batched at 20 users per transaction (Sui limit). Sweep is
  * idempotent: the on-chain `EAlreadyRecordedToday` abort simply skips
  * that user on retry.
@@ -19,6 +29,7 @@ import {
   createClient,
   executeTransaction,
   streakIdForUser,
+  type SuiClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
@@ -45,6 +56,8 @@ interface ResolvedUser {
   outcome: 0 | 1 | 2; // 0=NotSubmitted, 1=AllCorrect, 2=SomeWrong
   category: 0 | 1 | 2 | 3;
   streakId?: string; // looked up off-chain; undefined = needs lazy create
+  /** Gap to backfill (number of consecutive NOT_SUBMITTED days before `dayIndex`). */
+  backfillDays?: number;
 }
 
 interface EventQuery {
@@ -69,6 +82,87 @@ async function queryAllEvents(
     out.push(...page.data);
     cursor = page.nextCursor ?? null;
   } while (cursor);
+  return out;
+}
+
+/**
+ * Enumerate all addresses that have a `UserStreak` registered.
+ *
+ * `StreakRegistry.streaks: Table<address, ID>` is a Sui `Table`, whose
+ * entries appear as dynamic fields on the registry object. The gRPC
+ * client returns each entry as `{ name: { type, bcs: Uint8Array }, ... }`
+ * where `bcs` is the BCS-encoded 32-byte address. We decode it back to
+ * a `0x`-prefixed hex string. The `value` (the `UserStreak` object id)
+ * is fetched separately by `streakIdForUser`.
+ */
+async function listAllStreakOwners(
+  client: SuiClient,
+  registryId: string,
+): Promise<string[]> {
+  if (!registryId) return [];
+  const out: string[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+  while (hasNextPage) {
+    const page: { hasNextPage: boolean; cursor: string | null; dynamicFields: { name?: { type?: string; bcs?: Uint8Array } }[] } =
+      await client.listDynamicFields({
+        parentId: registryId,
+        cursor,
+        limit: 1000,
+      });
+    for (const f of page.dynamicFields) {
+      const name = f.name;
+      if (name?.type === "address" && name.bcs instanceof Uint8Array) {
+        out.push("0x" + bytesToHex(name.bcs));
+      }
+    }
+    hasNextPage = page.hasNextPage;
+    cursor = page.cursor;
+  }
+  return out;
+}
+
+function bytesToHex(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) {
+    s += b[i]!.toString(16).padStart(2, "0");
+  }
+  return s;
+}
+
+/**
+ * Read `last_participation_day` from each `UserStreak` object in one
+ * round-trip via `getObjects` (plural). Returns a map `ownerAddress -> day`.
+ * Missing/zero days mean the user has never participated.
+ */
+async function readLastParticipationDays(
+  client: SuiClient,
+  streakIdsByOwner: Map<string, string>,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const ids = Array.from(streakIdsByOwner.values());
+  if (ids.length === 0) return out;
+  const ownerById = new Map<string, string>();
+  for (const [owner, id] of streakIdsByOwner) ownerById.set(id, owner);
+
+  // gRPC getObjects is bounded by request size; chunk to 50 ids per call
+  // (Sui's historical multiGetObjects limit) to stay well under it.
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const { objects } = await client.getObjects({
+      objectIds: chunk,
+      include: { json: true },
+    });
+    for (const obj of objects) {
+      if (obj instanceof Error) continue;
+      const id = obj.objectId;
+      if (!id) continue;
+      const json = obj.json as { last_participation_day?: string | number } | null;
+      const day = Number(json?.last_participation_day ?? 0);
+      const owner = ownerById.get(id);
+      if (owner) out.set(owner, day);
+    }
+  }
   return out;
 }
 
@@ -224,18 +318,43 @@ function buildSweepTx(
       // wallet; once they do, the next sweep picks them up.
       continue;
     }
-    tx.moveCall({
-      target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
-      arguments: [
-        tx.object(adminId),
-        tx.object(registryId),
-        tx.object(u.streakId),
-        tx.pure.u64(dayIndex),
-        tx.pure.u8(u.outcome),
-        tx.pure.u8(u.category),
-        tx.object(CLOCK_OBJECT_ID),
-      ],
-    });
+    if (u.outcome === OUTCOME_NOT_SUBMITTED) {
+      // The on-chain contract resets `current_streak` to 0 on the first
+      // NOT_SUBMITTED, and then every subsequent NOT_SUBMITTED for the
+      // same user is a no-op (current_streak is already 0). We therefore
+      // only need one NOT_SUBMITTED call per skipped user; the gap's
+      // other missed days are unrecoverable from this contract (the
+      // assertion `day_index == last + 1` rejects multi-day backfill
+      // without a contract change). The leaderboard is fed from
+      // off-chain `daily_scores` for the multi-day case.
+      tx.moveCall({
+        target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
+        arguments: [
+          tx.object(adminId),
+          tx.object(registryId),
+          tx.object(u.streakId),
+          tx.pure.u64(dayIndex),
+          tx.pure.u8(OUTCOME_NOT_SUBMITTED),
+          tx.pure.u8(u.category),
+          tx.object(CLOCK_OBJECT_ID),
+        ],
+      });
+    } else {
+      // Minted user — record the resolved outcome (ALL_CORRECT or
+      // SOME_WRONG) for `dayIndex`.
+      tx.moveCall({
+        target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
+        arguments: [
+          tx.object(adminId),
+          tx.object(registryId),
+          tx.object(u.streakId),
+          tx.pure.u64(dayIndex),
+          tx.pure.u8(u.outcome),
+          tx.pure.u8(u.category),
+          tx.object(CLOCK_OBJECT_ID),
+        ],
+      });
+    }
   }
   return tx;
 }
@@ -275,10 +394,66 @@ export async function runStreakSweeper(
     if (u.streakId) withStreak.push(u);
   }
 
-  if (withStreak.length === 0) {
+  // ---- NotSubmitted sweep -------------------------------------------------
+  // Enumerate every address with an on-chain `UserStreak`. Anyone who
+  // didn't mint yesterday's daily markets gets:
+  //   - a `NOT_SUBMITTED` row in the off-chain `daily_scores` table, so the
+  //     leaderboard shows the broken streak; and
+  //   - a `record_participation(NOT_SUBMITTED)` on-chain tx when the gap
+  //     is exactly 1 day, so the user's `current_streak` is reset to 0.
+  // Multi-day gaps (`dayIndex > last + 1`) are skipped for the on-chain
+  // call because the contract requires consecutive days; the leaderboard
+  // still records the NOT_SUBMITTED row.
+  const mintedSet = new Set(users.map((u) => u.user));
+  const allOwners = await listAllStreakOwners(client, STREAK_REGISTRY_ID);
+
+  // Pull each owner's streakId + last_participation_day in one batch.
+  const ownerToStreakId = new Map<string, string>();
+  for (const owner of allOwners) {
+    try {
+      const id = await streakIdForUser(client, STREAK_REGISTRY_ID, owner);
+      if (id) ownerToStreakId.set(owner, id);
+    } catch {
+      /* skip — user was removed between list and lookup */
+    }
+  }
+  const lastDays = await readLastParticipationDays(client, ownerToStreakId);
+
+  const notSubmittedUsers: ResolvedUser[] = [];
+  const multiDayGaps: string[] = [];
+  for (const owner of allOwners) {
+    if (mintedSet.has(owner)) continue;
+    const last = lastDays.get(owner) ?? 0;
+    const expectedLast = dayIndex - 1; // dayIndex = yesterday; last = yesterday
+    if (last === expectedLast) {
+      // 1-day gap — contract can record NOT_SUBMITTED and reset streak.
+      notSubmittedUsers.push({
+        user: owner,
+        outcome: OUTCOME_NOT_SUBMITTED,
+        category: 0,
+        streakId: ownerToStreakId.get(owner),
+      });
+    } else if (last > 0 && last < expectedLast) {
+      // Multi-day gap — leaderboard still gets a row, on-chain skipped.
+      notSubmittedUsers.push({
+        user: owner,
+        outcome: OUTCOME_NOT_SUBMITTED,
+        category: 0,
+        // streakId intentionally omitted: buildSweepTx will skip the
+        // on-chain call for users without a streakId, but the
+        // off-chain `daily_scores` row is still written below.
+      });
+      multiDayGaps.push(owner);
+    }
+    // last == 0 → user has never participated, skip silently.
+    // last > expectedLast → clock skew or re-org; skip silently.
+  }
+
+  const combined = [...withStreak, ...notSubmittedUsers];
+  if (combined.length === 0) {
     return recordResult("StreakSweeper", {
       action: "noop",
-      reasoning: `Day ${dayIndex}: ${users.length} minted but none have an on-chain streak yet.`,
+      reasoning: `Day ${dayIndex}: ${users.length} minted but no on-chain streaks to update.`,
       confidence: 100,
     });
   }
@@ -286,8 +461,8 @@ export async function runStreakSweeper(
   let sent = 0;
   let failed = 0;
 
-  for (let i = 0; i < withStreak.length; i += PTB_BATCH) {
-    const batch = withStreak.slice(i, i + PTB_BATCH);
+  for (let i = 0; i < combined.length; i += PTB_BATCH) {
+    const batch = combined.slice(i, i + PTB_BATCH);
     const tx = buildSweepTx(
       STREAK_REGISTRY_ID,
       STREAK_ADMIN_ID,
@@ -319,9 +494,20 @@ export async function runStreakSweeper(
     }
   }
 
+  if (multiDayGaps.length > 0) {
+    console.warn(
+      `[streak-sweeper] ${multiDayGaps.length} users had multi-day gaps ` +
+        `(NOT_SUBMITTED recorded in daily_scores only; on-chain streak not reset). ` +
+        `First few: ${multiDayGaps.slice(0, 3).join(", ")}`,
+    );
+  }
+
   return recordResult("StreakSweeper", {
     action: "sweep",
-    reasoning: `Day ${dayIndex}: ${sent} ok, ${failed} failed (PTB size ${PTB_BATCH}; ${users.length - withStreak.length} users had no on-chain streak).`,
+    reasoning:
+      `Day ${dayIndex}: ${sent} ok, ${failed} failed ` +
+      `(${withStreak.length} minted, ${notSubmittedUsers.length - multiDayGaps.length} not-submitted 1-day gaps, ` +
+      `${multiDayGaps.length} multi-day gaps, PTB size ${PTB_BATCH}).`,
     confidence: 100,
   });
 }

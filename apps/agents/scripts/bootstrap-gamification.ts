@@ -560,6 +560,8 @@ async function main() {
     NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
     NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
     NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
+    NEXT_PUBLIC_PRIZE_ADMIN_ID: prizeAdminId,
+    NEXT_PUBLIC_FEE_VAULT_ID: feeVaultId,
     NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
     NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
   });

@@ -53,6 +53,21 @@ function buildSchedule() {
  * fallbacks for less-common vars.
  */
 function bootstrapEnv() {
+  // Sanity check: the prediction_market and streak_system/prize_pool
+  // modules all live in ONE published package (just with different
+  // source-namespace prefixes: `suipredict::` vs
+  // `suipredict_agent_policy::`). If two env vars point at different
+  // packages, agents that query on-chain events with one package id
+  // and submit PTBs targeting the other will silently find zero
+  // results. Warn loudly so the misconfiguration is visible at boot.
+  const pkgA = process.env.AGENT_POLICY_PACKAGE_ID;
+  const pkgB = process.env.PREDICT_PACKAGE_ID ?? process.env.MARKET_PACKAGE_ID;
+  if (pkgA && pkgB && pkgA !== pkgB) {
+    console.warn(
+      `[agents] AGENT_POLICY_PACKAGE_ID (${pkgA}) differs from PREDICT_PACKAGE_ID/MARKET_PACKAGE_ID (${pkgB}). ` +
+        `Re-run bootstrap to align them, or the streak sweeper will miss events.`,
+    );
+  }
   const pkg =
     process.env.PREDICT_PACKAGE_ID ??
     process.env.MARKET_PACKAGE_ID ??

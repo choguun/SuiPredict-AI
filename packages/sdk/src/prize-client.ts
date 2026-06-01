@@ -72,6 +72,17 @@ export function buildClaimPrizeTx(params: {
   poolIdForSig: string; // must equal poolId
   prizeCoinType?: string; // defaults to DUSDC_TYPE; set to DBUSDC_TYPE for DBUSDC pools
 }): Transaction {
+  // The on-chain claim_prize signs the (pool_id_for_sig, week, user, rank,
+  // amount) tuple. If the caller passes a different `poolId` to moveCall
+  // than the one the backend signed over, the signature verifies against
+  // a pool that doesn't exist and the funds go nowhere useful. Abort here
+  // so the caller fixes the wiring rather than burning gas.
+  if (params.poolId !== params.poolIdForSig) {
+    throw new Error(
+      `buildClaimPrizeTx: poolId (${params.poolId}) !== poolIdForSig (${params.poolIdForSig}); ` +
+        "the signature was generated against a different pool. Pass the same id for both.",
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
@@ -243,8 +254,17 @@ function writeU64LE(buf: Uint8Array, offset: number, n: bigint): void {
 
 /**
  * Backend helper: sign a claim payload with the prize admin keypair.
- * The signature is over the keccak256 hash of the canonical message,
- * matching `prize_pool::build_claim_message`.
+ * The signature is a raw ed25519 signature over the keccak256 hash of
+ * the canonical message. This matches `prize_pool::build_claim_message`
+ * on-chain, which hashes the message with keccak256 and then verifies
+ * the signature via `ed25519::ed25519_verify(&sig, pk, &digest)`.
+ *
+ * IMPORTANT: do NOT use `signer.signPersonalMessage` here — that wraps
+ * the digest with a `PersonalMessage` intent prefix that the on-chain
+ * verifier does not apply, so the signature would always be rejected
+ * with `EInvalidSignature`. The raw `signer.sign(digest)` produces a
+ * plain ed25519 signature that verifies against the bare keccak256
+ * digest.
  */
 export async function signClaimPayload(
   signer: Ed25519Keypair,
@@ -253,9 +273,9 @@ export async function signClaimPayload(
 ): Promise<SignedClaim> {
   const raw = buildClaimMessageBytes(payload);
   const digest = await keccak256(raw);
-  const sig = await signer.signPersonalMessage(digest);
+  const signature = await signer.sign(digest);
   return {
     payload,
-    signatureB64: Buffer.from(sig.signature).toString("base64"),
+    signatureB64: Buffer.from(signature).toString("base64"),
   };
 }

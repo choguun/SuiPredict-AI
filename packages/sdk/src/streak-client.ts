@@ -13,7 +13,6 @@ import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID, DUSDC_TYPE } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
-import { PREDICT_MARKET_PACKAGE_ID } from "./prediction-market-client.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -91,6 +90,12 @@ export function buildRecordParticipationTx(params: {
  * Build `redeem_with_streak` transaction. Burns winning YES tokens and
  * pays out collateral multiplied by the user's streak multiplier. The
  * 0.5% protocol fee is routed to the shared `FeeVault`.
+ *
+ * Note: `redeem_with_streak` lives in `prediction_market.move`, which
+ * is in the same package as `streak_system.move` (both share one
+ * Published.toml). We use `PKG()` (= `AGENT_POLICY_PACKAGE_ID`) so
+ * PTB construction is consistent across this file and so the move-call
+ * target resolves through the same env-var chain as `create_streak`.
  */
 export function buildRedeemWithStreakTx(
   marketId: string,
@@ -100,7 +105,7 @@ export function buildRedeemWithStreakTx(
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
-    target: `${PREDICT_MARKET_PACKAGE_ID}::prediction_market::redeem_with_streak`,
+    target: `${PKG()}::prediction_market::redeem_with_streak`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
@@ -114,6 +119,7 @@ export function buildRedeemWithStreakTx(
 
 /**
  * Build `redeem_no_with_streak` transaction. Same as above for NO positions.
+ * See `buildRedeemWithStreakTx` for the package-id note.
  */
 export function buildRedeemNoWithStreakTx(
   marketId: string,
@@ -123,7 +129,7 @@ export function buildRedeemNoWithStreakTx(
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
-    target: `${PREDICT_MARKET_PACKAGE_ID}::prediction_market::redeem_no_with_streak`,
+    target: `${PKG()}::prediction_market::redeem_no_with_streak`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
