@@ -8,6 +8,9 @@ import { runRiskMonitor } from "./agents/risk-monitor.js";
 import { runStreakSweeper } from "./agents/streak-sweeper.js";
 import { runLeaderboardWorker } from "./agents/leaderboard-worker.js";
 import { runPrizeDistributor } from "./agents/prize-distributor.js";
+import { runPrizeAdmin } from "./agents/prize-admin.js";
+import { runReferralKeeper } from "./agents/referral-keeper.js";
+import { runPositionIndexer } from "./agents/position-indexer.js";
 import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
@@ -40,7 +43,10 @@ async function runCycle(ctx: AgentContext) {
     runRiskMonitor,
     runStreakSweeper,
     runLeaderboardWorker,
+    runPrizeAdmin,
     runPrizeDistributor,
+    runReferralKeeper,
+    runPositionIndexer,
   ] as const;
 
   for (const agent of agents) {

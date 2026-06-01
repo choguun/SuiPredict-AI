@@ -1,65 +1,186 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  useCurrentAccount,
+  useCurrentClient,
+  useDAppKit,
+} from "@mysten/dapp-kit-react";
+import {
+  listMarkets,
+  getMarketOrderBook,
+  buildMintSharesTx,
+  type MarketInfo,
+} from "@suipredict/sdk";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
+import { toast } from "sonner";
+import Link from "next/link";
 
-const MOCK_MARKETS = [
-  { id: "1", question: "Will BTC close above $65,000 today?", yesProbability: 0.65 },
-  { id: "2", question: "Will ETH close above $3,500 today?", yesProbability: 0.42 },
-  { id: "3", question: "Will any major AI funding (> $50M) be announced today?", yesProbability: 0.81 },
-  { id: "4", question: "Will Total Crypto Market Cap increase today?", yesProbability: 0.55 },
-  { id: "5", question: "Will OpenAI release a new model update today?", yesProbability: 0.23 },
-];
+const DBUSDC =
+  "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
+
+/** Daily markets: expiry within 36h from now, status active. */
+const DAILY_EXPIRY_WINDOW_MS = 36 * 60 * 60 * 1000;
+const DEFAULT_PARLAY_LIMIT = 5;
+
+type Selection = boolean; // true=YES, false=NO
+
+function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
+  return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
+}
+
+interface DailyMarket extends MarketInfo {
+  yesProbability: number;
+}
 
 export function DailyPredictionCard() {
-  const [activeMarketIds, setActiveMarketIds] = useState<string[]>(["1", "2", "3"]);
-  const [selections, setSelections] = useState<Record<string, boolean>>({});
+  const account = useCurrentAccount();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
+
+  const [activeMarketIds, setActiveMarketIds] = useState<string[]>([]);
+  const [selections, setSelections] = useState<Record<string, Selection>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
 
-  const activeMarkets = useMemo(() => {
-    return MOCK_MARKETS.filter(m => activeMarketIds.includes(m.id));
-  }, [activeMarketIds]);
+  const dailyQuery = useQuery({
+    queryKey: ["dailyMarkets"],
+    staleTime: 30_000,
+    queryFn: async (): Promise<DailyMarket[]> => {
+      const markets = await listMarkets();
+      const now = Date.now();
+      const cutoff = now + DAILY_EXPIRY_WINDOW_MS;
+      const candidates = markets.filter(
+        (m) =>
+          m.status === "active" &&
+          m.expiry_ms > now &&
+          m.expiry_ms <= cutoff,
+      );
+      const enriched = await Promise.all(
+        candidates.slice(0, 12).map(async (m) => {
+          try {
+            const book = await getMarketOrderBook(m.id);
+            return { ...m, yesProbability: book.mid_price || 0.5 };
+          } catch {
+            return { ...m, yesProbability: 0.5 };
+          }
+        }),
+      );
+      return enriched;
+    },
+  });
 
-  const activeSelectionsCount = activeMarketIds.filter(id => selections[id] !== undefined).length;
-  const isComplete = activeMarketIds.length > 0 && activeSelectionsCount === activeMarketIds.length;
+  const dailyMarkets = useMemo(
+    () => dailyQuery.data ?? [],
+    [dailyQuery.data],
+  );
+
+  const activeMarkets = useMemo(
+    () => dailyMarkets.filter((m) => activeMarketIds.includes(m.id)),
+    [dailyMarkets, activeMarketIds],
+  );
+
+  const activeSelectionsCount = activeMarketIds.filter(
+    (id) => selections[id] !== undefined,
+  ).length;
+  const isComplete =
+    activeMarketIds.length > 0 &&
+    activeSelectionsCount === activeMarketIds.length;
 
   const handleAddMarket = () => {
-    const nextAvailable = MOCK_MARKETS.find(m => !activeMarketIds.includes(m.id));
+    const nextAvailable = dailyMarkets.find(
+      (m) => !activeMarketIds.includes(m.id),
+    );
     if (nextAvailable) {
       setActiveMarketIds([...activeMarketIds, nextAvailable.id]);
     }
   };
 
   const handleRemoveMarket = (id: string) => {
-    setActiveMarketIds(activeMarketIds.filter(marketId => marketId !== id));
-    // Optionally clean up selection for removed market
+    setActiveMarketIds(activeMarketIds.filter((marketId) => marketId !== id));
     const newSelections = { ...selections };
     delete newSelections[id];
     setSelections(newSelections);
   };
 
   const handleSubmit = async () => {
-    if (!isComplete) return;
+    if (!account || !client || !isComplete) return;
     setSubmitting(true);
-    setTimeout(() => {
+    let lastDigest: string | null = null;
+    try {
+      const { objects } = await client.core.listCoins({
+        owner: account.address,
+        coinType: DBUSDC,
+      });
+      const coin = objects[0];
+      if (!coin) {
+        throw new Error("No DBUSDC — request from DeepBook testnet form");
+      }
+      // Mint YES+NO on each selected market (uses 1 DBUSDC per market).
+      for (const marketId of activeMarketIds) {
+        const tx = buildMintSharesTx(marketId, coin.objectId);
+        const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+        lastDigest = txDigest(r);
+      }
+      toast.success(
+        `Predictions locked across ${activeMarketIds.length} markets${
+          lastDigest ? ` — ${lastDigest.slice(0, 12)}…` : ""
+        }`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Submit failed");
+    } finally {
       setSubmitting(false);
-      setSubmitted(true);
-    }, 1500);
+    }
   };
 
-  if (submitted) {
+  if (dailyQuery.isLoading) {
     return (
-      <div className="relative flex h-full min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/30 bg-[#11141d] p-8 text-center shadow-2xl shadow-emerald-900/20 transition-all">
-        <div className="absolute inset-0 bg-emerald-500/5 -z-10" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full bg-emerald-500/20 blur-[80px] -z-10" />
-        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/20 text-4xl shadow-[0_0_30px_rgba(16,185,129,0.3)]">
-          🎉
-        </div>
-        <h2 className="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-br from-emerald-300 to-teal-500 mb-2">Predictions Locked!</h2>
-        <p className="max-w-xs text-sm leading-relaxed text-emerald-200/70">
-          Your daily predictions have been recorded. Come back tomorrow to keep your streak alive and claim your yield boost.
+      <div className="flex h-full min-h-[300px] items-center justify-center rounded-2xl border border-white/10 bg-[#11141d] p-8 text-sm text-zinc-500">
+        Loading today&apos;s markets…
+      </div>
+    );
+  }
+
+  if (dailyMarkets.length === 0) {
+    return (
+      <div className="relative flex h-full min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-8 text-center shadow-xl shadow-black/50">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full bg-violet-500/10 blur-[80px] -z-10" />
+        <h2 className="text-xl font-bold text-white mb-2">No daily markets yet</h2>
+        <p className="max-w-xs text-sm leading-relaxed text-zinc-400">
+          The market creator agent publishes 5 daily markets at 00:00 UTC. Check
+          back soon, or browse active markets.
         </p>
+        <Link
+          href="/markets"
+          className="mt-4 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
+        >
+          Browse all markets
+        </Link>
+      </div>
+    );
+  }
+
+  if (activeMarkets.length === 0) {
+    return (
+      <div className="relative flex h-full min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-8 text-center shadow-xl shadow-black/50">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full bg-violet-500/10 blur-[80px] -z-10" />
+        <h2 className="text-xl font-bold text-white mb-2">Build your daily parlay</h2>
+        <p className="max-w-xs text-sm leading-relaxed text-zinc-400 mb-4">
+          We found {dailyMarkets.length} market
+          {dailyMarkets.length === 1 ? "" : "s"} expiring in the next 36 hours.
+          Add up to {DEFAULT_PARLAY_LIMIT} to start your streak.
+        </p>
+        <button
+          onClick={() =>
+            setActiveMarketIds(
+              dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
+            )
+          }
+          className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02]"
+        >
+          Add top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} markets
+        </button>
       </div>
     );
   }
@@ -67,15 +188,18 @@ export function DailyPredictionCard() {
   return (
     <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20">
       <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] -z-10" />
-      
+
       <div className="mb-6 flex justify-between items-start gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
           <p className="text-sm text-zinc-400">
-            Build your parlay. Predict {activeMarketIds.length} binary markets correctly to maintain your streak and earn up to <span className="font-semibold text-emerald-400">30% APY boost</span>!
+            Predict {activeMarketIds.length} daily market
+            {activeMarketIds.length === 1 ? "" : "s"} correctly to keep your
+            streak alive and earn up to{" "}
+            <span className="font-semibold text-emerald-400">150% yield boost</span>.
           </p>
         </div>
-        {activeMarketIds.length < MOCK_MARKETS.length && (
+        {activeMarketIds.length < Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length) && (
           <button
             onClick={handleAddMarket}
             className="shrink-0 flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
@@ -89,11 +213,6 @@ export function DailyPredictionCard() {
       </div>
 
       <div className="flex-1 space-y-3">
-        {activeMarkets.length === 0 && (
-          <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-zinc-500 text-sm">
-            No markets in your parlay. Add one to get started.
-          </div>
-        )}
         {activeMarkets.map((market, idx) => {
           const selected = selections[market.id];
           return (
@@ -113,17 +232,22 @@ export function DailyPredictionCard() {
                     {idx + 1}
                   </div>
                   <div className="flex w-full flex-col gap-2.5">
-                    <p className={`text-sm font-medium transition-colors ${selected !== undefined ? "text-zinc-300" : "text-white"}`}>
-                      {market.question}
-                    </p>
+                    <Link
+                      href={`/markets/${encodeURIComponent(market.id)}`}
+                      className={`text-sm font-medium transition-colors hover:text-cyan-300 ${selected !== undefined ? "text-zinc-300" : "text-white"}`}
+                    >
+                      {market.title}
+                    </Link>
                     <div className="flex items-center gap-3">
                       <ProbabilityBar yesProbability={market.yesProbability} className="h-1.5 opacity-60 group-hover:opacity-100 transition-opacity" />
-                      <span className="shrink-0 text-[10px] font-bold tracking-wider text-zinc-500 uppercase">{Math.round(market.yesProbability * 100)}% YES</span>
+                      <span className="shrink-0 text-[10px] font-bold tracking-wider text-zinc-500 uppercase">
+                        {Math.round(market.yesProbability * 100)}% YES
+                      </span>
                     </div>
                   </div>
                 </div>
               </div>
-              
+
               <button
                 onClick={() => handleRemoveMarket(market.id)}
                 className="absolute right-3 top-3 sm:relative sm:right-auto sm:top-auto sm:ml-2 flex h-6 w-6 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 sm:order-last"
@@ -164,10 +288,16 @@ export function DailyPredictionCard() {
       <div className="mt-6 border-t border-white/5 pt-6">
         <button
           onClick={handleSubmit}
-          disabled={!isComplete || submitting || activeMarketIds.length === 0}
+          disabled={
+            !account || !isComplete || submitting || activeMarketIds.length === 0
+          }
           className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
         >
-          {submitting ? "Submitting..." : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
+          {submitting
+            ? "Minting shares…"
+            : !account
+              ? "Connect wallet to lock in"
+              : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
         </button>
       </div>
     </div>

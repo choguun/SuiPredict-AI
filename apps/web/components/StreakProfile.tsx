@@ -1,7 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
-import { buildCreateStreakTx } from "@suipredict/sdk";
+import { buildClaimBadgeTx, buildCreateStreakTx } from "@suipredict/sdk";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
 
@@ -123,6 +123,35 @@ export function StreakProfile() {
             <div className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Badges Earned</div>
             <div className="mt-1 text-xl font-bold text-white">{earned}</div>
           </div>
+        </div>
+        <div className="mt-3 grid grid-cols-5 gap-2">
+          {TIER_THRESHOLDS.map((threshold, idx) => {
+            const tier = idx + 1;
+            const claimed = streak.info?.claimed_tiers?.[idx] === true;
+            const eligible = longest >= threshold;
+            return (
+              <button
+                key={tier}
+                disabled={claimed || !eligible}
+                onClick={async () => {
+                  const tx = buildClaimBadgeTx(streakId!, tier);
+                  await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                  streak.refetch();
+                }}
+                className={`flex flex-col items-center gap-1 rounded-lg border p-2 text-[10px] font-bold uppercase tracking-wider transition ${
+                  claimed
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : eligible
+                      ? "border-orange-500/30 bg-orange-500/10 text-orange-200 hover:brightness-125"
+                      : "border-white/5 bg-white/[0.02] text-zinc-600"
+                }`}
+                title={`${TIER_LABELS[idx]} (${threshold}-day)${claimed ? " — claimed" : eligible ? " — claim now" : ` — reach ${threshold} days`}`}
+              >
+                <span className="text-base">{TIER_LABELS[idx]}</span>
+                <span className="text-[9px] opacity-75">{claimed ? "✓" : eligible ? "Claim" : `${threshold}d`}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>

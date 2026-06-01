@@ -24,6 +24,7 @@ import {
   executeTransaction,
   expectedAmountForRank,
   signClaimPayload,
+  streakIdForUser,
   type ClaimPayload,
 } from "@suipredict/sdk";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -38,6 +39,7 @@ import {
 
 const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
+const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
 const PRIZE_ADMIN_PRIVATE_KEY = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
 const PRIZE_WEEKLY_AMOUNT = BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0");
 const PRIZE_AUTO_CLAIM = process.env.PRIZE_AUTO_CLAIM === "true";
@@ -110,10 +112,22 @@ export async function runPrizeDistributor(
       signed++;
 
       if (PRIZE_AUTO_CLAIM && client) {
+        const userStreakId = await streakIdForUser(
+          client,
+          STREAK_REGISTRY_ID,
+          row.user,
+        );
+        if (!userStreakId) {
+          failed++;
+          console.error(
+            `[prize-distributor] no UserStreak for ${row.user} — skipping auto-claim`,
+          );
+          continue;
+        }
         const tx = buildClaimPrizeTx({
           poolId: PRIZE_POOL_ID,
           prizeAdminId: PRIZE_ADMIN_ID,
-          userStreakId: row.user, // frontend supplies real id
+          userStreakId,
           weekIndex: BigInt(priorWeek),
           rank,
           amount,

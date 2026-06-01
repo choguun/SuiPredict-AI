@@ -1,6 +1,7 @@
 import {
   createClient,
   createMarketDeepBookClient,
+  buildAuthorizeSpendTx,
   buildPlaceYesLimitOrderTx,
   buildWithdrawSettledTx,
   getOrderBookDepth,
@@ -16,6 +17,12 @@ import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 const SPREAD_THRESHOLD_BPS = Number(process.env.MM_SPREAD_THRESHOLD_BPS ?? 400);
 const QUOTE_SIZE = Number(process.env.MM_QUOTE_SIZE ?? 10_000_000);
 const BALANCE_MANAGER_ID = process.env.BALANCE_MANAGER_ID;
+const AGENT_POLICY_ID = process.env.AGENT_POLICY_ID ?? "";
+// Estimated DBUSDC notional per side per cycle: price*qty. Used for authorize_spend.
+const PER_ORDER_NOTIONAL_DOLLARS = Math.max(
+  1,
+  Math.round((QUOTE_SIZE * (SPREAD_THRESHOLD_BPS / 10_000 + 0.05)) / 1_000_000),
+);
 
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   // Find an active market that has a DeepBook pool
@@ -114,6 +121,16 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     // Withdraw any previously settled amounts first (housekeeping)
     const withdrawTx = buildWithdrawSettledTx(dbClient, poolKey);
     await executeTransaction(client, withdrawTx, ctx.signer);
+
+    // Authorize this cycle's spend against the on-chain policy (no-op if
+    // AGENT_POLICY_ID is unset, e.g. on demo deployments).
+    if (AGENT_POLICY_ID) {
+      const authTx = buildAuthorizeSpendTx(
+        AGENT_POLICY_ID,
+        PER_ORDER_NOTIONAL_DOLLARS * 2, // both sides
+      );
+      await executeTransaction(client, authTx, ctx.signer);
+    }
 
     // Place bid limit order (buy YES shares)
     const bidTx = buildPlaceYesLimitOrderTx(dbClient, poolKey, {

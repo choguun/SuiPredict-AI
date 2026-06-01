@@ -13,24 +13,25 @@ import {
   buildDeepBookDepositTx,
   buildDeepBookPlaceLimitOrderTx,
   buildDeepBookWithdrawSettledTx,
-  buildBuyNoLimitOrderTx,
-  buildMergeCollateralTx,
-  buildPlaceLimitOrderTx,
-  buildRedeemWinnerTx,
-  buildSplitCollateralTx,
+  buildMintSharesTx,
+  buildRedeemTx,
+  buildRedeemWithStreakTx,
   createPredictionDeepBookClient,
   getMarket,
   getMarketOrderBook,
   getPortfolio,
+  noCoinType,
   PREDICT_BASE_COIN_KEY,
   PREDICT_DEEPBOOK_POOL_KEY,
   PREDICT_QUOTE_COIN_KEY,
+  yesCoinType,
   type MarketInfo,
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
 import { Badge, Card, Stat } from "@/components/ui";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
+import { useUserStreakId } from "@/hooks/useUserStreakId";
 
 function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
@@ -69,6 +70,7 @@ export default function MarketDetailPage() {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
+  const { streakId } = useUserStreakId(account?.address);
 
   const [market, setMarket] = useState<MarketInfo | null>(null);
   const [book, setBook] = useState<OrderBookSnapshot | null>(null);
@@ -139,7 +141,6 @@ export default function MarketDetailPage() {
   const impliedNo = 1 - yesMid;
   const displayedPrice = clampProbability(price);
   const yesLimitPrice = side === "yes" ? displayedPrice : 1 - displayedPrice;
-  const priceBps = Math.round(clampProbability(yesLimitPrice) * 10_000);
   const isBid = side === "yes" ? orderSide === "buy" : orderSide === "sell";
   const isSyntheticBuyNo = side === "no" && orderSide === "buy";
   const deepBookPoolKey =
@@ -179,8 +180,6 @@ export default function MarketDetailPage() {
     market?.deepbook_quote_scalar,
   ]);
   const useDeepBookRoute = Boolean(deepBookMarket && balanceManagerId);
-  const quantityAtoms = BigInt(Math.floor(qty * 1_000_000));
-  const quoteAtoms = (quantityAtoms * BigInt(priceBps)) / BigInt(10_000);
   const estimatedCost = displayedPrice * qty;
   const capitalRequired = isSyntheticBuyNo ? qty : estimatedCost;
   const payout = qty;
@@ -205,7 +204,7 @@ export default function MarketDetailPage() {
   async function splitCollateral() {
     if (!account || !client || !market) return;
     setLoading(true);
-    const toastId = toast.loading("Splitting DBUSDC → YES + NO…");
+    const toastId = toast.loading("Minting YES + NO from DBUSDC…");
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
@@ -213,102 +212,47 @@ export default function MarketDetailPage() {
       });
       const coin = objects[0];
       if (!coin) throw new Error("No DBUSDC — request from DeepBook testnet form");
-      const tx = buildSplitCollateralTx(market.id, coin.objectId);
+      const tx = buildMintSharesTx(market.id, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Split OK: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      toast.success(`Minted YES + NO: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Split failed", { id: toastId });
+      toast.error(e instanceof Error ? e.message : "Mint failed", { id: toastId });
     } finally {
       setLoading(false);
     }
   }
 
   async function mergeCollateral() {
-    if (!account || !client || !market) return;
-    setLoading(true);
-    const toastId = toast.loading("Merging YES + NO → DBUSDC…");
-    try {
-      const amount = BigInt(Math.floor(qty * 1_000_000));
-      const tx = buildMergeCollateralTx(market.id, amount);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Merge OK: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
-      setRefreshCounter(c => c + 1);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Merge failed", { id: toastId });
-    } finally {
-      setLoading(false);
-    }
+    toast.error("Merge to USDC is not supported in v2. Sell via the order book instead.");
   }
 
   async function placeOrder() {
     if (!account || !client || !market) return;
-    if (!useDeepBookRoute && !market.order_book_id) return;
-    const orderBookId = market.order_book_id;
+    if (!useDeepBookRoute) {
+      toast.error(
+        "Limit orders for this market require a DeepBook pool. Use 'Mint Shares' to mint YES+NO, then sell on the DeepBook order book.",
+      );
+      return;
+    }
+    if (!deepBookMarket) return;
     setLoading(true);
-    const toastId = toast.loading(
-      useDeepBookRoute
-        ? "Placing DeepBook V3 limit order..."
-        : "Placing limit order..."
-    );
+    const toastId = toast.loading("Placing DeepBook V3 limit order...");
     try {
-      let tx;
-      if (useDeepBookRoute && deepBookMarket) {
-        const dbClient = createPredictionDeepBookClient({
-          client,
-          address: account.address,
-          balanceManagerId,
-          tradeCapId: tradeCapId || undefined,
-          market: deepBookMarket,
-        });
-        tx = buildDeepBookPlaceLimitOrderTx(dbClient, {
-          poolKey: deepBookMarket.poolKey,
-          clientOrderId: String(Date.now()),
-          price: yesLimitPrice,
-          quantity: qty,
-          isBid,
-        });
-      } else {
-        const { objects } = await client.core.listCoins({
-          owner: account.address,
-          coinType: DBUSDC,
-        });
-        if (!orderBookId) throw new Error("Missing local order book ID");
-        if (isSyntheticBuyNo) {
-          const coin = objects.find((c) => BigInt(c.balance) >= quantityAtoms);
-          if (!coin) {
-            throw new Error(
-              `Need ${(Number(quantityAtoms) / 1e6).toFixed(2)} DBUSDC to split collateral`,
-            );
-          }
-          tx = buildBuyNoLimitOrderTx({
-            marketId: market.id,
-            orderBookId,
-            collateralCoinId: coin.objectId,
-            yesPriceBps: priceBps,
-            quantity: quantityAtoms,
-          });
-        } else {
-          let quoteCoinId: string | undefined;
-          if (isBid) {
-            const coin = objects.find((c) => BigInt(c.balance) >= quoteAtoms);
-            if (!coin) {
-              throw new Error(
-                `Need ${(Number(quoteAtoms) / 1e6).toFixed(2)} DBUSDC for this bid`,
-              );
-            }
-            quoteCoinId = coin.objectId;
-          }
-          tx = buildPlaceLimitOrderTx({
-            marketId: market.id,
-            orderBookId,
-            isBid,
-            priceBps,
-            quantity: quantityAtoms,
-            quoteCoinId,
-          });
-        }
-      }
+      const dbClient = createPredictionDeepBookClient({
+        client,
+        address: account.address,
+        balanceManagerId,
+        tradeCapId: tradeCapId || undefined,
+        market: deepBookMarket,
+      });
+      const tx = buildDeepBookPlaceLimitOrderTx(dbClient, {
+        poolKey: deepBookMarket.poolKey,
+        clientOrderId: String(Date.now()),
+        price: yesLimitPrice,
+        quantity: qty,
+        isBid,
+      });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Order placed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       await refresh();
@@ -394,11 +338,39 @@ export default function MarketDetailPage() {
   }
 
   async function redeemWinner() {
-    if (!account || !market) return;
+    if (!account || !client || !market) return;
+    if (market.status !== "resolved") {
+      toast.error("Market is not resolved yet");
+      return;
+    }
+    const winningSide = market.outcome === "yes" ? "yes" : market.outcome === "no" ? "no" : null;
+    if (!winningSide) {
+      toast.error("Market has no outcome recorded");
+      return;
+    }
     setLoading(true);
-    const toastId = toast.loading("Redeeming...");
+    const toastId = toast.loading("Fetching your winning position...");
     try {
-      const tx = buildRedeemWinnerTx(market.id);
+      const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
+      const { objects } = await client.core.listCoins({
+        owner: account.address,
+        coinType: winningCoinType,
+      });
+      const coin = objects[0];
+      if (!coin) {
+        throw new Error(
+          `You don't hold any ${winningSide.toUpperCase()} tokens for this market`,
+        );
+      }
+      toast.loading(
+        streakId
+          ? "Redeeming with streak boost…"
+          : "Redeeming…",
+        { id: toastId },
+      );
+      const tx = streakId
+        ? buildRedeemWithStreakTx(market.id, coin.objectId, streakId)
+        : buildRedeemTx(market.id, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Redeemed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
@@ -759,7 +731,7 @@ export default function MarketDetailPage() {
               onClick={splitCollateral}
               className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
             >
-              Split to Shares
+              Mint Shares (YES+NO)
             </button>
             <button
               type="button"
@@ -785,8 +757,13 @@ export default function MarketDetailPage() {
                   onClick={redeemWinner}
                   className="w-fit rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
                 >
-                  Redeem winner
+                  {streakId ? "Redeem with streak boost" : "Redeem winner"}
                 </button>
+                {streakId && (
+                  <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-300">
+                    Streak active
+                  </span>
+                )}
                 {!market.id.startsWith("demo-") && (
                   <Link
                     href={`/dispute/${encodeURIComponent(market.id)}`}

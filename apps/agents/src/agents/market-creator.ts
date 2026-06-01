@@ -4,6 +4,7 @@ import {
   buildSetupReferralTx,
   extractCreatedObjectId,
   PREDICT_MARKET_PACKAGE_ID,
+  DBUSDC_TYPE,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -12,6 +13,9 @@ import { listMarkets, upsertMarket } from "../markets/store.js";
 
 const MAX_ACTIVE = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
 const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
+const INITIAL_MINT_ATOMS = BigInt(
+  process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
+); // 10 DBUSDC default — seeds the order book with an initial position
 
 const FALLBACK_MARKETS = [
   {
@@ -142,6 +146,35 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       referralId = await extractCreatedObjectId(client, referralResult.digest, "DeepBookPoolReferral");
     }
 
+    // Step 4: seed liquidity by minting initial YES+NO shares.
+    // Skipped silently if the agent has no DBUSDC (common on testnet).
+    let initialMintDigest: string | null = null;
+    if (INITIAL_MINT_ATOMS > 0n) {
+      try {
+        const { objects: dbusdcCoins } = await client.core.listCoins({
+          owner: agentAddr,
+          coinType: DBUSDC_TYPE,
+        });
+        const dbusdcCoin = dbusdcCoins
+          .filter((c) => BigInt(c.balance) >= INITIAL_MINT_ATOMS)
+          .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
+        if (dbusdcCoin) {
+          const mintTx = buildMintSharesTx(marketId, dbusdcCoin.objectId);
+          const mintResult = await executeTransaction(client, mintTx, ctx.signer);
+          initialMintDigest = mintResult.digest;
+        } else {
+          console.warn(
+            `[market-creator] no DBUSDC coin with >= ${INITIAL_MINT_ATOMS} atoms — skipping initial mint for ${marketId}`,
+          );
+        }
+      } catch (mintErr) {
+        console.warn(
+          `[market-creator] initial mint failed for ${marketId}:`,
+          mintErr instanceof Error ? mintErr.message : mintErr,
+        );
+      }
+    }
+
     upsertMarket({
       id: marketId,
       title: spec.title,
@@ -165,7 +198,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
 
     return recordResult("MarketCreator", {
       action: "create_market",
-      reasoning: `On-chain market: ${spec.title} (pool: ${poolId ? poolId.slice(0, 10) + "..." : "N/A"})`,
+      reasoning: `On-chain market: ${spec.title} (pool: ${poolId ? poolId.slice(0, 10) + "..." : "N/A"}${initialMintDigest ? ", seeded" : ", unseeded"})`,
       confidence: 85,
       txDigest: createResult.digest,
     });

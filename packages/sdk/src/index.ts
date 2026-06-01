@@ -54,6 +54,8 @@ export {
   buildDisputeMarketTx,
   buildResolveDisputeTx,
   buildClaimReferralRewardsTx,
+  yesCoinType,
+  noCoinType,
   PREDICT_MARKET_PACKAGE_ID,
   FEE_VAULT_ID,
   REFERRAL_TREASURY_ADDRESS,

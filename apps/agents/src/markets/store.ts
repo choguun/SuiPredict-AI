@@ -15,7 +15,7 @@ const DB_PATH = join(__dirname, "../../data/markets.db");
 
 let db: Database.Database | null = null;
 
-function getDb(): Database.Database {
+export function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(DB_PATH), { recursive: true });
     db = new Database(DB_PATH);
@@ -66,6 +66,11 @@ function getDb(): Database.Database {
         yes INTEGER NOT NULL DEFAULT 0,
         no INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (market_id, address)
+      );
+      CREATE TABLE IF NOT EXISTS indexer_state (
+        key TEXT PRIMARY KEY,
+        cursor TEXT,
+        updated_at_ms INTEGER NOT NULL
       );
     `);
     migrateMarketColumns();

@@ -28,6 +28,8 @@ export interface UseStreakInfoResult {
   nextMilestoneDays: number | null;
   /** Days until next milestone (clamped at 0). */
   daysToNext: number;
+  /** Re-fetch streak info from chain. */
+  refetch: () => void;
 }
 
 const TIER_THRESHOLDS = [3, 7, 14, 30, 100];
@@ -67,5 +69,8 @@ export function useStreakInfo(streakId: string | null | undefined): UseStreakInf
     multiplier: multiplierBps / 10_000,
     nextMilestoneDays: next,
     daysToNext: next ? Math.max(0, next - current) : 0,
+    refetch: () => {
+      void query.refetch();
+    },
   };
 }
