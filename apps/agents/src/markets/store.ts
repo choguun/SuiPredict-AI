@@ -235,6 +235,17 @@ export function getMarket(id: string): MarketInfo | null {
   return row ? rowToMarket(row) : null;
 }
 
+export function markMarketResolved(
+  marketId: string,
+  outcome: "yes" | "no",
+): void {
+  getDb()
+    .prepare(
+      `UPDATE markets SET status = 'resolved', outcome = ? WHERE id = ?`,
+    )
+    .run(outcome, marketId);
+}
+
 export function upsertOrder(order: {
   market_id: string;
   order_id: number;
@@ -361,6 +372,16 @@ export function decrementPosition(
          ${column} = MAX(0, ${column} - ?)`,
     )
     .run(marketId, address, amount);
+}
+
+export function getPosition(
+  marketId: string,
+  address: string,
+): { yes: number; no: number } | null {
+  const row = getDb()
+    .prepare(`SELECT yes, no FROM positions WHERE market_id = ? AND address = ?`)
+    .get(marketId, address) as { yes: number; no: number } | undefined;
+  return row ?? null;
 }
 
 export function getPortfolio(address: string): PortfolioPosition[] {

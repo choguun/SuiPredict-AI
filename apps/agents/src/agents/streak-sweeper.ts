@@ -18,6 +18,7 @@ import { createClient, executeTransaction } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { recordDailyScore, dayIndexFor } from "../gamification/store.js";
+import { getPosition } from "../markets/store.js";
 
 const PTB_BATCH = 20;
 
@@ -162,14 +163,42 @@ export async function resolveDayOutcomes(
   }
 
   // 4. Compute per-user outcome
+  //
+  // AllCorrect requires:
+  //   (a) the user minted on every daily market, AND
+  //   (b) every daily market is resolved, AND
+  //   (c) for each daily market, the user still holds shares on the
+  //       winning side at sweep time.
+  //
+  // (c) is what prevents a user from minting on every market, selling
+  // the winning side via DeepBook, and still getting AllCorrect. Held
+  // amount comes from the off-chain `positions` table that the position
+  // indexer maintains from MintedEvent/RedeemedEvent.
   const out: ResolvedUser[] = [];
   for (const [user, markets] of userMarkets) {
+    const mintedAll = markets.size === dailyMarketIds.size;
     const allResolved =
-      markets.size === dailyMarketIds.size &&
-      [...markets].every((m) => resolvedMap.has(m));
+      mintedAll && [...markets].every((m) => resolvedMap.has(m));
+    let holdsWinning = allResolved;
+    if (allResolved) {
+      for (const m of markets) {
+        const winning = resolvedMap.get(m); // 1=YES, 2=NO
+        if (!winning) {
+          holdsWinning = false;
+          break;
+        }
+        const pos = getPosition(m, user);
+        const heldOnWinningSide =
+          winning === 1 ? (pos?.yes ?? 0) : (pos?.no ?? 0);
+        if (heldOnWinningSide <= 0) {
+          holdsWinning = false;
+          break;
+        }
+      }
+    }
     out.push({
       user,
-      outcome: allResolved ? OUTCOME_ALL_CORRECT : OUTCOME_SOME_WRONG,
+      outcome: holdsWinning ? OUTCOME_ALL_CORRECT : OUTCOME_SOME_WRONG,
       category: 0, // TODO: derive from `MarketCreatedEvent::category` once added
     });
   }

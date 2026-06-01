@@ -14,6 +14,8 @@ import {
   buildDeepBookPlaceLimitOrderTx,
   buildDeepBookWithdrawSettledTx,
   buildMintSharesTx,
+  buildRedeemNoTx,
+  buildRedeemNoWithStreakTx,
   buildRedeemTx,
   buildRedeemWithStreakTx,
   createPredictionDeepBookClient,
@@ -414,9 +416,14 @@ export default function MarketDetailPage() {
           : "Redeeming…",
         { id: toastId },
       );
-      const tx = streakId
-        ? buildRedeemWithStreakTx(market.id, coin.objectId, streakId)
-        : buildRedeemTx(market.id, coin.objectId);
+      const tx =
+        winningSide === "yes"
+          ? streakId
+            ? buildRedeemWithStreakTx(market.id, coin.objectId, streakId)
+            : buildRedeemTx(market.id, coin.objectId)
+          : streakId
+            ? buildRedeemNoWithStreakTx(market.id, coin.objectId, streakId)
+            : buildRedeemNoTx(market.id, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Redeemed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);

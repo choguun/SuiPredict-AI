@@ -26,6 +26,23 @@ export function buildCreateRegistryTx(): Transaction {
   return tx;
 }
 
+/**
+ * Build `registry::register_market` transaction. Only the registry admin
+ * (typically the deployer / agent address) may call this. Use this from
+ * the market creator after each successful `create_market`.
+ */
+export function buildRegisterMarketTx(
+  registryId: string,
+  marketObjectId: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::registry::register_market`,
+    arguments: [tx.object(registryId), tx.pure.id(marketObjectId)],
+  });
+  return tx;
+}
+
 export function buildCreateMarketTx(params: {
   registryId: string;
   title: string;

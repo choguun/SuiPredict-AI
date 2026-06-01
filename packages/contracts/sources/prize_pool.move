@@ -267,7 +267,15 @@ public fun claim_prize<PrizeCoin>(
     assert!(sender == streak_system::owner_of(user_streak), ENotStreakOwner);
     assert!(rank >= 1 && rank <= MAX_RANK, EInvalidRank);
     assert!(amount > 0, EInvalidAmount);
-    assert!(amount <= balance::value(&pool.balance) / 2, EPrizeTooLarge);
+    // Sanity cap: a single claim can't drain more than 90% of the
+    // pool. Tight enough to catch a runaway signed payload, loose
+    // enough that rank-1 (50% bps) is claimable when the pool holds at
+    // least the weekly prize. The pool should still be topped up each
+    // week to cover all top-10 payouts.
+    assert!(
+        amount <= (balance::value(&pool.balance) * 9) / 10,
+        EPrizeTooLarge,
+    );
 
     if (table::contains(&pool.settled, week_index)) {
         let settled = *table::borrow(&pool.settled, week_index);

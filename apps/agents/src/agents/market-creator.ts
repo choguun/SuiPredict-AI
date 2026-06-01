@@ -1,6 +1,7 @@
 import {
   buildCreateMarketTx,
   buildMintSharesTx,
+  buildRegisterMarketTx,
   buildSetupReferralTx,
   extractCreatedObjectId,
   PREDICT_MARKET_PACKAGE_ID,
@@ -13,6 +14,7 @@ import { listMarkets, upsertMarket } from "../markets/store.js";
 
 const MAX_ACTIVE = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
 const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
+const MARKET_REGISTRY_ID = process.env.MARKET_REGISTRY_ID ?? "";
 const INITIAL_MINT_ATOMS = BigInt(
   process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
 ); // 10 DBUSDC default — seeds the order book with an initial position
@@ -144,6 +146,22 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
       const referralResult = await executeTransaction(client, referralTx, ctx.signer);
       referralId = await extractCreatedObjectId(client, referralResult.digest, "DeepBookPoolReferral");
+    }
+
+    // Step 3b: register the market in the global MarketRegistry so any
+    // off-chain or on-chain consumer can list all live markets. Only the
+    // registry admin (this agent) may call. Silent no-op if the registry
+    // id isn't configured — keeps demo/single-market environments clean.
+    if (MARKET_REGISTRY_ID) {
+      try {
+        const registerTx = buildRegisterMarketTx(MARKET_REGISTRY_ID, marketId);
+        await executeTransaction(client, registerTx, ctx.signer);
+      } catch (regErr) {
+        console.warn(
+          `[market-creator] register_market failed for ${marketId}:`,
+          regErr instanceof Error ? regErr.message : regErr,
+        );
+      }
     }
 
     // Step 4: seed liquidity by minting initial YES+NO shares.

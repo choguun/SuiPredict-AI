@@ -493,12 +493,14 @@ public fun resolve_dispute<Q>(
 
 /// Redeem YES winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee.
+/// Only valid when the market resolved to YES (outcome = 1).
 public fun redeem<Q>(
     market: &mut PredictionMarket<Q>,
     winning_coin: Coin<YES<Q>>,
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
+    assert!(market.outcome == 1, EWrongOutcome);
     assert!(!market.disputed, EAlreadyDisputed);
     let gross = coin::value(&winning_coin);
     assert!(gross > 0, EZeroAmount);
@@ -568,6 +570,7 @@ public fun redeem_with_streak<Q>(
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
+    assert!(market.outcome == 1, EWrongOutcome);
     assert!(!market.disputed, EAlreadyDisputed);
     assert!(ctx.sender() == streak_system::owner_of(user_streak), EWrongStreakOwner);
 

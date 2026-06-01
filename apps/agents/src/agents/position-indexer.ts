@@ -24,6 +24,7 @@ import {
   decrementPosition,
   getDb,
   getMarket,
+  markMarketResolved,
   recordChainOrder,
   recordSettlement,
   upsertPosition,
@@ -70,6 +71,11 @@ interface SettledJson {
   market_id: string;
   pool_id: string;
   trader: string;
+}
+interface MarketResolvedJson {
+  market_id: string;
+  outcome: string | number;
+  resolver?: string;
 }
 interface EventEnvelope {
   id: { txDigest: string; eventSeq: string };
@@ -135,6 +141,7 @@ export async function runPositionIndexer(
   let redeemed = 0;
   let orders = 0;
   let settlements = 0;
+  let resolutions = 0;
   try {
     minted = await pollAndApply(
       client,
@@ -242,9 +249,34 @@ export async function runPositionIndexer(
     });
   }
 
+  // MarketResolvedEvent — fired when the resolver/admin calls `resolve_market`.
+  // Must run BEFORE RedeemedEvent so `decrementPosition` can look up the
+  // winning side. We also poll it after Redeemed below — running it first
+  // here is a best-effort to avoid races on the same indexer tick.
+  try {
+    resolutions = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
+      "position_indexer.market_resolved",
+      (ev) => {
+        const j = ev.parsedJson as MarketResolvedJson;
+        if (!j?.market_id || j?.outcome == null) return;
+        // outcome: 1 = YES, 2 = NO (per Move contract)
+        const n = Number(j.outcome);
+        if (n !== 1 && n !== 2) return;
+        markMarketResolved(j.market_id, n === 1 ? "yes" : "no");
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `MarketResolved poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
   return recordResult("PositionIndexer", {
     action: "index",
-    reasoning: `Indexed ${minted} mints, ${redeemed} redeems, ${orders} orders, ${settlements} settlements.`,
+    reasoning: `Indexed ${minted} mints, ${redeemed} redeems, ${orders} orders, ${settlements} settlements, ${resolutions} resolutions.`,
     confidence: 100,
   });
 }
