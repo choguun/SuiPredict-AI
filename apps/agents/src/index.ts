@@ -20,6 +20,28 @@ const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
 const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
 
+/**
+ * Normalize env aliases. The deployed package is referenced under
+ * several names in the .env — pin the canonical one and surface
+ * fallbacks for less-common vars.
+ */
+function bootstrapEnv() {
+  const pkg =
+    process.env.PREDICT_PACKAGE_ID ??
+    process.env.MARKET_PACKAGE_ID ??
+    process.env.AGENT_POLICY_PACKAGE_ID ??
+    "";
+  if (pkg) {
+    process.env.PREDICT_PACKAGE_ID = pkg;
+    process.env.MARKET_PACKAGE_ID = pkg;
+    process.env.AGENT_POLICY_PACKAGE_ID = pkg;
+  }
+  const deepRegistry =
+    process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
+  process.env.DEEPBOOK_REGISTRY_ID = deepRegistry;
+}
+bootstrapEnv();
+
 function loadContext(): AgentContext | null {
   const pk = process.env.AGENT_PRIVATE_KEY;
   if (!pk) {

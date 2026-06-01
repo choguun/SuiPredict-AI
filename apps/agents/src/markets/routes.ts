@@ -5,6 +5,7 @@ import {
   getPortfolio,
   getTrades,
   getVaultSummaryFromEnv,
+  listChainOrders,
   listMarkets,
 } from "./store.js";
 
@@ -43,7 +44,7 @@ export function handleMarketsRoute(
     return true;
   }
 
-  const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/trades)?$/);
+  const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/trades|\/orders)?$/);
   if (marketMatch) {
     const [, id, sub] = marketMatch;
     const market = getMarket(id!);
@@ -57,6 +58,11 @@ export function handleMarketsRoute(
     }
     if (sub === "/trades") {
       json(res, 200, getTrades(id!));
+      return true;
+    }
+    if (sub === "/orders") {
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      json(res, 200, listChainOrders(id!, limit));
       return true;
     }
     json(res, 200, market);

@@ -1,11 +1,13 @@
 import Link from "next/link";
 import {
+  getMarketOrderBook,
   getVaultSummaryClob,
   listMarkets,
 } from "@suipredict/sdk";
 import { Badge } from "@/components/ui";
 import { DailyPredictionCard } from "@/components/DailyPredictionCard";
 import { StreakProfile } from "@/components/StreakProfile";
+import { StreakWelcomeBanner } from "@/components/StreakWelcomeBanner";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
 import { EmptyState } from "@/components/EmptyState";
 
@@ -23,13 +25,18 @@ function formatDate(ms: number) {
   });
 }
 
-function getPseudoProbability(id: string) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const val = Math.abs(hash) % 100;
-  return Math.max(10, Math.min(90, val)) / 100;
+/**
+ * Read the live YES probability from the order book mid-price. Falls
+ * back to a neutral 0.5 when the book is empty or unreachable so the
+ * UI still renders.
+ */
+function probabilityFromBook(
+  book: { mid_price: number } | null | undefined,
+): number {
+  if (!book) return 0.5;
+  const p = book.mid_price;
+  if (!Number.isFinite(p) || p <= 0 || p >= 1) return 0.5;
+  return p;
 }
 
 export default async function HomePage() {
@@ -39,6 +46,21 @@ export default async function HomePage() {
   ]);
 
   const active = markets.filter((m) => m.status === "active").length;
+
+  // Featured markets: live order book for the top 4. A fetch failure
+  // leaves the book undefined and we fall back to 0.5 in the render.
+  const featured = markets.slice(0, 4);
+  const featuredActive = featured.filter((m) => m.status === "active");
+  const featuredBookResults = await Promise.allSettled(
+    featuredActive.map((m) => getMarketOrderBook(m.id)),
+  );
+  const bookByMarket = new Map<string, { mid_price: number }>();
+  featuredActive.forEach((m, i) => {
+    const r = featuredBookResults[i];
+    if (r.status === "fulfilled") {
+      bookByMarket.set(m.id, r.value);
+    }
+  });
 
   return (
     <div className="space-y-6 sm:space-y-12 pb-6 sm:pb-12">
@@ -125,6 +147,7 @@ export default async function HomePage() {
       </section>
 
       {/* 4. Gamification Row (Prioritized on Mobile) */}
+      <StreakWelcomeBanner />
       <section className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-1">
           <StreakProfile />
@@ -156,7 +179,9 @@ export default async function HomePage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
             {markets.slice(0, 4).map((m) => {
-              const prob = getPseudoProbability(m.id);
+              const prob = m.status === "active"
+                ? probabilityFromBook(bookByMarket.get(m.id))
+                : 0.5;
               return (
                 <Link
                   key={m.id}

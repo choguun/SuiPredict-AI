@@ -220,6 +220,54 @@ async function findSharedObjects(
   return out;
 }
 
+async function findVlpTreasuryCap(
+  client: SuiGrpcClient,
+  owner: string,
+): Promise<string | null> {
+  let cursor: string | null | undefined = undefined;
+  do {
+    const page = await client.listOwnedObjects({
+      owner,
+      cursor: cursor ?? null,
+      limit: 50,
+    });
+    for (const obj of page.objects) {
+      if (obj.type?.includes("::vlp::VLP") && obj.type?.includes("TreasuryCap")) {
+        return obj.objectId;
+      }
+    }
+    cursor = page.cursor ?? null;
+  } while (cursor);
+  return null;
+}
+
+async function getSharedObjectIdFromTx(
+  client: SuiGrpcClient,
+  digest: string,
+  typeMatch: string,
+): Promise<string> {
+  const r = await client.getTransaction({
+    digest,
+    include: { effects: true, objectTypes: true },
+  });
+  if (r.$kind !== "Transaction") {
+    err(`Transaction failed: ${digest}`);
+  }
+  const hit = r.Transaction.effects.changedObjects.find(
+    (o) =>
+      o.idOperation === "Created" &&
+      o.outputOwner?.$kind === "Shared" &&
+      (r.Transaction.objectTypes?.[o.objectId] ?? "").includes(typeMatch),
+  )?.objectId;
+  if (!hit) {
+    err(
+      `No shared object of type ${typeMatch} in tx ${digest}. Got: ` +
+        JSON.stringify(r.Transaction.objectTypes ?? {}),
+    );
+  }
+  return hit;
+}
+
 async function main() {
   if (!process.env.AGENT_PRIVATE_KEY) {
     err("AGENT_PRIVATE_KEY is required (the deployer signer).");
@@ -239,9 +287,17 @@ async function main() {
     "::streak_system::StreakRegistry",
   );
   const prizeAdminId = findSharedObject(objects, "::prize_pool::PrizeAdmin");
+  // prediction_market::init shares a FeeVault<Q>. Extract it from the
+  // publish effects; the `Q` placeholder in the type means we match by
+  // suffix.
+  const feeVaultId = findSharedObject(
+    objects,
+    "::prediction_market::FeeVault<",
+  );
   log(`StreakAdmin:    ${streakAdminId}`);
   log(`StreakRegistry: ${streakRegistryId}`);
   log(`PrizeAdmin:     ${prizeAdminId}`);
+  log(`FeeVault:       ${feeVaultId}`);
 
   // 3) Prize admin keypair
   const { keypair: prizeKey, isNew } = loadOrCreatePrizeKeypair();
@@ -323,29 +379,90 @@ async function main() {
   //    is not owned by the deployer and won't appear in
   //    `listOwnedObjects`).
   log("Fetching PrizePool object ID from create_pool effects...");
-  const txResult = await grpc.getTransaction({
-    digest: createPoolDigest,
-    include: { effects: true, objectTypes: true },
-  });
-  if (txResult.$kind !== "Transaction") {
-    err(`create_pool transaction failed: ${createPoolDigest}`);
-  }
-  const poolId = txResult.Transaction.effects.changedObjects.find(
-    (o) =>
-      o.idOperation === "Created" &&
-      o.outputOwner?.$kind === "Shared" &&
-      (txResult.Transaction.objectTypes?.[o.objectId] ?? "").includes(
-        "::prize_pool::PrizePool<",
-      ),
-  )?.objectId;
-  if (!poolId) {
+  const prizePoolId = await getSharedObjectIdFromTx(
+    grpc,
+    createPoolDigest,
+    "::prize_pool::PrizePool<",
+  );
+  log(`PrizePool:      ${prizePoolId}`);
+
+  // 7a) Create the MarketRegistry (not auto-created on publish)
+  log("Creating MarketRegistry...");
+  const registryDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::registry::create_registry`,
+      arguments: [],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    log(`  create_registry: ${res.digest}`);
+    return res.digest;
+  })();
+  const marketRegistryId = await getSharedObjectIdFromTx(
+    grpc,
+    registryDigest,
+    "::registry::MarketRegistry",
+  );
+  log(`MarketRegistry: ${marketRegistryId}`);
+
+  // 7b) Create the ProtocolVault<DBUSDC> from the deployer's VLP TreasuryCap
+  log("Looking for VLP TreasuryCap in deployer wallet...");
+  const vlpTreasuryCapId = await findVlpTreasuryCap(grpc, signerAddr);
+  if (!vlpTreasuryCapId) {
     err(
-      "Could not find a shared PrizePool in create_pool effects. Got types: " +
-        JSON.stringify(txResult.Transaction.objectTypes ?? {}),
+      "No VLP TreasuryCap found in deployer wallet. Was the package just published? " +
+        "The vlp::init() function should have transferred one to the publisher.",
     );
   }
-  const prizePoolId = poolId;
-  log(`PrizePool:      ${prizePoolId}`);
+  log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
+  log("Creating ProtocolVault<DBUSDC>...");
+  const vaultDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::vault::create_vault`,
+      typeArguments: [DUSDC_TYPE],
+      arguments: [tx.object(vlpTreasuryCapId)],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    log(`  create_vault: ${res.digest}`);
+    return res.digest;
+  })();
+  const protocolVaultId = await getSharedObjectIdFromTx(
+    grpc,
+    vaultDigest,
+    "::vault::ProtocolVault<",
+  );
+  log(`ProtocolVault:  ${protocolVaultId}`);
+
+  // 7c) Create an AgentPolicy so the agent hot wallet can act with a
+  //     capped budget. Use AGENT_MAX_BUDGET_USDC * 10^6 (DUSDC has 6
+  //     decimals) and a 1-year expiry.
+  const policyBudget =
+    BigInt(process.env.AGENT_MAX_BUDGET_USDC ?? "500") * 1_000_000n;
+  const policyExpiryMs = Date.now() + 365 * 86_400_000;
+  log(
+    `Creating AgentPolicy (budget=${policyBudget} base, expires=${new Date(policyExpiryMs).toISOString()})...`,
+  );
+  const policyDigest = await (async () => {
+    const tx = new Transaction();
+    tx.moveCall({
+      target: `${packageId}::agent_policy::create_policy`,
+      arguments: [
+        tx.pure.address(signerAddr),
+        tx.pure.u64(policyBudget),
+        tx.pure.u64(policyExpiryMs),
+      ],
+    });
+    const res = await executeTransaction(txClient, tx, signer);
+    log(`  create_policy: ${res.digest}`);
+    return res.digest;
+  })();
+  const agentPolicyId = await getSharedObjectIdFromTx(
+    grpc,
+    policyDigest,
+    "::agent_policy::AgentPolicy",
+  );
+  log(`AgentPolicy:    ${agentPolicyId}`);
 
   // 8) Write env updates
   const agentsUpdates: Record<string, string> = {
@@ -359,6 +476,10 @@ async function main() {
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
     PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
+    MARKET_REGISTRY_ID: marketRegistryId,
+    VAULT_OBJECT_ID: protocolVaultId,
+    FEE_VAULT_ID: feeVaultId,
+    AGENT_POLICY_ID: agentPolicyId,
   };
   if (process.env.DUSDC_TREASURY_CAP_ID) {
     agentsUpdates.DUSDC_TREASURY_CAP_ID = process.env.DUSDC_TREASURY_CAP_ID;
@@ -373,16 +494,22 @@ async function main() {
     NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
     NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
     NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
+    NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
+    NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
   });
 
   log("\n=== Bootstrap complete ===");
-  log(`Package:     ${packageId}`);
-  log(`StreakAdmin: ${streakAdminId}`);
-  log(`StreakReg:   ${streakRegistryId}`);
-  log(`PrizeAdmin:  ${prizeAdminId}`);
-  log(`PrizePool:   ${prizePoolId}`);
-  log(`PrizeKey:    ${prizeAddress}${isNew ? " (NEW — save PRIZE_ADMIN_PRIVATE_KEY above)" : ""}`);
-  log(`Weekly amt:  ${PRIZE_WEEKLY_AMOUNT} base units (${Number(PRIZE_WEEKLY_AMOUNT) / 1_000_000} DUSDC)`);
+  log(`Package:        ${packageId}`);
+  log(`StreakAdmin:    ${streakAdminId}`);
+  log(`StreakReg:      ${streakRegistryId}`);
+  log(`PrizeAdmin:     ${prizeAdminId}`);
+  log(`PrizePool:      ${prizePoolId}`);
+  log(`FeeVault:       ${feeVaultId}`);
+  log(`MarketRegistry: ${marketRegistryId}`);
+  log(`ProtocolVault:  ${protocolVaultId}`);
+  log(`AgentPolicy:    ${agentPolicyId}`);
+  log(`PrizeKey:       ${prizeAddress}${isNew ? " (NEW — save PRIZE_ADMIN_PRIVATE_KEY above)" : ""}`);
+  log(`Weekly amt:     ${PRIZE_WEEKLY_AMOUNT} base units (${Number(PRIZE_WEEKLY_AMOUNT) / 1_000_000} DUSDC)`);
   log(`\nEnv files updated:`);
   log(`  ${AGENTS_ENV}`);
   log(`  ${WEB_ENV}`);

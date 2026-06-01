@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { listMarkets } from "@suipredict/sdk";
+import { getMarketOrderBook, listMarkets } from "@suipredict/sdk";
 import { Badge } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
@@ -14,19 +14,39 @@ function formatDate(ms: number) {
   });
 }
 
-function getPseudoProbability(id: string) {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const val = Math.abs(hash) % 100;
-  return Math.max(10, Math.min(90, val)) / 100;
+/**
+ * Read the live YES probability from the order book mid-price. If the
+ * book is empty or unreachable, fall back to 0.5 so the UI still
+ * renders without misleading users.
+ */
+function probabilityFromBook(
+  book: { mid_price: number } | null | undefined,
+): number {
+  if (!book) return 0.5;
+  const p = book.mid_price;
+  if (!Number.isFinite(p) || p <= 0 || p >= 1) return 0.5;
+  return p;
 }
 
 export default async function MarketsPage() {
   const markets = await listMarkets().catch(() => []);
   const active = markets.filter((m) => m.status === "active").length;
   const resolved = markets.filter((m) => m.status === "resolved").length;
+
+  // Fetch each active market's order book in parallel. Active markets
+  // without a book yet (still bootstrapping) fall back to the 0.5
+  // neutral midpoint. Resolved markets don't need a book.
+  const activeIds = markets.filter((m) => m.status === "active").map((m) => m.id);
+  const bookResults = await Promise.allSettled(
+    activeIds.map((id) => getMarketOrderBook(id)),
+  );
+  const bookByMarket = new Map<string, { mid_price: number }>();
+  activeIds.forEach((id, i) => {
+    const r = bookResults[i];
+    if (r.status === "fulfilled") {
+      bookByMarket.set(id, r.value);
+    }
+  });
 
   return (
     <div className="space-y-5">
@@ -70,7 +90,9 @@ export default async function MarketsPage() {
           />
         )}
         {markets.map((m) => {
-          const prob = getPseudoProbability(m.id);
+          const prob = m.status === "active"
+            ? probabilityFromBook(bookByMarket.get(m.id))
+            : 0.5;
           return (
             <Link
               key={m.id}

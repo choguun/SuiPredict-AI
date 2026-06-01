@@ -1,23 +1,33 @@
 /**
- * Position indexer — poll MintedEvent + RedeemedEvent and update the
- * off-chain `positions` table so `/portfolio/:address` works without a
- * full Sui indexer.
+ * Position indexer — poll MintedEvent, RedeemedEvent, OrderPlacedEvent,
+ * and SettledEvent and write to the off-chain tables so `/portfolio`,
+ * `/markets/:id/book`, and `/markets/:id/orders` work without a full
+ * Sui indexer.
  *
  * Uses a `last_cursor` row in the SQLite `indexer_state` table so
  * restarts resume from where we left off. Events arrive in
  * chronological order (ascending cursor).
  *
- *   - MintedEvent    → +yes_minted YES, +no_minted NO
- *   - RedeemedEvent  → -winning_amount of the winning side
+ *   - MintedEvent      → +yes_minted YES, +no_minted NO  → `positions`
+ *   - RedeemedEvent    → -winning_amount of the winning side → `positions`
+ *   - OrderPlacedEvent → → `chain_orders` (any user's order, not just the agent's)
+ *   - SettledEvent     → → `settlements` (withdraw_settled notifications)
  *
- * `winning_amount` is the gross share count burned (and the pre-fee
- * DBUSDC payout). In a 1-share-=1-collateral market the two are
- * equivalent, so we just decrement by `winning_amount`.
+ * `winning_amount` is the gross share count burned. To know which side
+ * was burned we look up the market's outcome (set by the resolver via
+ * MarketResolvedEvent and stored in the `markets.outcome` column).
  */
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
-import { getDb, upsertPosition } from "../markets/store.js";
+import {
+  decrementPosition,
+  getDb,
+  getMarket,
+  recordChainOrder,
+  recordSettlement,
+  upsertPosition,
+} from "../markets/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
@@ -47,9 +57,24 @@ interface RedeemedJson {
   fee: string | number;
   collateral_returned: string | number;
 }
+interface OrderPlacedJson {
+  market_id: string;
+  pool_id: string;
+  client_order_id: string | number;
+  is_bid: boolean;
+  price: string | number;
+  quantity: string | number;
+  order_id: string | number;
+}
+interface SettledJson {
+  market_id: string;
+  pool_id: string;
+  trader: string;
+}
 interface EventEnvelope {
   id: { txDigest: string; eventSeq: string };
   parsedJson: unknown;
+  timestampMs?: string;
 }
 
 function readCursor(stateKey: string): EventCursor {
@@ -108,6 +133,8 @@ export async function runPositionIndexer(
 
   let minted = 0;
   let redeemed = 0;
+  let orders = 0;
+  let settlements = 0;
   try {
     minted = await pollAndApply(
       client,
@@ -138,12 +165,15 @@ export async function runPositionIndexer(
         if (!j?.market_id || !j?.user) return;
         const burned = Number(j.winning_amount ?? 0);
         if (burned <= 0) return;
-        // We don't know which side was burned from the event alone; for
-        // the off-chain portfolio display we treat it as a full
-        // decrement of the larger side (a reasonable approximation
-        // since 99% of redeems use a single side). The on-chain
-        // BalanceManager is the source of truth for balances.
-        upsertPosition(j.market_id, j.user, 0, 0);
+        // Both `redeem` and `redeem_no` emit the same RedeemedEvent
+        // struct, so the only way to know which side was burned is to
+        // look up the market's outcome (set by the resolver via
+        // MarketResolvedEvent). Decrement that side; clamp at 0 in
+        // case the on-chain mint was missed by this indexer.
+        const market = getMarket(j.market_id);
+        if (!market || !market.outcome) return;
+        const side = market.outcome === "yes" ? "yes" : "no";
+        decrementPosition(j.market_id, j.user, side, burned);
       },
     );
   } catch (err) {
@@ -153,9 +183,68 @@ export async function runPositionIndexer(
     });
   }
 
+  // OrderPlacedEvent — every user's limit/market order on every
+  // DeepBook pool, not just the agent's. Stored in `chain_orders`
+  // with the chain's u128 order_id as TEXT (SQLite's INTEGER maxes
+  // out well below u128::MAX).
+  try {
+    orders = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::OrderPlacedEvent`,
+      "position_indexer.order_placed",
+      (ev) => {
+        const j = ev.parsedJson as OrderPlacedJson;
+        if (!j?.market_id || !j?.order_id) return;
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        recordChainOrder({
+          market_id: j.market_id,
+          order_id: String(j.order_id),
+          pool_id: j.pool_id ?? "",
+          client_order_id: Number(j.client_order_id ?? 0),
+          is_bid: Boolean(j.is_bid),
+          price: Number(j.price ?? 0),
+          quantity: Number(j.quantity ?? 0),
+          timestamp_ms: ts,
+        });
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `OrderPlaced poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  // SettledEvent — fired when a user calls `withdraw_settled` after
+  // the pool processes their match. Useful for the agent's settle
+  // sweeper and for "recent activity" feeds in the UI.
+  try {
+    settlements = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::SettledEvent`,
+      "position_indexer.settled",
+      (ev) => {
+        const j = ev.parsedJson as SettledJson;
+        if (!j?.market_id || !j?.trader) return;
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        recordSettlement({
+          market_id: j.market_id,
+          pool_id: j.pool_id ?? "",
+          trader: j.trader,
+          timestamp_ms: ts,
+        });
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `Settled poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
   return recordResult("PositionIndexer", {
     action: "index",
-    reasoning: `Indexed ${minted} mints, ${redeemed} redeems.`,
+    reasoning: `Indexed ${minted} mints, ${redeemed} redeems, ${orders} orders, ${settlements} settlements.`,
     confidence: 100,
   });
 }

@@ -19,11 +19,13 @@ import {
   createPredictionDeepBookClient,
   getMarket,
   getMarketOrderBook,
+  getOrderBookDepth,
   getPortfolio,
   noCoinType,
   PREDICT_BASE_COIN_KEY,
   PREDICT_DEEPBOOK_POOL_KEY,
   PREDICT_QUOTE_COIN_KEY,
+  tupleBookToSnapshot,
   yesCoinType,
   type MarketInfo,
   type OrderBookSnapshot,
@@ -86,17 +88,51 @@ export default function MarketDetailPage() {
   const [depositAsset, setDepositAsset] = useState<"quote" | "base">("quote");
   const [depositAmount, setDepositAmount] = useState(10);
   const initializedPrice = useRef(false);
+  // Refs let the polling `refresh` see the latest deepBookMarket config
+  // (resolved after `market` loads) without re-creating the interval.
+  const deepBookMarketRef = useRef<{
+    poolKey: string;
+    poolId: string;
+    baseCoinType: string;
+    quoteCoinType: string;
+  } | null>(null);
+  const clientRef = useRef(client);
+  clientRef.current = client;
 
   const refresh = useCallback(async () => {
-    const [m, b] = await Promise.all([
-      getMarket(marketId),
-      getMarketOrderBook(marketId),
-    ]);
+    const m = await getMarket(marketId);
     setMarket(m);
-    setBook(b);
-    if (b.mid_price && !initializedPrice.current) {
-      setPrice(b.mid_price);
-      initializedPrice.current = true;
+    const cfg = deepBookMarketRef.current;
+    let b: OrderBookSnapshot | null = null;
+    if (cfg && clientRef.current) {
+      // Read directly from DeepBook when the market has an on-chain
+      // pool. This shows every order any user has placed, not just
+      // the agent's, and updates within the RPC's eventual-
+      // consistency window (typically <2s on testnet).
+      try {
+        const dbClient = createPredictionDeepBookClient({
+          client: clientRef.current,
+          address: m.deepbook_pool_id ?? cfg.poolId,
+          market: cfg,
+        });
+        const tuple = await getOrderBookDepth(dbClient, cfg.poolKey);
+        b = tupleBookToSnapshot(marketId, tuple.bids, tuple.asks);
+      } catch {
+        b = null;
+      }
+    }
+    if (!b) {
+      // Fall back to the agents REST endpoint (SQLite cache of
+      // agent-placed orders) when the direct read fails or the
+      // market has no on-chain pool yet.
+      b = await getMarketOrderBook(marketId).catch(() => null);
+    }
+    if (b) {
+      setBook(b);
+      if (b.mid_price && !initializedPrice.current) {
+        setPrice(b.mid_price);
+        initializedPrice.current = true;
+      }
     }
   }, [marketId]);
 
@@ -180,6 +216,16 @@ export default function MarketDetailPage() {
     market?.deepbook_quote_scalar,
   ]);
   const useDeepBookRoute = Boolean(deepBookMarket && balanceManagerId);
+
+  // Mirror the deepBookMarket config into a ref so the polling
+  // `refresh` callback can read it without recreating the interval.
+  useEffect(() => {
+    deepBookMarketRef.current = deepBookMarket;
+    if (deepBookMarket) {
+      // Trigger an immediate re-read now that the pool is known.
+      setRefreshCounter((c) => c + 1);
+    }
+  }, [deepBookMarket]);
   const estimatedCost = displayedPrice * qty;
   const capitalRequired = isSyntheticBuyNo ? qty : estimatedCost;
   const payout = qty;

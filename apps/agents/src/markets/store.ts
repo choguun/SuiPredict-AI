@@ -67,6 +67,24 @@ export function getDb(): Database.Database {
         no INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (market_id, address)
       );
+      CREATE TABLE IF NOT EXISTS chain_orders (
+        market_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        pool_id TEXT NOT NULL,
+        client_order_id INTEGER NOT NULL,
+        is_bid INTEGER NOT NULL,
+        price INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        PRIMARY KEY (market_id, order_id)
+      );
+      CREATE TABLE IF NOT EXISTS settlements (
+        market_id TEXT NOT NULL,
+        pool_id TEXT NOT NULL,
+        trader TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        id INTEGER PRIMARY KEY AUTOINCREMENT
+      );
       CREATE TABLE IF NOT EXISTS indexer_state (
         key TEXT PRIMARY KEY,
         cursor TEXT,
@@ -327,6 +345,24 @@ export function upsertPosition(
     .run(marketId, address, yes, no);
 }
 
+export function decrementPosition(
+  marketId: string,
+  address: string,
+  side: "yes" | "no",
+  amount: number,
+): void {
+  if (amount <= 0) return;
+  const column = side === "yes" ? "yes" : "no";
+  getDb()
+    .prepare(
+      `INSERT INTO positions (market_id, address, yes, no)
+       VALUES (?, ?, 0, 0)
+       ON CONFLICT(market_id, address) DO UPDATE SET
+         ${column} = MAX(0, ${column} - ?)`,
+    )
+    .run(marketId, address, amount);
+}
+
 export function getPortfolio(address: string): PortfolioPosition[] {
   const rows = getDb()
     .prepare(
@@ -361,6 +397,73 @@ export function getVaultSummaryFromEnv(): {
     allocated,
     available: total - allocated,
   };
+}
+
+export function recordChainOrder(o: {
+  market_id: string;
+  order_id: string;
+  pool_id: string;
+  client_order_id: number;
+  is_bid: boolean;
+  price: number;
+  quantity: number;
+  timestamp_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO chain_orders
+        (market_id, order_id, pool_id, client_order_id, is_bid, price, quantity, timestamp_ms)
+       VALUES (@market_id, @order_id, @pool_id, @client_order_id, @is_bid, @price, @quantity, @timestamp_ms)`,
+    )
+    .run({ ...o, is_bid: o.is_bid ? 1 : 0 });
+}
+
+export function recordSettlement(s: {
+  market_id: string;
+  pool_id: string;
+  trader: string;
+  timestamp_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO settlements (market_id, pool_id, trader, timestamp_ms)
+       VALUES (@market_id, @pool_id, @trader, @timestamp_ms)`,
+    )
+    .run(s);
+}
+
+export function listChainOrders(
+  marketId: string,
+  limit = 50,
+): Array<{
+  market_id: string;
+  order_id: string;
+  pool_id: string;
+  client_order_id: number;
+  is_bid: boolean;
+  price: number;
+  quantity: number;
+  timestamp_ms: number;
+}> {
+  return getDb()
+    .prepare(
+      `SELECT * FROM chain_orders WHERE market_id = ?
+       ORDER BY timestamp_ms DESC LIMIT ?`,
+    )
+    .all(marketId, limit)
+    .map((r) => {
+      const row = r as Record<string, unknown>;
+      return {
+        market_id: row.market_id as string,
+        order_id: row.order_id as string,
+        pool_id: row.pool_id as string,
+        client_order_id: row.client_order_id as number,
+        is_bid: Boolean(row.is_bid),
+        price: row.price as number,
+        quantity: row.quantity as number,
+        timestamp_ms: row.timestamp_ms as number,
+      };
+    });
 }
 
 function rowToMarket(row: unknown): MarketInfo {
