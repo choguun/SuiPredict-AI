@@ -319,7 +319,8 @@ export default function MarketDetailPage() {
     }
     if (!deepBookMarket) return;
     setLoading(true);
-    const toastId = toast.loading("Placing DeepBook V3 limit order...");
+    const clientOrderId = String(Date.now());
+    const toastId = toast.loading("Submitting DeepBook V3 limit order...");
     try {
       const dbClient = createPredictionDeepBookClient({
         client,
@@ -330,13 +331,31 @@ export default function MarketDetailPage() {
       });
       const tx = buildDeepBookPlaceLimitOrderTx(dbClient, {
         poolKey: deepBookMarket.poolKey,
-        clientOrderId: String(Date.now()),
+        clientOrderId,
         price: yesLimitPrice,
         quantity: qty,
         isBid,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Order placed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      const digest = txDigest(r);
+      // Distinguish "submitted" from "placed". The wallet adapter returns
+      // once the fullnode accepts the tx — but the position indexer
+      // (cron */1) can take up to 60s to record the OrderPlaced event,
+      // during which the user sees no order in the book. The
+      // `clientOrderId` we passed in is stored verbatim on the order
+      // row, so we can match against it specifically instead of just
+      // waiting for "any new order".
+      toast.loading(`Awaiting indexer: ${digest.slice(0, 16)}…`, { id: toastId });
+      const placed = await waitForOrderInBook(market.id, clientOrderId, 8_000);
+      if (placed) {
+        toast.success(`Order placed: ${digest.slice(0, 16)}…`, { id: toastId });
+      } else {
+        toast.message(
+          `Order submitted (${digest.slice(0, 16)}…) but the indexer hasn't ` +
+            "seen it yet. It will appear in the order book within ~60s.",
+          { id: toastId, duration: 6_000 },
+        );
+      }
       await refresh();
       setRefreshCounter(c => c + 1);
     } catch (e) {
@@ -344,6 +363,44 @@ export default function MarketDetailPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  /**
+   * Poll the agents `/markets/:id/orders` endpoint until a row with
+   * `client_order_id == clientOrderId` appears. The chain_orders table
+   * doesn't carry a trader column (would need a schema migration to
+   * filter by user), so matching on the client-supplied
+   * `client_order_id` is the cheapest reliable signal.
+   */
+  async function waitForOrderInBook(
+    mid: string,
+    clientOrderId: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+    const url = `${base}/markets/${encodeURIComponent(mid)}/orders?limit=50`;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            orders?: { client_order_id?: number | string }[];
+          };
+          if (
+            data.orders?.some(
+              (o) => String(o.client_order_id ?? "") === clientOrderId,
+            )
+          ) {
+            return true;
+          }
+        }
+      } catch {
+        // agents service down — let the natural tick pick it up
+      }
+      await new Promise((r) => setTimeout(r, 1_500));
+    }
+    return false;
   }
 
   async function createBalanceManager() {

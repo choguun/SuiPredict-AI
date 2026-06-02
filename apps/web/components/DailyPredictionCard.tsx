@@ -120,14 +120,39 @@ export function DailyPredictionCard() {
         owner: account.address,
         coinType: QUOTE_COIN,
       });
-      const coin = objects[0];
-      if (!coin) {
+      if (objects.length === 0) {
         throw new Error("No DUSDC — request from DeepBook testnet form");
       }
       // Single PTB: split the input coin N ways and mint into each market.
       // Sequential txs would consume the coin in the first tx, leaving the
       // rest with a stale object reference and a runtime error.
-      const amountPerMarket = BigInt(1_000_000); // 1 DUSDC
+      const amountPerMarket = BigInt(1_000_000); // 1 DUSDC per market
+      // Balance preflight: the batch tx needs `amountPerMarket * N` atoms
+      // total (splitCoins requires the full input). Without this check the
+      // user gets a generic Move abort on the first split — opaque and
+      // confusing because the wallet-adapter spinner hides it. We sum
+      // across all coins so a user with several small balances isn't
+      // wrongly told they have insufficient funds.
+      const required = amountPerMarket * BigInt(activeMarketIds.length);
+      const totalBalance = objects.reduce(
+        (acc, c) => acc + BigInt(c.balance),
+        BigInt(0),
+      );
+      if (totalBalance < required) {
+        throw new Error(
+          `Insufficient DUSDC: need ${Number(required) / 1_000_000} ` +
+            `(${(Number(required) / 1_000_000).toFixed(2)}), ` +
+            `have ${(Number(totalBalance) / 1_000_000).toFixed(2)} ` +
+            `across ${objects.length} coin(s). Request more from the DeepBook testnet form.`,
+        );
+      }
+      // Pick the largest coin to maximize the chance a single object
+      // covers the whole batch. (splitCoins on one big coin is cheaper
+      // than merging first, which isn't always available without a
+      // separate merge PTB.)
+      const coin = objects.sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      )[0]!;
       const tx = buildMintSharesBatchTx({
         marketIds: activeMarketIds,
         vaultId: FEE_VAULT_ID,

@@ -6,9 +6,32 @@ import { buildClaimPrizeTx, expectedAmountForRank } from "@suipredict/sdk";
 import { toast } from "sonner";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 
+/**
+ * Mirrors the server response from `apps/agents/src/gamification/routes.ts`
+ * (the `/prize/signature` handler). The server signs the canonical claim
+ * payload server-side and returns:
+ *   - `payload`     — the exact bytes the Move contract will verify,
+ *                     with bigint fields serialized as decimal strings.
+ *   - `signatureB64` — ed25519 signature over the payload.
+ *   - `expectedAmount` — the canonical reward for the user's rank, so the
+ *                     client can render the amount without recomputing.
+ *
+ * The `poolId` query param the client sends is *advisory*; the server
+ * always signs with the prize pool configured in its env (it must, since
+ * the on-chain `claim_prize` only accepts the canonical pool for this
+ * week). Sending it would let a misconfigured client hit the wrong pool,
+ * so the server deliberately ignores it.
+ */
 interface SignedClaimResponse {
+  payload: {
+    poolId: string;
+    weekIndex: string;
+    user: string;
+    rank: number;
+    amount: string;
+  };
   signatureB64: string;
-  amount: string;
+  expectedAmount: string;
 }
 
 interface Props {
@@ -59,12 +82,18 @@ export function ClaimPrizeButton(props: Props) {
     const toastId = toast.loading("Fetching backend signature…");
     try {
       const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+      // Path is `/prize/signature`; legacy `/prize/claim-payload` was
+      // an earlier draft that the server no longer recognises. Sending
+      // to it returns 404 and the user sees a confusing error.
       const url = new URL(`${base}/prize/signature`);
       url.searchParams.set("week", String(weekIndex));
       url.searchParams.set("rank", String(rank));
       url.searchParams.set("user", account.address);
+      // `amount` is the rank-derived reward; the server re-derives and
+      // signs the canonical value. We pass it for transparency and to
+      // let the server's leaderboard-membership check (if present)
+      // compare against the rank table it has.
       url.searchParams.set("amount", amount.toString());
-      url.searchParams.set("poolId", poolId);
       const res = await fetch(url.toString());
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -76,6 +105,19 @@ export function ClaimPrizeButton(props: Props) {
       if (!data.signatureB64) {
         throw new Error("signature endpoint returned no signature");
       }
+      // The signed amount lives at `data.payload.amount`; fall back to
+      // the locally-computed `amount` only if the server omits it (older
+      // backends). Cross-check against `expectedAmount` to catch a
+      // server / client rank-table mismatch before submitting gas.
+      const signedAmount = data.payload?.amount ?? amount.toString();
+      if (
+        data.expectedAmount &&
+        data.expectedAmount !== amount.toString()
+      ) {
+        console.warn(
+          `[ClaimPrizeButton] rank-table mismatch: server expectedAmount=${data.expectedAmount} client=${amount.toString()}; using signed value.`,
+        );
+      }
       toast.loading("Submitting on-chain claim…", { id: toastId });
       const tx = buildClaimPrizeTx({
         poolId,
@@ -83,7 +125,7 @@ export function ClaimPrizeButton(props: Props) {
         userStreakId: streakId,
         weekIndex: BigInt(weekIndex),
         rank,
-        amount: BigInt(data.amount ?? amount.toString()),
+        amount: BigInt(signedAmount),
         signatureB64: data.signatureB64,
         poolIdForSig: poolId,
       });

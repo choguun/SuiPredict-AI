@@ -151,6 +151,26 @@ export function buildMintSharesBatchTx(params: {
   amountPerMarket: bigint;
 }): Transaction {
   const tx = new Transaction();
+  // Minimum per-leg amount: 1 YES share at the protocol's default
+  // scalar (1e6 = 1 share with 6 decimals). Markets created via
+  // `buildCreateMarketTx` use `tickSize: 1_000_000`, `lotSize: 1_000_000`,
+  // and `minSize: 1_000_000` — the on-chain `mint_shares` will reject
+  // any input below this. We validate here so a fractional-amount
+  // typo surfaces as a build-time error with a clear message rather
+  // than a Move abort at execute time.
+  const MIN_ATOMS = 1_000_000n;
+  if (params.amountPerMarket <= 0n) {
+    throw new Error(
+      `buildMintSharesBatchTx: amountPerMarket must be > 0 (got ${params.amountPerMarket})`,
+    );
+  }
+  if (params.amountPerMarket < MIN_ATOMS) {
+    throw new Error(
+      `buildMintSharesBatchTx: amountPerMarket ${params.amountPerMarket} ` +
+        `is below the protocol minimum of ${MIN_ATOMS} (1 YES share). ` +
+        `Most markets use tickSize=lotSize=1_000_000.`,
+    );
+  }
   if (params.marketIds.length === 0) return tx;
   // splitCoins(coin, [a1, a2, ..., aN]) returns exactly N result
   // references. For N=1 the rest spread is `[]` (still correct) and

@@ -3,7 +3,6 @@ import {
   buildMintSharesTx,
   buildRegisterMarketTx,
   buildSetupReferralTx,
-  DBUSDC_TYPE,
   DUSDC_TYPE,
   extractCreatedObjectId,
   yesCoinType,
@@ -148,10 +147,35 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
     const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
     if (!deepCoin) {
+      // Fall back to demo market. The previous behavior was to hard-fail
+      // with `action: "no_deep"`, which left the protocol with zero
+      // active markets on a fresh testnet deploy (the agent gets 0.1
+      // SUI from the faucet, never 500 DEEP). Treating this as
+      // "off-chain-only" keeps the UI populated with markets the
+      // resolver can still act on, and the agent stays observable
+      // rather than silently inert.
+      console.warn(
+        `[market-creator] no DEEP coin >= ${POOL_CREATION_FEE_DEEP} ` +
+          `(${deepCoins.length} candidate(s) found); falling back to demo market.`,
+      );
+      const demoId = `demo-${Date.now()}`;
+      upsertMarket({
+        id: demoId,
+        title: spec.title,
+        description: spec.description,
+        category: spec.category,
+        expiry_ms: Number(expiryMs),
+        resolution_source: spec.resolution_source,
+        status: "active",
+        created_at_ms: Date.now(),
+      });
       return recordResult("MarketCreator", {
-        action: "no_deep",
-        reasoning: `Need at least 500 DEEP for pool creation. Have ${deepCoins.length} DEEP coins.`,
-        confidence: 50,
+        action: "demo_market",
+        reasoning:
+          `No DEEP for pool creation (${deepCoins.length} candidate(s) found). ` +
+          `Created demo market${sourceTag}: ${spec.title}. ` +
+          `Fund the agent with 500 DEEP to enable on-chain CLOB.`,
+        confidence: 60,
       });
     }
 
@@ -198,30 +222,37 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     }
 
     // Step 4: seed liquidity by minting initial YES+NO shares.
-    // Skipped silently if the agent has no DBUSDC (common on testnet).
+    // The market's quote type is DUSDC (see `upsertMarket` below which
+    // records `DUSDC_TYPE` in `deepbook_quote_coin_type`). Querying
+    // DBUSDC_TYPE here — the prior behaviour — would return Mysten Labs'
+    // testnet DBUSDC coins that the on-chain `mint_shares` cannot
+    // accept (it expects a Coin<DUSDC>). The result was a guaranteed
+    // Move abort on every fresh deploy where the agent only had DUSDC
+    // minted from the VLP TreasuryCap. Skipped silently if the agent
+    // has no DUSDC >= INITIAL_MINT_ATOMS.
     let initialMintDigest: string | null = null;
     if (INITIAL_MINT_ATOMS > 0n) {
       try {
-        const { objects: dbusdcCoins } = await client.core.listCoins({
+        const { objects: dusdcCoins } = await client.core.listCoins({
           owner: agentAddr,
-          coinType: DBUSDC_TYPE,
+          coinType: DUSDC_TYPE,
         });
-        const dbusdcCoin = dbusdcCoins
+        const dusdcCoin = dusdcCoins
           .filter((c) => BigInt(c.balance) >= INITIAL_MINT_ATOMS)
           .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
-        if (dbusdcCoin) {
+        if (dusdcCoin) {
           if (!FEE_VAULT_ID) {
             console.warn(
               `[market-creator] FEE_VAULT_ID not configured — skipping initial mint for ${marketId}`,
             );
           } else {
-            const mintTx = buildMintSharesTx(marketId, FEE_VAULT_ID, dbusdcCoin.objectId);
+            const mintTx = buildMintSharesTx(marketId, FEE_VAULT_ID, dusdcCoin.objectId);
             const mintResult = await executeTransaction(client, mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;
           }
         } else {
           console.warn(
-            `[market-creator] no DBUSDC coin with >= ${INITIAL_MINT_ATOMS} atoms — skipping initial mint for ${marketId}`,
+            `[market-creator] no DUSDC coin with >= ${INITIAL_MINT_ATOMS} atoms — skipping initial mint for ${marketId}`,
           );
         }
       } catch (mintErr) {

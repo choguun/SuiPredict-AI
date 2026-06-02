@@ -74,19 +74,66 @@ export function handleGamificationRoute(
   }
 
   // GET /prize/signature?week=N&rank=R&user=:addr&amount=:a
+  //
+  // Authorisation model: the on-chain `claim_prize` trusts whatever
+  // the prize admin signs. The previous version of this endpoint
+  // signed for *any* `(user, rank)` — a misclick or hostile script
+  // could request a rank-1 signature for an address that wasn't even
+  // on the leaderboard, draining the pool once the user (or an
+  // attacker) submitted the tx.
+  //
+  // The fix is a server-side leaderboard membership check: we look up
+  // the user in the weekly archive for the requested week and verify
+  // the requested rank matches the archived rank. The amount is then
+  // re-derived from the rank table — `amountRaw` is ignored to avoid
+  // the client computing a different value than the on-chain check.
   const sigMatch = url.pathname.match(/^\/prize\/signature$/);
   if (sigMatch) {
     const week = Number(url.searchParams.get("week") ?? -1);
     const rank = Number(url.searchParams.get("rank") ?? 0);
     const user = url.searchParams.get("user") ?? "";
-    const amountRaw = url.searchParams.get("amount") ?? "0";
     const poolId = process.env.PRIZE_POOL_ID ?? "";
     const adminPk = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
     if (week < 0 || rank <= 0 || !user || !poolId || !adminPk) {
       json(res, 400, { error: "missing required params" });
       return true;
     }
-    const amount = BigInt(amountRaw);
+    if (!/^0x[a-fA-F0-9]{1,64}$/.test(user)) {
+      json(res, 400, { error: "invalid user address" });
+      return true;
+    }
+    // Membership check: is the user on the leaderboard for this week,
+    // and is the requested rank consistent with the archive?
+    const row = getUserWeekRank(user, week);
+    if (!row) {
+      json(res, 403, {
+        error: "user not on leaderboard for this week",
+        week_index: week,
+      });
+      return true;
+    }
+    if (row.rank !== rank) {
+      json(res, 400, {
+        error: "rank mismatch with leaderboard",
+        requested: rank,
+        actual: row.rank,
+      });
+      return true;
+    }
+    if (row.claimed) {
+      json(res, 409, {
+        error: "prize already claimed for this user and week",
+        week_index: week,
+      });
+      return true;
+    }
+    // Re-derive the canonical amount from the rank table so the
+    // signed payload always matches what the contract expects.
+    const amount = expectedAmountForRank(
+      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+      rank,
+      DEFAULT_DISTRIBUTION_BPS,
+    );
     const payload: ClaimPayload = {
       poolId,
       weekIndex: BigInt(week),
@@ -104,11 +151,7 @@ export function handleGamificationRoute(
             amount: signed.payload.amount.toString(),
           },
           signatureB64: signed.signatureB64,
-          expectedAmount: expectedAmountForRank(
-            BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
-            rank,
-            DEFAULT_DISTRIBUTION_BPS,
-          ).toString(),
+          expectedAmount: amount.toString(),
         });
       })
       .catch((err) =>
