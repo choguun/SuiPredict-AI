@@ -21,7 +21,7 @@ import {
   type ClaimPayload,
 } from "@suipredict/sdk";
 import { weekIndexFor, recordPrizeClaim, getPrizeClaim } from "./store.js";
-import { liveRollup } from "../agents/leaderboard-worker.js";
+import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { getUserWeekRank, listPrizeClaims } from "./store.js";
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -78,6 +78,31 @@ export async function handleGamificationRoute(
     const cat = category != null ? Number(category) : undefined;
     const rows = liveRollup(idx, cat);
     json(res, 200, { week_index: idx, rows: rows.slice(0, limit) });
+    return true;
+  }
+
+  // GET /leaderboard/country?code=us&index=N&limit=M&category=K
+  //
+  // National leaderboard. `code` is a lowercased ISO-3166-1 alpha-2
+  // (or alpha-3, or BCP-47 locale tag — anything up to 8 bytes, matching
+  // `user_profile::MAX_COUNTRY_BYTES`). Users without a profile or
+  // with an empty `country_code` are excluded. The `category` filter
+  // composes so a UI can request the US AI-news leaderboard by passing
+  // both. Result rows include `country_code` so the client can render
+  // a flag without a second lookup.
+  const countryMatch = url.pathname.match(/^\/leaderboard\/country$/);
+  if (countryMatch) {
+    const code = (url.searchParams.get("code") ?? "").toLowerCase();
+    if (!/^[a-z]{2,8}$/.test(code)) {
+      json(res, 400, { error: "code param must be 2-8 lowercase letters" });
+      return true;
+    }
+    const idx = Number(url.searchParams.get("index") ?? weekIndexFor(Date.now()));
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), 500);
+    const category = url.searchParams.get("category");
+    const cat = category != null ? Number(category) : undefined;
+    const rows = countryRollup(idx, code, cat);
+    json(res, 200, { week_index: idx, country_code: code, rows: rows.slice(0, limit) });
     return true;
   }
 

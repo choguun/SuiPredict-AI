@@ -41,6 +41,7 @@ import {
   recordPrizeClaim,
   recordStreakEvent,
   markPoolWeekSettled,
+  upsertUserProfile,
 } from "../gamification/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
@@ -799,7 +800,94 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered.`;
+  // UserProfile events — fired by `user_profile::create_profile`,
+  // `set_country_code`, and `set_forecaster_kind`. The mirror into
+  // `user_profiles` powers the national leaderboard (per-country
+  // ranking) and the AI/bot forecaster sub-leaderboards. Without
+  // these subscriptions the `/leaderboard/country` endpoint would
+  // return an empty result set for every country. Idempotent via
+  // `upsertUserProfile`'s `ON CONFLICT DO UPDATE` — re-polling the
+  // same event after a restart does not duplicate the row.
+  //
+  // The Move event field types are: `user: address` (string),
+  // `country_code: vector<u8>` (base64 in the JSON-RPC payload —
+  // Sui's event decoder renders byte vectors as base64 strings by
+  // default; the SDK doesn't auto-decode), and `forecaster_kind: u8`
+  // (number). We accept the base64 string as-is and lowercase it
+  // downstream if needed; the on-chain module already enforces the
+  // byte-length cap.
+  const profileCreated = await guardedPoll(
+    "ProfileCreated",
+    `${predictPackageId}::user_profile::ProfileCreated`,
+    "position_indexer.profile_created",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        profile_id?: string;
+      };
+      if (!j?.user) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      // Brand-new profile: country_code and forecaster_kind default
+      // to empty / 0 (set later via the dedicated events). The
+      // `upsert` preserves the existing row if the events arrive out
+      // of order — defensive against a `CountryCodeSet` event that
+      // somehow beat the matching `ProfileCreated` (shouldn't
+      // happen on chain, but the indexer can't assume it never does).
+      upsertUserProfile({
+        user: j.user,
+        country_code: "",
+        forecaster_kind: 0,
+        updated_at_ms: ts,
+      });
+    },
+  );
+
+  const countryCodeSet = await guardedPoll(
+    "CountryCodeSet",
+    `${predictPackageId}::user_profile::CountryCodeSet`,
+    "position_indexer.country_code_set",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        country_code?: string;
+      };
+      if (!j?.user) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      // The on-chain module is byte-typed; the JSON-RPC event
+      // payload renders `vector<u8>` as a base64 string. We accept
+      // it as-is — the downstream `countryRollup` matcher
+      // lowercases its argument before comparing, so the mirror
+      // stays consistent with what a user typed in lowercase.
+      // An empty value clears the country (per the on-chain
+      // contract), so we write it through verbatim.
+      upsertUserProfile({
+        user: j.user,
+        country_code: j.country_code ?? "",
+        updated_at_ms: ts,
+      });
+    },
+  );
+
+  const forecasterKindSet = await guardedPoll(
+    "ForecasterKindSet",
+    `${predictPackageId}::user_profile::ForecasterKindSet`,
+    "position_indexer.forecaster_kind_set",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        forecaster_kind?: string | number;
+      };
+      if (!j?.user) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      upsertUserProfile({
+        user: j.user,
+        forecaster_kind: Number(j.forecaster_kind ?? 0),
+        updated_at_ms: ts,
+      });
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered, ${profileCreated} profiles created, ${countryCodeSet} country codes set, ${forecasterKindSet} forecaster kinds set.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

@@ -39,6 +39,16 @@ export interface WeeklyRow {
   correct_days: number;
   longest_streak: number;
   category: number;
+  /**
+   * Optional country code, populated only on the live rollup path
+   * (the `aggregateWeek()` worker output and the `weekly_archive`
+   * rows both stay country-less — the archive snapshot is
+   * independent of the profile mirror so an indexer lag doesn't
+   * change historical rankings). The REST `/leaderboard/week` and
+   * `/leaderboard/country` endpoints fill this in from
+   * `getUserProfilesForUsers` after the rollup returns.
+   */
+  country_code?: string;
   claimed?: boolean;
 }
 
@@ -138,6 +148,24 @@ function getDb(): Database.Database {
         settled_at_ms INTEGER,
         PRIMARY KEY (pool_id, week_index)
       );
+
+      -- User profiles — mirrored from on-chain user_profile events
+      -- (ProfileCreated, CountryCodeSet, ForecasterKindSet).
+      -- Used by the national leaderboard and the AI/bot
+      -- forecaster sub-leaderboards. The country_code is the ISO-3166-1
+      -- alpha-2 string the user typed (already lowercased client-side);
+      -- empty string means the user has not set one (excluded from
+      -- country-filtered leaderboards). forecaster_kind mirrors the
+      -- on-chain u8 (0=human, 1=ai, 2=bot) so we can split the
+      -- AI-forecaster category without re-deriving it from category.
+      CREATE TABLE IF NOT EXISTS user_profiles (
+        user TEXT PRIMARY KEY,
+        country_code TEXT NOT NULL DEFAULT '',
+        forecaster_kind INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_profiles_country
+        ON user_profiles(country_code) WHERE country_code != '';
     `);
   }
   return db;
@@ -528,4 +556,80 @@ export function releaseSweepLock(dayIndex: number): void {
   getDb()
     .prepare(`DELETE FROM sweep_runs WHERE day_index=? AND status='running'`)
     .run(dayIndex);
+}
+
+// ============================================================
+// user_profiles — national & AI-forecaster leaderboards
+// ============================================================
+
+export interface UserProfile {
+  user: string;
+  country_code: string;
+  forecaster_kind: number; // 0=human, 1=ai, 2=bot
+  updated_at_ms: number;
+}
+
+/**
+ * Upsert a user profile row. Called from the position-indexer's
+ * `ProfileCreated` / `CountryCodeSet` / `ForecasterKindSet` handlers.
+ * `country_code` and `forecaster_kind` are taken verbatim from the
+ * event payload — the on-chain module is the source of truth, so the
+ * off-chain mirror should never try to normalize or validate.
+ */
+export function upsertUserProfile(profile: {
+  user: string;
+  country_code?: string;
+  forecaster_kind?: number;
+  updated_at_ms: number;
+}): void {
+  const existing = getUserProfile(profile.user);
+  const next: UserProfile = {
+    user: profile.user,
+    country_code: profile.country_code ?? existing?.country_code ?? "",
+    forecaster_kind: profile.forecaster_kind ?? existing?.forecaster_kind ?? 0,
+    updated_at_ms: profile.updated_at_ms,
+  };
+  getDb()
+    .prepare(
+      `INSERT INTO user_profiles (user, country_code, forecaster_kind, updated_at_ms)
+       VALUES (@user, @country_code, @forecaster_kind, @updated_at_ms)
+       ON CONFLICT(user) DO UPDATE SET
+         country_code=excluded.country_code,
+         forecaster_kind=excluded.forecaster_kind,
+         updated_at_ms=excluded.updated_at_ms`,
+    )
+    .run(next);
+}
+
+export function getUserProfile(user: string): UserProfile | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM user_profiles WHERE user = ?`)
+    .get(user) as UserProfile | undefined;
+  return row ?? null;
+}
+
+/**
+ * Bulk lookup for a leaderboard rollup. Returns a `Map<user, profile>`
+ * containing only users that have a row (no entry means the user has
+ * no profile and is excluded from country/forecaster-kind filters).
+ * Uses a single `WHERE user IN (...)` round-trip — the per-row
+ * `getUserProfile` would issue N+1 queries.
+ */
+export function getUserProfilesForUsers(users: string[]): Map<string, UserProfile> {
+  const out = new Map<string, UserProfile>();
+  if (users.length === 0) return out;
+  // better-sqlite3 caps `IN (?, ?, ...)` at 999 placeholders; chunk
+  // defensively in case a leaderboard grows past that.
+  const CHUNK = 500;
+  for (let i = 0; i < users.length; i += CHUNK) {
+    const slice = users.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => "?").join(",");
+    const rows = getDb()
+      .prepare(
+        `SELECT * FROM user_profiles WHERE user IN (${placeholders})`,
+      )
+      .all(...slice) as UserProfile[];
+    for (const r of rows) out.set(r.user, r);
+  }
+  return out;
 }
