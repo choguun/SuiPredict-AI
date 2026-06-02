@@ -1,4 +1,4 @@
-import type { MarketInfo, OrderBookSnapshot, PortfolioPosition } from "./types.js";
+import type { MarketInfo, OrderBookSnapshot, PortfolioPosition, VaultSummaryClob } from "./types.js";
 
 const INDEXER_URL =
   process.env.INDEXER_URL ??
@@ -57,11 +57,7 @@ export async function getPortfolio(address: string): Promise<PortfolioPosition[]
   return fetchJson(`/portfolio/${address}`);
 }
 
-export async function getVaultSummaryClob(): Promise<{
-  vault_id: string;
-  total_balance: number;
-  allocated: number;
-}> {
+export async function getVaultSummaryClob(): Promise<VaultSummaryClob> {
   return fetchJson("/vault/summary");
 }
 

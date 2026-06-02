@@ -204,8 +204,28 @@ function startHealthServer() {
     if (handleMarketsRoute(req, res, url)) return;
     if (await handleGamificationRoute(req, res, url)) return;
     if (url.pathname === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok" }));
+      // Expose the configured package id and other env-derived config
+      // so the web client can detect drift between the web bundle
+      // (which bakes NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID at build time)
+      // and the agents runtime. A mismatch means PTBs built from the
+      // web bundle will fail with `package object not found` — the
+      // /agents page surfaces this as a banner.
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          package_id: process.env.AGENT_POLICY_PACKAGE_ID ?? "",
+          deepbook_registry_id:
+            process.env.DEEPBOOK_REGISTRY_ID ?? "",
+          vault_id: process.env.VAULT_OBJECT_ID ?? "",
+          prize_pool_id: process.env.PRIZE_POOL_ID ?? "",
+          streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
+          ts_ms: Date.now(),
+        }),
+      );
       return;
     }
     if (url.pathname === "/decisions") {

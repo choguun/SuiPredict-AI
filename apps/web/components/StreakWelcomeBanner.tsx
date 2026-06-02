@@ -52,9 +52,17 @@ export function StreakWelcomeBanner() {
     try {
       const tx = buildCreateStreakTx(REGISTRY_ID);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Streak created: ${r.Transaction?.digest?.slice(0, 16) ?? "ok"}…`, {
-        id: toastId,
-      });
+      // `$kind === "Transaction"` means the fullnode accepted the tx;
+      // other variants (`"Failed"`, `"EffectsCert"`) carry a different
+      // shape. Without this guard, a failed ttx would still toast
+      // "Streak created: ok…" (the audit's round-15 L5 finding).
+      if (r.$kind === "Transaction") {
+        toast.success(`Streak created: ${r.Transaction.digest.slice(0, 16)}…`, {
+          id: toastId,
+        });
+      } else {
+        toast.error("Streak creation failed", { id: toastId });
+      }
       void dismiss();
     } catch (err) {
       toast.error(

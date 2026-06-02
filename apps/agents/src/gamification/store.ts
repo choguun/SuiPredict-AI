@@ -102,10 +102,10 @@ function getDb(): Database.Database {
       );
 
       -- Streak event log. Populated by the position-indexer from the
-      -- on-chain `StreakUpdated` / `StreakBroken` / `MilestoneReached`
-      -- events (these are emitted by `streak_system::record_participation`
-      -- and were unsubscribed before r15 — the streak page showed stale
-      -- `current_streak` until the next indexer poll). Powers the
+      -- on-chain StreakUpdated / StreakBroken / MilestoneReached events
+      -- (these are emitted by streak_system::record_participation and
+      -- were unsubscribed before r15 — the streak page showed stale
+      -- current_streak until the next indexer poll). Powers the
       -- activity feed in the streak UI and the milestones card.
       CREATE TABLE IF NOT EXISTS streak_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,9 +125,9 @@ function getDb(): Database.Database {
         ON streak_events(ts_ms DESC);
 
       -- Per-pool weekly settlement state. Populated by the indexer
-      -- from `PoolSettled` events. The leaderboard-worker uses
-      -- `settledWeeks` to mark weeks as closed when computing the
-      -- `claimed` annotation (a settled week is past-claim, so any
+      -- from PoolSettled events. The leaderboard-worker uses
+      -- settledWeeks to mark weeks as closed when computing the
+      -- claimed annotation (a settled week is past-claim, so any
       -- unclaimed entry is "lost" the prize). Without this indexer
       -- path the leaderboard could keep offering claim txns for a
       -- week the on-chain pool has already marked settled.

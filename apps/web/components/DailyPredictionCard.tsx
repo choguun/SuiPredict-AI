@@ -115,6 +115,10 @@ export function DailyPredictionCard() {
 
   const handleSubmit = async () => {
     if (!account || !client || !isComplete) return;
+    if (!FEE_VAULT_ID) {
+      toast.error("NEXT_PUBLIC_FEE_VAULT_ID is not set in this deployment.");
+      return;
+    }
     setSubmitting(true);
     try {
       const { objects } = await client.core.listCoins({

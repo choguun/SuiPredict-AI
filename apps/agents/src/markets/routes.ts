@@ -3,7 +3,6 @@ import {
   getMarket,
   getOrderBook,
   getPortfolio,
-  getTrades,
   getVaultSummaryFromEnv,
   listChainOrders,
   listMarkets,
@@ -44,7 +43,7 @@ export function handleMarketsRoute(
     return true;
   }
 
-  const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/trades|\/orders)?$/);
+  const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/orders)?$/);
   if (marketMatch) {
     const [, id, sub] = marketMatch;
     const market = getMarket(id!);
@@ -56,13 +55,9 @@ export function handleMarketsRoute(
       json(res, 200, getOrderBook(id!));
       return true;
     }
-    if (sub === "/trades") {
-      json(res, 200, getTrades(id!));
-      return true;
-    }
     if (sub === "/orders") {
       const limit = Number(url.searchParams.get("limit") ?? 50);
-      json(res, 200, listChainOrders(id!, limit));
+      json(res, 200, { orders: listChainOrders(id!, limit) });
       return true;
     }
     json(res, 200, market);

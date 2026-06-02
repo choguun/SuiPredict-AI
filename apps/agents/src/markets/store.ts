@@ -94,8 +94,8 @@ export function getDb(): Database.Database {
       );
 
       -- Vault activity log. Populated by the position-indexer from the
-      -- on-chain `VaultCreated` / `Deposited` / `Withdrawn` / `Allocated` /
-      -- `Deallocated` events (these were unsubscribed before r15 — the
+      -- on-chain VaultCreated / Deposited / Withdrawn / Allocated /
+      -- Deallocated events (these were unsubscribed before r15 — the
       -- vault page reads its summary directly from the SDK, so the table
       -- is purely a recent-activity feed for the vault UI). Powers an
       -- optional "Recent flows" panel on /vault.

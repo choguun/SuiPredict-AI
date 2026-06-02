@@ -105,59 +105,18 @@ export function buildRotateStreakAdminTx(
 }
 
 /**
- * Build `redeem_with_streak` transaction. Burns winning YES tokens and
- * pays out collateral multiplied by the user's streak multiplier. The
- * 0.5% protocol fee is routed to the shared `FeeVault`.
- *
- * Note: `redeem_with_streak` lives in `prediction_market.move`, which
- * is in the same package as `streak_system.move` (both share one
- * Published.toml). We use `PKG()` (= `AGENT_POLICY_PACKAGE_ID`) so
- * PTB construction is consistent across this file and so the move-call
- * target resolves through the same env-var chain as `create_streak`.
+ * Build `redeem_with_streak` transaction. **Moved to
+ * `prediction-market-client.ts` in r16** — the on-chain function lives
+ * in `prediction_market.move` (same package as the rest of the
+ * redemption API), so all `prediction_market::*` wrappers are
+ * co-located there now. The export is re-exported through the
+ * wildcard in `index.ts`, so existing imports from `@suipredict/sdk`
+ * continue to work.
  */
-export function buildRedeemWithStreakTx(
-  marketId: string,
-  vaultId: string,
-  winningCoinId: string,
-  streakId: string,
-): Transaction {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PKG()}::prediction_market::redeem_with_streak`,
-    typeArguments: [DUSDC_TYPE],
-    arguments: [
-      tx.object(marketId),
-      tx.object(vaultId),
-      tx.object(winningCoinId),
-      tx.object(streakId),
-    ],
-  });
-  return tx;
-}
 
 /**
- * Build `redeem_no_with_streak` transaction. Same as above for NO positions.
- * See `buildRedeemWithStreakTx` for the package-id note.
+ * Build `redeem_no_with_streak` transaction. See `buildRedeemWithStreakTx`.
  */
-export function buildRedeemNoWithStreakTx(
-  marketId: string,
-  vaultId: string,
-  winningCoinId: string,
-  streakId: string,
-): Transaction {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PKG()}::prediction_market::redeem_no_with_streak`,
-    typeArguments: [DUSDC_TYPE],
-    arguments: [
-      tx.object(marketId),
-      tx.object(vaultId),
-      tx.object(winningCoinId),
-      tx.object(streakId),
-    ],
-  });
-  return tx;
-}
 
 /**
  * Build `claim_badge` transaction. Tier 1..5; 1=bronze (3d), 5=diamond (100d).

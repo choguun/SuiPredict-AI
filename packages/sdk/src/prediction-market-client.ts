@@ -13,6 +13,7 @@ import {
   AGENT_POLICY_PACKAGE_ID,
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
+  PREDICT_PACKAGE_ID,
 } from "./constants.js";
 import { encodeUtf8 } from "./markets/constants.js";
 import {
@@ -350,6 +351,58 @@ export function buildRedeemNoTx(
 }
 
 /**
+ * Build `redeem_with_streak` (YES winning) transaction. Burns winning
+ * YES tokens and pays out collateral multiplied by the user's streak
+ * multiplier. The 0.5% protocol fee is routed to the shared `FeeVault`.
+ *
+ * The on-chain function lives in `prediction_market.move` (same package
+ * as the rest of the redemption API). It was originally exposed from
+ * `streak-client.ts` because it takes a `UserStreak` arg, but every
+ * other redemption function lives here — moved in r16 to keep the
+ * `prediction_market::*` wrappers co-located.
+ */
+export function buildRedeemWithStreakTx(
+  marketId: string,
+  vaultId: string,
+  winningCoinId: string,
+  streakId: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::redeem_with_streak`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(marketId),
+      tx.object(vaultId),
+      tx.object(winningCoinId),
+      tx.object(streakId),
+    ],
+  });
+  return tx;
+}
+
+/** Build `redeem_no_with_streak` transaction. See `buildRedeemWithStreakTx`. */
+export function buildRedeemNoWithStreakTx(
+  marketId: string,
+  vaultId: string,
+  winningCoinId: string,
+  streakId: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::redeem_no_with_streak`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(marketId),
+      tx.object(vaultId),
+      tx.object(winningCoinId),
+      tx.object(streakId),
+    ],
+  });
+  return tx;
+}
+
+/**
  * Build `setup_referral` transaction.
  *
  * Mints a DeepBook referral for the market's pool, making this protocol
@@ -562,6 +615,39 @@ export function buildWithdrawSettledTx(
   poolKey: string,
 ): Transaction {
   return buildDeepBookWithdrawSettledTx(dbClient, poolKey);
+}
+
+/**
+ * Withdraw settled amounts via the market wrapper. Routes through
+ * `prediction_market::withdraw_settled` (not the bare DeepBook call)
+ * so the on-chain `SettledEvent` is emitted. The market-level event
+ * is what the position-indexer uses to advance the `settled_weeks`
+ * cursor on the leaderboard; calling the bare `pool::withdraw_settled`
+ * bypasses the indexer path entirely, so a settled week would never
+ * mark `claimed=true` for the matching off-chain leaderboard row.
+ *
+ * @param marketId         - `PredictionMarket<Q>` object id
+ * @param poolId           - DeepBook `Pool<YES<Q>, Q>` object id (the
+ *                           market stores this in `pool_id`; the UI
+ *                           can read it via `getMarket`)
+ * @param balanceManagerId - user's `BalanceManager` for this market
+ */
+export function buildMarketWithdrawSettledTx(
+  marketId: string,
+  poolId: string,
+  balanceManagerId: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PREDICT_PACKAGE_ID}::prediction_market::withdraw_settled`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(marketId),
+      tx.object(poolId),
+      tx.object(balanceManagerId),
+    ],
+  });
+  return tx;
 }
 
 // ─── Market-order / cancel / deposit wrappers ───────────────────────────────

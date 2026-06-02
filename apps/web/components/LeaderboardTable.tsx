@@ -26,12 +26,18 @@ interface Props {
   prizeAdminId: string;
   weeklyPrize: bigint;
   limit?: number;
+  category?: string;
 }
 
 const AGENTS_URL = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 
-async function fetchLeaderboard(limit: number): Promise<LeaderboardResponse> {
-  const res = await fetch(`${AGENTS_URL}/leaderboard/week?limit=${limit}`, {
+async function fetchLeaderboard(
+  limit: number,
+  category: string,
+): Promise<LeaderboardResponse> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (category) qs.set("category", category);
+  const res = await fetch(`${AGENTS_URL}/leaderboard/week?${qs.toString()}`, {
     cache: "no-store",
   });
   if (!res.ok) {
@@ -47,10 +53,11 @@ export function LeaderboardTable({
   prizeAdminId,
   weeklyPrize,
   limit = 20,
+  category = "",
 }: Props) {
   const { data, error, isFetching, dataUpdatedAt } = useQuery({
-    queryKey: ["leaderboard", "week", limit],
-    queryFn: () => fetchLeaderboard(limit),
+    queryKey: ["leaderboard", "week", limit, category],
+    queryFn: () => fetchLeaderboard(limit, category),
     initialData: initialData ?? undefined,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,

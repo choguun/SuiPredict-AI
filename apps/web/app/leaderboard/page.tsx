@@ -22,13 +22,39 @@ interface LeaderboardResponse {
 const AGENTS_URL = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 const DEFAULT_LIMIT = 20;
 
-export default async function LeaderboardPage() {
+/**
+ * PRD §4.3 mentions country / AI / friends leaderboards. Only the AI
+ * category is implemented in this iteration — the data layer doesn't
+ * store country (no KYC) or friend graph (no social follow), so those
+ * two filters are deferred. The category filter is wired through to
+ * `GET /leaderboard/week?category=K`, which already supports it.
+ */
+const CATEGORY_OPTIONS = [
+  { value: "", label: "All categories" },
+  { value: "0", label: "General" },
+  { value: "1", label: "AI" },
+  { value: "2", label: "Crypto" },
+  { value: "3", label: "Other" },
+];
+
+export default async function LeaderboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ category?: string; addr?: string }>;
+}) {
+  const sp = await searchParams;
+  const category = sp?.category ?? "";
+  const addr = sp?.addr ?? "";
+  const limit = DEFAULT_LIMIT;
+
   let initialData: LeaderboardResponse | null = null;
   let initialError: string | null = null;
 
   try {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (category) qs.set("category", category);
     const res = await fetch(
-      `${AGENTS_URL}/leaderboard/week?limit=${DEFAULT_LIMIT}`,
+      `${AGENTS_URL}/leaderboard/week?${qs.toString()}`,
       { cache: "no-store" },
     );
     if (res.ok) {
@@ -38,6 +64,24 @@ export default async function LeaderboardPage() {
     }
   } catch (err) {
     initialError = err instanceof Error ? err.message : "Agents unreachable";
+  }
+
+  let userRow: WeeklyRow | null = null;
+  let userError: string | null = null;
+  if (addr) {
+    try {
+      const res = await fetch(
+        `${AGENTS_URL}/leaderboard/user/${addr}`,
+        { cache: "no-store" },
+      );
+      if (res.ok) {
+        userRow = (await res.json()) as WeeklyRow;
+      } else if (res.status !== 404) {
+        userError = `Agents responded ${res.status}`;
+      }
+    } catch (err) {
+      userError = err instanceof Error ? err.message : "Agents unreachable";
+    }
   }
 
   const prizePoolId = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? "";
@@ -59,6 +103,60 @@ export default async function LeaderboardPage() {
         </p>
       </div>
 
+      <Card title="Filter" className="border-white/10">
+        <form className="flex flex-wrap items-end gap-3" method="get">
+          <label className="flex flex-col text-xs text-zinc-400">
+            Category
+            <select
+              name="category"
+              defaultValue={category}
+              className="mt-1 min-w-40 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
+            >
+              {CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs text-zinc-400">
+            Look up address (optional)
+            <input
+              name="addr"
+              defaultValue={addr}
+              placeholder="0x…"
+              className="mt-1 w-96 max-w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-white"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded-md bg-white/10 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-white/20"
+          >
+            Apply
+          </button>
+        </form>
+        {addr && (
+          <div className="mt-4 rounded-md border border-white/10 bg-black/20 p-3 text-sm">
+            {userError && <p className="text-amber-300">{userError}</p>}
+            {!userError && !userRow && (
+              <p className="text-zinc-400">
+                <span className="font-mono text-cyan-300">{addr.slice(0, 10)}…{addr.slice(-4)}</span>{" "}
+                is not on this week&apos;s leaderboard.
+              </p>
+            )}
+            {userRow && (
+              <p className="text-zinc-300">
+                <span className="font-mono text-cyan-300">{userRow.user.slice(0, 10)}…{userRow.user.slice(-4)}</span>{" "}
+                — rank{" "}
+                <span className="font-semibold text-white">#{userRow.rank}</span>,{" "}
+                score {userRow.score.toFixed(2)}, longest streak {userRow.longest_streak},{" "}
+                {userRow.claimed ? "prize claimed" : "prize unclaimed"}
+              </p>
+            )}
+          </div>
+        )}
+      </Card>
+
       <Card title="Rankings" className="border-white/10">
         <LeaderboardTable
           initialData={initialData}
@@ -66,7 +164,8 @@ export default async function LeaderboardPage() {
           prizePoolId={prizePoolId}
           prizeAdminId={prizeAdminId}
           weeklyPrize={weeklyPrize}
-          limit={DEFAULT_LIMIT}
+          limit={limit}
+          category={category}
         />
       </Card>
     </div>

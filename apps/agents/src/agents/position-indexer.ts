@@ -384,6 +384,32 @@ export async function runPositionIndexer(
     },
   );
 
+  // OrdersBatchCancelledEvent — fired by `cancel_orders` (the batch
+  // path). `cancel_orders` calls `pool::cancel_live_orders`, which
+  // already emits per-order `OrderCancelledEvent` for each id, so this
+  // handler is **redundant for correctness** — but subscribing keeps
+  // the cursor advancing through batch events even if a per-order
+  // emission is dropped (Sui node pruning, RPC gap) and gives us a
+  // single transaction-level view of bulk cancellations for the audit
+  // log. `order_ids` is a `vector<u128>`; the JSON view renders it as
+  // either `string[]` or `number[]` depending on value size.
+  const batchCancellations = await guardedPoll(
+    "OrdersBatchCancelled",
+    `${predictPackageId}::prediction_market::OrdersBatchCancelledEvent`,
+    "position_indexer.orders_batch_cancelled",
+    (ev) => {
+      const j = ev.parsedJson as {
+        market_id?: string;
+        order_ids?: Array<string | number>;
+      };
+      if (!j?.market_id || !Array.isArray(j.order_ids)) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      for (const id of j.order_ids) {
+        markOrderCancelled(j.market_id, String(id), ts);
+      }
+    },
+  );
+
   // MarketDisputedEvent — fired when a user calls `dispute_market` within
   // the 1-hour post-resolution window. The /markets/:id UI shows a
   // "Disputed" badge and the redeem button is hidden until the dispute
@@ -589,7 +615,7 @@ export async function runPositionIndexer(
       recordVaultFlow({
         vault_id: j.vault_id,
         kind: "created",
-        actor: j.admin ?? null,
+        actor: j.admin ?? undefined,
         ts_ms: ts,
       });
     },
@@ -611,7 +637,7 @@ export async function runPositionIndexer(
       recordVaultFlow({
         vault_id: j.vault_id,
         kind: "deposit",
-        actor: j.user ?? null,
+        actor: j.user ?? undefined,
         amount: Number(j.amount ?? 0),
         vlp_delta: Number(j.vlp_minted ?? 0),
         ts_ms: ts,
@@ -635,7 +661,7 @@ export async function runPositionIndexer(
       recordVaultFlow({
         vault_id: j.vault_id,
         kind: "withdraw",
-        actor: j.user ?? null,
+        actor: j.user ?? undefined,
         amount: Number(j.amount ?? 0),
         vlp_delta: -Number(j.vlp_burned ?? 0),
         ts_ms: ts,

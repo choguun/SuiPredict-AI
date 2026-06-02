@@ -5,10 +5,13 @@ import { useState } from "react";
 import {
   AGENT_POLICY_PACKAGE_ID,
   buildCreatePolicyTx,
+  buildPausePolicyTx,
   buildRevokePolicyTx,
+  buildUnpausePolicyTx,
   extractCreatedObjectId,
   getPolicyState,
   dusdcToDollars,
+  type AgentPolicyState,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 
@@ -20,6 +23,7 @@ export default function SettingsPage() {
   const [budget, setBudget] = useState(50);
   const [policyId, setPolicyId] = useState("");
   const [policyInfo, setPolicyInfo] = useState<string>("");
+  const [policyState, setPolicyState] = useState<AgentPolicyState | null>(null);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -28,8 +32,10 @@ export default function SettingsPage() {
     const policy = await getPolicyState(client, id);
     if (!policy) {
       setPolicyInfo("Policy not found or invalid ID.");
+      setPolicyState(null);
       return;
     }
+    setPolicyState(policy);
     setPolicyInfo(
       `Owner: ${policy.owner.slice(0, 10)}… · Agent: ${policy.agent.slice(0, 10)}… · Spent $${dusdcToDollars(BigInt(policy.spent)).toFixed(2)} / $${dusdcToDollars(BigInt(policy.max_budget)).toFixed(2)} · ${policy.revoked ? "REVOKED" : policy.paused ? "PAUSED" : "ACTIVE"}`,
     );
@@ -88,6 +94,31 @@ export default function SettingsPage() {
     }
   }
 
+  async function setPaused(pause: boolean) {
+    if (!account || !policyId) return;
+    setLoading(true);
+    setStatus(pause ? "Pausing policy..." : "Unpausing policy...");
+    try {
+      // The on-chain `pause` allows either owner or agent, but `unpause`
+      // is owner-only — when pausing-as-agent, use the agent wallet;
+      // when unpausing, the owner must sign.
+      const tx = pause
+        ? buildPausePolicyTx(policyId)
+        : buildUnpausePolicyTx(policyId);
+      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest =
+        result.$kind === "Transaction"
+          ? result.Transaction.digest
+          : "unknown";
+      setStatus(`${pause ? "Paused" : "Unpaused"}! Tx: ${digest.slice(0, 16)}…`);
+      await loadPolicyInfo(policyId);
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="space-y-8">
       <div>
@@ -131,7 +162,7 @@ export default function SettingsPage() {
         )}
       </Card>
 
-      <Card title="Revoke Policy" className="border-white/10">
+      <Card title="Manage Policy" className="border-white/10">
         <div className="space-y-4 max-w-md mt-2">
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Policy Object ID</label>
@@ -146,13 +177,48 @@ export default function SettingsPage() {
           {policyInfo && (
             <p className="text-xs text-zinc-400 bg-white/5 p-3 rounded-lg border border-white/5">{policyInfo}</p>
           )}
-          <button
-            onClick={revokePolicy}
-            disabled={loading || !policyId || !account}
-            className="mt-2 w-full rounded-lg bg-rose-500/20 border border-rose-500/30 py-3 text-sm font-semibold text-rose-300 shadow-[0_0_15px_rgba(244,63,94,0.15)] transition-all hover:bg-rose-500/30 disabled:opacity-50"
-          >
-            Revoke Agent Access
-          </button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <button
+              onClick={() => setPaused(true)}
+              disabled={
+                loading ||
+                !policyId ||
+                !account ||
+                !policyState ||
+                policyState.paused ||
+                policyState.revoked
+              }
+              className="rounded-lg bg-amber-500/20 border border-amber-500/30 py-3 text-sm font-semibold text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.15)] transition-all hover:bg-amber-500/30 disabled:opacity-50"
+            >
+              Pause
+            </button>
+            <button
+              onClick={() => setPaused(false)}
+              disabled={
+                loading ||
+                !policyId ||
+                !account ||
+                !policyState ||
+                !policyState.paused ||
+                policyState.revoked
+              }
+              className="rounded-lg bg-emerald-500/20 border border-emerald-500/30 py-3 text-sm font-semibold text-emerald-200 shadow-[0_0_15px_rgba(16,185,129,0.15)] transition-all hover:bg-emerald-500/30 disabled:opacity-50"
+            >
+              Unpause
+            </button>
+            <button
+              onClick={revokePolicy}
+              disabled={loading || !policyId || !account || policyState?.revoked}
+              className="rounded-lg bg-rose-500/20 border border-rose-500/30 py-3 text-sm font-semibold text-rose-300 shadow-[0_0_15px_rgba(244,63,94,0.15)] transition-all hover:bg-rose-500/30 disabled:opacity-50"
+            >
+              Revoke
+            </button>
+          </div>
+          <p className="text-xs text-zinc-500">
+            Pause/unpause: only the policy owner can <em>unpause</em>;
+            either owner or agent can pause. Revoke permanently disables
+            the policy — irreversible.
+          </p>
         </div>
       </Card>
 

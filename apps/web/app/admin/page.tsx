@@ -28,6 +28,7 @@ import {
   buildWithdrawFeesTx,
   buildSetDistributionTx,
   buildResolveDisputeTx,
+  buildCreateMarketTx,
   FEE_VAULT_ID,
   isValidSuiAddress,
 } from "@suipredict/sdk";
@@ -152,6 +153,11 @@ export default function AdminPage() {
         onSubmit={(d) =>
           setLastAction({ label: "Resolve dispute", digest: d })
         }
+        dAppKit={dAppKit}
+        disabled={!walletConnected || !isAdmin}
+      />
+      <CreateMarketCard
+        onSubmit={(d) => setLastAction({ label: "Create market", digest: d })}
         dAppKit={dAppKit}
         disabled={!walletConnected || !isAdmin}
       />
@@ -415,6 +421,157 @@ function ResolveDisputeCard(props: {
             className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "Submitting…" : "Resolve"}
+          </button>
+        </div>
+        {err && <p className="text-xs text-rose-400">{err}</p>}
+        {digest && (
+          <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ============================================================
+// Create market (admin escape hatch — primary path is the
+// MarketCreator agent). Useful for one-off demo markets or for
+// recovering from a failed agent cron.
+// ============================================================
+
+function CreateMarketCard(props: {
+  onSubmit: (digest: string) => void;
+  dAppKit: ReturnType<typeof useDAppKit>;
+  disabled: boolean;
+}) {
+  const [title, setTitle] = useState("");
+  const [resolutionSource, setResolutionSource] = useState("CoinGecko");
+  const [expiryDays, setExpiryDays] = useState("7");
+  const [category, setCategory] = useState("0");
+  const [deepCoinId, setDeepCoinId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [digest, setDigest] = useState<string | null>(null);
+
+  async function submit() {
+    setErr(null);
+    setDigest(null);
+    if (!title.trim()) {
+      setErr("Title is required.");
+      return;
+    }
+    if (!deepCoinId.trim() || !isValidSuiAddress(deepCoinId)) {
+      setErr("DEEP coin object id is required (0x-prefixed, 64 hex chars).");
+      return;
+    }
+    const days = Number(expiryDays);
+    if (!Number.isFinite(days) || days <= 0) {
+      setErr("Expiry must be a positive number of days.");
+      return;
+    }
+    const cat = Number(category);
+    if (!Number.isInteger(cat) || cat < 0 || cat > 3) {
+      setErr("Category must be 0..3.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const expiryMs = BigInt(Date.now() + Math.round(days * 86_400_000));
+      const tx = buildCreateMarketTx({
+        title: title.trim(),
+        resolutionSource: resolutionSource.trim() || "Manual",
+        expiryMs,
+        deepCoinId: deepCoinId.trim(),
+        category: cat,
+      });
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit(d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Create market (admin escape hatch)">
+      <div className="space-y-4">
+        <p className="text-sm text-zinc-400">
+          Manually create a new prediction market with its DeepBook pool.
+          The primary path is the <code className="rounded bg-white/5 px-1 py-0.5 text-xs">MarketCreator</code>{" "}
+          agent; use this card for one-off demos or to recover from a
+          failed cron tick. Costs one DEEP coin (pool-creation fee) plus
+          gas; the fee is non-refundable.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="space-y-1 text-xs text-zinc-400">
+            Title
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Will BTC exceed $100k by Friday?"
+              className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:border-rose-400 focus:outline-none"
+              disabled={props.disabled || busy}
+            />
+          </label>
+          <label className="space-y-1 text-xs text-zinc-400">
+            Resolution source
+            <input
+              type="text"
+              value={resolutionSource}
+              onChange={(e) => setResolutionSource(e.target.value)}
+              placeholder="CoinGecko BTC/USD"
+              className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:border-rose-400 focus:outline-none"
+              disabled={props.disabled || busy}
+            />
+          </label>
+          <label className="space-y-1 text-xs text-zinc-400">
+            Expiry (days from now)
+            <input
+              type="number"
+              min="1"
+              value={expiryDays}
+              onChange={(e) => setExpiryDays(e.target.value)}
+              className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-white focus:border-rose-400 focus:outline-none"
+              disabled={props.disabled || busy}
+            />
+          </label>
+          <label className="space-y-1 text-xs text-zinc-400">
+            Category
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-white focus:border-rose-400 focus:outline-none"
+              disabled={props.disabled || busy}
+            >
+              <option value="0">General</option>
+              <option value="1">AI</option>
+              <option value="2">Crypto</option>
+              <option value="3">Other</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-xs text-zinc-400 sm:col-span-2">
+            DEEP coin object id (0x…64 hex)
+            <input
+              type="text"
+              value={deepCoinId}
+              onChange={(e) => setDeepCoinId(e.target.value)}
+              placeholder="0x..."
+              className="w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 font-mono text-xs text-white placeholder-zinc-600 focus:border-rose-400 focus:outline-none"
+              disabled={props.disabled || busy}
+            />
+          </label>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={props.disabled || busy || !title.trim() || !deepCoinId.trim()}
+            className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Submitting…" : "Create market"}
           </button>
         </div>
         {err && <p className="text-xs text-rose-400">{err}</p>}

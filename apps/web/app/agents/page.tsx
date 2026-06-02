@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AGENT_POLICY_PACKAGE_ID } from "@suipredict/sdk";
 import { Badge, Card } from "@/components/ui";
 
 interface Decision {
@@ -41,15 +42,17 @@ export default function AgentsPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [manifest, setManifest] = useState<AgentManifestEntry[]>([]);
   const [error, setError] = useState("");
+  const [drift, setDrift] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const base =
           process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
-        const [decisionsRes, manifestRes] = await Promise.all([
+        const [decisionsRes, manifestRes, healthRes] = await Promise.all([
           fetch(`${base}/decisions`),
           fetch(`${base}/agents/manifest`),
+          fetch(`${base}/health`),
         ]);
         if (!decisionsRes.ok) throw new Error("Agent service unavailable");
         setDecisions(await decisionsRes.json());
@@ -58,6 +61,28 @@ export default function AgentsPage() {
         // "manifest unavailable" hint instead of crashing).
         if (manifestRes.ok) {
           setManifest(await manifestRes.json());
+        }
+        // /health returns the agents runtime's package id; if it
+        // differs from the value baked into the web bundle at build
+        // time, every PTB the web submits will fail with
+        // `package object not found`. Surface a banner so the
+        // operator redeploys the web bundle after a package update.
+        if (healthRes.ok) {
+          const h = (await healthRes.json()) as { package_id?: string };
+          const runtime = h.package_id ?? "";
+          if (
+            runtime &&
+            AGENT_POLICY_PACKAGE_ID &&
+            runtime !== AGENT_POLICY_PACKAGE_ID
+          ) {
+            setDrift(
+              `Web bundle package id ${AGENT_POLICY_PACKAGE_ID.slice(0, 10)}… ` +
+                `differs from agents runtime ${runtime.slice(0, 10)}… . ` +
+                "Redeploy the web bundle (run `pnpm build` after `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID` is set).",
+            );
+          } else {
+            setDrift(null);
+          }
         }
         setError("");
       } catch {
@@ -81,6 +106,16 @@ export default function AgentsPage() {
           DeepBook Predict agents
         </p>
       </div>
+
+      {drift && (
+        <div
+          role="alert"
+          className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
+        >
+          <p className="font-semibold">Package id drift detected</p>
+          <p className="mt-1 text-rose-300/80">{drift}</p>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         {primary.length === 0 && !error && (

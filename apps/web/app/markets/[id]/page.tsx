@@ -12,7 +12,7 @@ import {
   buildDeepBookCreateBalanceManagerTx,
   buildDeepBookDepositTx,
   buildDeepBookPlaceLimitOrderTx,
-  buildDeepBookWithdrawSettledTx,
+  buildMarketWithdrawSettledTx,
   buildMintSharesTx,
   dollarsToDusdc,
   DUSDC_TYPE,
@@ -28,7 +28,6 @@ import {
   getPortfolio,
   noCoinType,
   PREDICT_BASE_COIN_KEY,
-  PREDICT_DEEPBOOK_POOL_KEY,
   PREDICT_QUOTE_COIN_KEY,
   tupleBookToSnapshot,
   yesCoinType,
@@ -276,6 +275,10 @@ export default function MarketDetailPage() {
 
   async function splitCollateral() {
     if (!account || !client || !market) return;
+    if (!FEE_VAULT_ID) {
+      toast.error("NEXT_PUBLIC_FEE_VAULT_ID is not set in this deployment.");
+      return;
+    }
     setLoading(true);
     const toastId = toast.loading("Minting YES + NO from DUSDC…");
     try {
@@ -351,9 +354,12 @@ export default function MarketDetailPage() {
       // during which the user sees no order in the book. The
       // `clientOrderId` we passed in is stored verbatim on the order
       // row, so we can match against it specifically instead of just
-      // waiting for "any new order".
+      // waiting for "any new order". 30s is the sweet spot — most
+      // orders are picked up within one cron tick (≤60s) but a
+      // borderline-aligned tx would still fall through to the
+      // "indexer hasn't seen it yet" toast.
       toast.loading(`Awaiting indexer: ${digest.slice(0, 16)}…`, { id: toastId });
-      const placed = await waitForOrderInBook(market.id, clientOrderId, 8_000);
+      const placed = await waitForOrderInBook(market.id, clientOrderId, 30_000);
       if (placed) {
         toast.success(`Order placed: ${digest.slice(0, 16)}…`, { id: toastId });
       } else {
@@ -476,18 +482,21 @@ export default function MarketDetailPage() {
   }
 
   async function withdrawSettledDeepBook() {
-    if (!account || !client || !deepBookMarket || !balanceManagerId) return;
+    if (!account || !client || !market || !deepBookMarket || !balanceManagerId) return;
     setLoading(true);
-    const toastId = toast.loading("Withdrawing settled DeepBook V3 balances...");
+    const toastId = toast.loading("Withdrawing settled balances...");
     try {
-      const dbClient = createPredictionDeepBookClient({
-        client,
-        address: account.address,
+      // Route through the market wrapper (`prediction_market::withdraw_settled`)
+      // so the on-chain `SettledEvent` fires. The indexer advances the
+      // leaderboard's `pool_weeks` cursor from that event; calling the
+      // bare DeepBook `pool::withdraw_settled_amounts` (as `withdrawSettled`
+      // historically did) would settle funds for the user but leave the
+      // off-chain leaderboard thinking the week is un-settled.
+      const tx = buildMarketWithdrawSettledTx(
+        market.id,
+        deepBookMarket.poolId,
         balanceManagerId,
-        tradeCapId: tradeCapId || undefined,
-        market: deepBookMarket,
-      });
-      const tx = buildDeepBookWithdrawSettledTx(dbClient, deepBookMarket.poolKey);
+      );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Settled balances withdrawn: ${txDigest(r).slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
@@ -500,6 +509,10 @@ export default function MarketDetailPage() {
 
   async function redeemWinner() {
     if (!account || !client || !market) return;
+    if (!FEE_VAULT_ID) {
+      toast.error("NEXT_PUBLIC_FEE_VAULT_ID is not set in this deployment.");
+      return;
+    }
     if (market.status !== "resolved") {
       toast.error("Market is not resolved yet");
       return;
@@ -650,7 +663,7 @@ export default function MarketDetailPage() {
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200/90">
               <p className="font-semibold text-amber-200">No DeepBook pool for this market.</p>
               <p className="mt-1 text-amber-200/70">
-                Limit orders aren't routed on-chain. The order book below only
+                Limit orders aren&apos;t routed on-chain. The order book below only
                 reflects off-chain <code>chain_orders</code> rows. Use
                 <span className="mx-1 rounded bg-black/30 px-1.5 py-0.5 font-mono text-[10px]">Mint YES+NO</span>
                 above to take a position directly, or ask the market creator to
