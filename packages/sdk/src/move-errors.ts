@@ -93,21 +93,21 @@ const AGENT_POLICY_CODES: Record<number, string> = {
 };
 
 const PARLAY_CODES: Record<number, string> = {
-  0: "EParlayAlreadyFinalized",
-  1: "ELegMismatch",
-  2: "ELegAlreadyRecorded",
-  3: "EMarketNotResolved",
-  4: "EMarketDisputed",
-  5: "EParlayNotReady",
-  6: "EPoolUnderfunded",
-  7: "EInvalidNewAdmin",
-  8: "EInvalidLegCount",
-  9: "EZeroCollateral",
-  10: "EMaxPayoutBelowBps",
-  11: "EInsufficientLiquidity",
-  12: "EWithdrawTooLarge",
-  13: "EPayoutCapExceeded",
-  14: "ECoinTypeMismatch",
+  0: "ENotAdmin",
+  1: "EZeroAmount",
+  2: "EInvalidLegCount",
+  3: "ELegPredictionMismatch",
+  4: "EPayoutTooLarge",
+  5: "EPoolUnderfunded",
+  6: "EMarketNotResolved",
+  7: "EMarketDisputed",
+  8: "ELegMismatch",
+  9: "ELegAlreadyRecorded",
+  10: "EParlayNotReady",
+  11: "ENotOwner",
+  12: "EParlayAlreadyFinalized",
+  13: "EInvalidPayoutBps",
+  14: "EInvalidNewAdmin",
 };
 
 const MODULE_CODES: Record<MoveModule, Record<number, string>> = {
@@ -163,6 +163,27 @@ export function isMoveAbortCode(
     );
   }
   return extractMoveAbortCode(msg) === code;
+}
+
+/** True if `err` is a Move abort from the given module (any code).
+ *  Use this when a worker treats every abort from a specific module
+ *  as a permanent failure (e.g. the parlay worker — any on-chain
+ *  decision in the parlay module is by definition non-retryable).
+ *  Returns false for non-Move-abort errors and for aborts from other
+ *  modules; call `extractMoveAbortCode(err)` first if you need the
+ *  code. */
+export function isMoveAbortInModule(
+  err: unknown,
+  module: MoveModule,
+): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Sui's error text embeds the module name as `module: "<name>"` in
+  // the MoveLocation. Match the unqualified module name to avoid
+  // false positives (e.g. an error in module "prize_pool" containing
+  // the substring "pool" inside a different field).
+  const moduleRe = new RegExp(`module:\\s*"${module}"`);
+  if (!moduleRe.test(msg)) return false;
+  return /MoveAbort/.test(msg);
 }
 
 /** True if `err` is a Move abort whose symbolic name appears anywhere

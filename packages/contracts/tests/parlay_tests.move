@@ -178,6 +178,65 @@ fun rotate_admin_to_new_address_succeeds() {
     ts::end(scenario);
 }
 
+#[test]
+/// set_max_payout_bps should update the cap to any valid value
+/// (>= BPS, i.e. >= 10_000) and reject anything below. The on-chain
+/// check is `new_max_bps >= BPS` — a value of 9_999 must abort
+/// with EInvalidPayoutBps. The SDK exposes buildSetMaxPayoutBpsTx
+/// for the rotate_admin / set_max_payout_bps surface; the round-19
+/// audit found this function was reachable but uncovered by tests.
+fun set_max_payout_bps_updates_cap() {
+    let mut scenario = ts::begin(ADMIN);
+    create_pool(&mut scenario);
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
+    // Lower the cap from 5x to 2.5x.
+    parlay::set_max_payout_bps(&mut pool, 25_000, ts::ctx(&mut scenario));
+    assert!(parlay::pool_max_payout_bps(&pool) == 25_000, 0);
+    // Raise it back above 1x.
+    parlay::set_max_payout_bps(&mut pool, 100_000, ts::ctx(&mut scenario));
+    assert!(parlay::pool_max_payout_bps(&pool) == 100_000, 1);
+    // Setting to exactly BPS (1x) is the minimum allowed.
+    parlay::set_max_payout_bps(&mut pool, 10_000, ts::ctx(&mut scenario));
+    assert!(parlay::pool_max_payout_bps(&pool) == 10_000, 2);
+    ts::return_shared(pool);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = suipredict_agent_policy::parlay::EInvalidPayoutBps)]
+/// Setting the cap below 1x must abort. The contract asserts
+/// `new_max_bps >= BPS` (10_000) — passing 9_999 violates that and
+/// the on-chain check fires EInvalidPayoutBps (= 13). A regression
+/// in either the assertion or the abort code would let an admin
+/// silently break the on-chain invariant that `payout_bps >=
+/// max_payout_bps` implies a valid multiplier.
+fun set_max_payout_bps_below_one_x_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    create_pool(&mut scenario);
+
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
+    parlay::set_max_payout_bps(&mut pool, 9_999, ts::ctx(&mut scenario));
+    ts::return_shared(pool);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = suipredict_agent_policy::parlay::ENotAdmin)]
+/// set_max_payout_bps is admin-gated by `ctx.sender() == pool.admin`.
+/// A non-admin call must abort with ENotAdmin (= 0). Catches a
+/// regression where the admin check gets dropped.
+fun set_max_payout_bps_by_stranger_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    create_pool(&mut scenario);
+
+    ts::next_tx(&mut scenario, USER);
+    let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
+    parlay::set_max_payout_bps(&mut pool, 25_000, ts::ctx(&mut scenario));
+    ts::return_shared(pool);
+    ts::end(scenario);
+}
+
 // ============================================================
 // create_parlay
 // ============================================================

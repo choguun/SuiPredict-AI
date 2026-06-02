@@ -8,10 +8,17 @@
  *   GET /prize/claims?week=N
  *   GET /profile/:addr
  *   GET /streak/badges/:addr
+ *   GET /parlay/:id
+ *   GET /parlay/user/:addr
  *
  * The first two back the off-chain leaderboard surface. The prize
  * signature endpoint re-signs the canonical claim payload so the user
  * can submit the on-chain `claim_prize` tx from their own wallet.
+ * The parlay endpoints serve the off-chain `parlays` mirror written
+ * by the position-indexer from ParlayCreated / ParlayLegRecorded /
+ * ParlayFinalized events; the web /parlay page uses them to render
+ * a user's parlay history and live leg progress without per-poll
+ * on-chain reads.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -23,7 +30,17 @@ import {
   signClaimPayload,
   type ClaimPayload,
 } from "@suipredict/sdk";
-import { weekIndexFor, recordPrizeClaim, getPrizeClaim, getUserProfile, listBadgesForUser } from "./store.js";
+import {
+  weekIndexFor,
+  recordPrizeClaim,
+  getPrizeClaim,
+  getUserProfile,
+  listBadgesForUser,
+  getParlay,
+  listAllParlaysForUser,
+  listUnfinalizedParlays,
+  type ParlayRow,
+} from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { getUserWeekRank, listPrizeClaims } from "./store.js";
 
@@ -431,6 +448,55 @@ export async function handleGamificationRoute(
     const addr = badgesMatch[1]!;
     const rows = listBadgesForUser(addr);
     json(res, 200, { user: addr, badges: rows });
+    return true;
+  }
+
+  // GET /parlay/:id
+  //
+  // Single-parlay lookup against the off-chain `parlays` mirror. The
+  // web /parlay page polls this every 5s after creating a parlay so
+  // the leg-progress UI doesn't have to re-read on-chain state on
+  // every tick. Returns 404 if the indexer hasn't yet picked up the
+  // ParlayCreated event (a 1-tick window after the user submits
+  // `create_parlay`).
+  const parlayIdMatch = url.pathname.match(/^\/parlay\/(0x[a-fA-F0-9]+)$/);
+  if (parlayIdMatch) {
+    const id = parlayIdMatch[1]!;
+    const row = getParlay(id);
+    if (!row) {
+      json(res, 404, { error: "parlay not yet indexed", parlay_id: id });
+      return true;
+    }
+    json(res, 200, row);
+    return true;
+  }
+
+  // GET /parlay/user/:addr?include_finalized=0|1
+  //
+  // List a user's parlays from the off-chain mirror. Default excludes
+  // finalized rows (the active-parlays view on the /parlay page);
+  // pass `include_finalized=1` to get the full history. Ordered by
+  // `created_at_ms DESC` so the newest parlay is first.
+  const parlayUserMatch = url.pathname.match(
+    /^\/parlay\/user\/(0x[a-fA-F0-9]+)$/,
+  );
+  if (parlayUserMatch) {
+    const addr = parlayUserMatch[1]!;
+    const includeFinalized =
+      url.searchParams.get("include_finalized") === "1";
+    // Bounded scan: the per-user `idx_parlays_user` index keeps this
+    // O(N over the user's parlays). The "all unfinalized" query is
+    // used as a fallback in case the per-user filter is missing the
+    // index — it is itself indexed via the partial `idx_parlays_unfinalized`.
+    const allRows: ParlayRow[] = includeFinalized
+      ? listAllParlaysForUser(addr)
+      : listUnfinalizedParlays().filter((p) => p.user === addr);
+    const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
+    json(res, 200, {
+      user: addr,
+      count: allRows.length,
+      rows: allRows.slice(0, limit),
+    });
     return true;
   }
 

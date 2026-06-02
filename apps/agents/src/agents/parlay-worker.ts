@@ -53,7 +53,7 @@ import {
   DUSDC_TYPE,
   type SuiClient,
 } from "@suipredict/sdk";
-import { isMoveAbortCode } from "@suipredict/sdk";
+import { isMoveAbortInModule } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import { createClient, executeTransaction } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -75,45 +75,17 @@ const PKG = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
 const PER_LEG_MAX_RETRY = 2;
 
 /**
- * Permanent Move-abort error codes emitted by `parlay::record_leg`
- * and `parlay::finalize_parlay`. Surfaced via the shared
- * `isMoveAbortCode(err, module, code)` helper so the worker doesn't
- * maintain its own regex over Sui error text.
- *
- * Codes sourced from packages/contracts/sources/parlay.move:
- *   EParlayAlreadyFinalized = 0
- *   ELegMismatch            = 1
- *   ELegAlreadyRecorded     = 2
- *   EMarketNotResolved      = 3
- *   EMarketDisputed         = 4
- *   EParlayNotReady         = 5
- *   EPoolUnderfunded        = 6
- *   EInvalidNewAdmin        = 7
- *   EInvalidLegCount        = 8
- *   EZeroCollateral         = 9
- *   EMaxPayoutBelowBps      = 10
- *   EInsufficientLiquidity  = 11
- *   EWithdrawTooLarge       = 12
- *   EPayoutCapExceeded      = 13
- *   ECoinTypeMismatch       = 14
+ * Permanent Move-abort errors from the `parlay` module. Every abort
+ * the contract raises is by definition non-retryable — the on-chain
+ * assertion that aborted won't change on a re-submit, and the gas
+ * spent on a retry is wasted. We don't enumerate individual codes
+ * here because the SDK's `PARLAY_CODES` map is the single source of
+ * truth — if a new code is added to the contract, the SDK map gets
+ * the new symbolic name and the worker keeps treating it as
+ * permanent without a code edit.
  */
 function isPermanentParlayError(err: unknown): boolean {
-  if (!isMoveAbortCode(err, "parlay", 0)) return false; // EParlayAlreadyFinalized
-  if (isMoveAbortCode(err, "parlay", 1)) return true; // ELegMismatch — leg.market_id mismatch
-  if (isMoveAbortCode(err, "parlay", 2)) return true; // ELegAlreadyRecorded — already recorded
-  if (isMoveAbortCode(err, "parlay", 3)) return true; // EMarketNotResolved — should be filtered by market.status check, but if race, skip
-  if (isMoveAbortCode(err, "parlay", 4)) return true; // EMarketDisputed — skip
-  if (isMoveAbortCode(err, "parlay", 5)) return true; // EParlayNotReady — finalize before all legs
-  if (isMoveAbortCode(err, "parlay", 6)) return true; // EPoolUnderfunded — operator must top up
-  if (isMoveAbortCode(err, "parlay", 7)) return true; // EInvalidNewAdmin
-  if (isMoveAbortCode(err, "parlay", 8)) return true; // EInvalidLegCount
-  if (isMoveAbortCode(err, "parlay", 9)) return true; // EZeroCollateral
-  if (isMoveAbortCode(err, "parlay", 10)) return true; // EMaxPayoutBelowBps
-  if (isMoveAbortCode(err, "parlay", 11)) return true; // EInsufficientLiquidity
-  if (isMoveAbortCode(err, "parlay", 12)) return true; // EWithdrawTooLarge
-  if (isMoveAbortCode(err, "parlay", 13)) return true; // EPayoutCapExceeded
-  if (isMoveAbortCode(err, "parlay", 14)) return true; // ECoinTypeMismatch
-  return false;
+  return isMoveAbortInModule(err, "parlay");
 }
 
 function isTransientError(err: unknown): boolean {

@@ -211,6 +211,23 @@ export async function runPositionIndexer(
       reasoning: "AGENT_POLICY_PACKAGE_ID not set — indexer inert.",
     });
   }
+  // DUSDC_TYPE is the type parameter for the parlay events
+  // (parlay::ParlayCreated<0x…::dusdc::DUSDC> etc.). If it's empty,
+  // the parlay subscriptions build a `parlay::*<>` filter that never
+  // matches any on-chain event, and the cursor still advances —
+  // hiding the misconfig in the log. Refuse to run the indexer
+  // until DUSDC_TYPE is set, same as the package-id guard above.
+  // (The boot validator in src/index.ts also marks DUSDC_TYPE as
+  // required, so a fresh deploy will hard-fail there before the
+  // indexer ever gets called — this is a defense-in-depth check.)
+  const dusdcType = process.env.DUSDC_TYPE ?? "";
+  if (!dusdcType) {
+    return recordResult("PositionIndexer", {
+      action: "skip",
+      reasoning: "DUSDC_TYPE not set — parlay event subscriptions would be inert. " +
+        "Set DUSDC_TYPE in .env (full type string e.g. 0x…::dusdc::DUSDC).",
+    });
+  }
   const client = new SuiJsonRpcClient({
     url: getJsonRpcFullnodeUrl(SUI_NETWORK),
     network: SUI_NETWORK,

@@ -2,6 +2,7 @@
 module suipredict_agent_policy::badge_nft_tests;
 
 use sui::clock::{Self, Clock};
+use sui::kiosk::{Self, Kiosk, KioskOwnerCap};
 use sui::test_scenario::{Self as ts, Scenario};
 use suipredict_agent_policy::badge_nft::{Self, StreakBadge};
 use suipredict_agent_policy::streak_system::{
@@ -150,6 +151,106 @@ fun test_invalid_tier_aborts() {
         let mut streak = ts::take_from_address<UserStreak>(&scenario, USER);
         let _ = badge_nft::mint_badge(&mut streak, 9, &clock, ts::ctx(&mut scenario));
         ts::return_to_address(USER, streak);
+    };
+
+    clock::destroy_for_testing(clock);
+    ts::end(scenario);
+}
+
+#[test]
+/// Happy path: mint_badge_to_kiosk should emit BadgeMinted and
+/// BadgePlacedInKiosk events, transfer the badge into the kiosk
+/// (so the user no longer holds the StreakBadge directly), and
+/// leave the streak with the tier flagged as claimed. The position
+/// indexer in apps/agents subscribes to both events so a regression
+/// in either emission would silently break the off-chain mirror.
+fun test_mint_badge_to_kiosk_succeeds() {
+    let mut scenario = ts::begin(ADMIN);
+    let mut clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    init_modules(&mut scenario);
+    create_streak(&mut scenario);
+
+    grow_streak(&mut scenario, &mut clock, 3);
+
+    // User creates a kiosk via the standard Sui primitive.
+    let kiosk_id;
+    ts::next_tx(&mut scenario, USER);
+    {
+        let (kiosk, kiosk_cap) = kiosk::new(ts::ctx(&mut scenario));
+        kiosk_id = object::id(&kiosk);
+        transfer::public_transfer(kiosk_cap, USER);
+        transfer::public_share_object(kiosk);
+    };
+
+    // Mint the badge into the kiosk and capture the returned ID.
+    let badge_id;
+    ts::next_tx(&mut scenario, USER);
+    {
+        let mut streak = ts::take_from_address<UserStreak>(&scenario, USER);
+        let mut kiosk = ts::take_shared_by_id<Kiosk>(&scenario, kiosk_id);
+        let kiosk_cap = ts::take_from_address<KioskOwnerCap>(&scenario, USER);
+        badge_id = badge_nft::mint_badge_to_kiosk(
+            &mut streak, 1, &mut kiosk, &kiosk_cap, &clock, ts::ctx(&mut scenario),
+        );
+        ts::return_to_address(USER, streak);
+        ts::return_to_address(USER, kiosk_cap);
+        ts::return_shared(kiosk);
+    };
+
+    // The badge is now in the kiosk, NOT in the user's wallet.
+    // `take_from_address<StreakBadge>` would fail because the user
+    // no longer owns the badge directly — kiosk::place transferred
+    // it to the kiosk. Confirm by taking it back out using the ID.
+    ts::next_tx(&mut scenario, USER);
+    {
+        let mut kiosk = ts::take_shared_by_id<Kiosk>(&scenario, kiosk_id);
+        let kiosk_cap = ts::take_from_address<KioskOwnerCap>(&scenario, USER);
+        let badge = kiosk::take<StreakBadge>(&mut kiosk, &kiosk_cap, badge_id);
+        assert!(badge_nft::tier_of(&badge) == 1, 0);
+        transfer::public_transfer(badge, USER);
+        ts::return_to_address(USER, kiosk_cap);
+        ts::return_shared(kiosk);
+    };
+
+    clock::destroy_for_testing(clock);
+    ts::end(scenario);
+}
+
+#[test]
+/// Below-threshold kiosk mint should abort with the same code as
+/// the wallet path (EBadgeNotReached comes from the streak_system
+/// call inside mint_badge_to_kiosk, since the eligibility check
+/// delegates to the streak module).
+#[expected_failure(abort_code = suipredict_agent_policy::streak_system::EBadgeNotReached)]
+fun test_mint_badge_to_kiosk_below_threshold_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    let mut clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    init_modules(&mut scenario);
+    create_streak(&mut scenario);
+
+    grow_streak(&mut scenario, &mut clock, 2);
+
+    let kiosk_id;
+    ts::next_tx(&mut scenario, USER);
+    {
+        let (kiosk, kiosk_cap) = kiosk::new(ts::ctx(&mut scenario));
+        kiosk_id = object::id(&kiosk);
+        transfer::public_transfer(kiosk_cap, USER);
+        transfer::public_share_object(kiosk);
+    };
+
+    ts::next_tx(&mut scenario, USER);
+    {
+        let mut streak = ts::take_from_address<UserStreak>(&scenario, USER);
+        let mut kiosk = ts::take_shared_by_id<Kiosk>(&scenario, kiosk_id);
+        let kiosk_cap = ts::take_from_address<KioskOwnerCap>(&scenario, USER);
+        // longest_streak == 2; bronze requires 3 → should abort.
+        let _ = badge_nft::mint_badge_to_kiosk(
+            &mut streak, 1, &mut kiosk, &kiosk_cap, &clock, ts::ctx(&mut scenario),
+        );
+        ts::return_to_address(USER, streak);
+        ts::return_to_address(USER, kiosk_cap);
+        ts::return_shared(kiosk);
     };
 
     clock::destroy_for_testing(clock);

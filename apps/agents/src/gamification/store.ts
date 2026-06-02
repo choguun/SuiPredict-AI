@@ -799,19 +799,6 @@ export function getParlay(parlayId: string): ParlayRow | null {
 }
 
 /**
- * List unfinalized parlays for a user. Used by the parlay-worker
- * (task #19) to find parlays that still need `record_leg` /
- * `finalize_parlay` admin calls.
- */
-export function listUnfinalizedParlaysForUser(user: string): ParlayRow[] {
-  return getDb()
-    .prepare(
-      `SELECT * FROM parlays WHERE user = ? AND finalized = 0 ORDER BY created_at_ms ASC`,
-    )
-    .all(user) as ParlayRow[];
-}
-
-/**
  * List every unfinalized parlay across all users. Used by the
  * parlay-worker to enumerate work without N+1 user lookups. The
  * `idx_parlays_unfinalized` partial index keeps this O(N over
@@ -829,6 +816,29 @@ export function listUnfinalizedParlays(): ParlayRow[] {
         ORDER BY updated_at_ms ASC`,
     )
     .all() as ParlayRow[];
+}
+
+/**
+ * List a single user's parlays, newest first. Backs the
+ * `GET /parlay/user/:addr` REST endpoint. The `idx_parlays_user`
+ * index keeps this O(N over the user's parlays); at typical
+ * volume (a handful per active user) the full result set fits in
+ * one page. The caller applies any `limit` slicing.
+ *
+ * Note: this was previously a per-user `WHERE user=? AND finalized=0`
+ * helper. The pre-existing `idx_parlays_user` index doesn't include
+ * `finalized`, but the active-parlays slice composes with
+ * `listUnfinalizedParlays()` instead — both are O(small) so the
+ * extra filter pass is free.
+ */
+export function listAllParlaysForUser(user: string): ParlayRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM parlays
+        WHERE user = ?
+        ORDER BY created_at_ms DESC`,
+    )
+    .all(user) as ParlayRow[];
 }
 
 /**
