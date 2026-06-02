@@ -67,8 +67,14 @@ export async function runLeaderboardWorker(): Promise<AgentResult> {
   const now = Date.now();
   const currentWeek = weekIndexFor(now);
   const priorWeek = currentWeek - 1;
-  const cutoffDay = Math.floor((priorWeek + 1) * 7); // exclusive: first day of current week
-  const cutoffMs = cutoffDay * 86_400_000;
+  // Exclusive cutoff: first day of the current week. `daily_scores`
+  // is keyed by `day_index` (a UTC day number, e.g. 20000 for ~2024),
+  // NOT milliseconds. A previous version of this function multiplied
+  // the day value by 86_400_000 and passed it to
+  // `clearDailyScoresBefore`, which then deleted every row in the
+  // table (cutoffMs = ~1.34B vs day_index = ~28000, the `WHERE
+  // day_index < ?` matched everything). Pass the day value directly.
+  const cutoffDay = Math.floor((priorWeek + 1) * 7);
 
   const rows = listAllDailyScores();
   const weekly = aggregateWeek(priorWeek, rows);
@@ -80,7 +86,7 @@ export async function runLeaderboardWorker(): Promise<AgentResult> {
     });
   }
   archiveWeekly(weekly);
-  const cleared = clearDailyScoresBefore(cutoffMs);
+  const cleared = clearDailyScoresBefore(cutoffDay);
 
   return recordResult("LeaderboardWorker", {
     action: "rollup",

@@ -41,6 +41,15 @@ const BPS: u64 = 10_000;
 /// Dispute window per PRD §7: 1 hour after resolution.
 const DISPUTE_WINDOW_MS: u64 = 3_600_000;
 
+/// Max bytes for a `dispute_market` evidence URI. The URI is
+/// duplicated in the on-chain `MarketDisputedEvent` blob, so a
+/// multi-MB URI doubles the event's cost and bloats every indexer
+/// that hydrates `dispute_evidence_uri` from the event. 256 bytes
+/// is enough for an IPFS CID (`bafy…` + ~50 chars of metadata) or
+/// a short URL slug; longer evidence should be hosted on IPFS with
+/// only the CID stored on-chain.
+const MAX_EVIDENCE_URI_BYTES: u64 = 256;
+
 // ============================================================
 // Error constants
 // ============================================================
@@ -60,6 +69,8 @@ const ENotDisputed: u64 = 11;
 const EAlreadyDisputed: u64 = 12;
 const EWrongStreakOwner: u64 = 13;
 const EDisputeWindowExpired: u64 = 14;
+const EMarketDisputed: u64 = 15;
+const EEvidenceUriTooLong: u64 = 16;
 
 // ============================================================
 // DeepBook order type constants (for reference)
@@ -492,6 +503,10 @@ public fun dispute_market<Q>(
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(vector::length(&evidence_uri) > 0, EZeroAmount);
+    assert!(
+        vector::length(&evidence_uri) <= MAX_EVIDENCE_URI_BYTES,
+        EEvidenceUriTooLong,
+    );
     let now = clock.timestamp_ms();
     assert!(
         now <= market.resolved_ms + DISPUTE_WINDOW_MS,
@@ -545,7 +560,7 @@ public fun redeem<Q>(
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(market.outcome == 1, EWrongOutcome);
-    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(!market.disputed, EMarketDisputed);
     let gross = coin::value(&winning_coin);
     assert!(gross > 0, EZeroAmount);
 
@@ -583,7 +598,7 @@ public fun redeem_no<Q>(
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(market.outcome == 2, EWrongOutcome);
-    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(!market.disputed, EMarketDisputed);
     let gross = coin::value(&winning_coin);
     assert!(gross > 0, EZeroAmount);
 
@@ -620,7 +635,7 @@ public fun redeem_with_streak<Q>(
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(market.outcome == 1, EWrongOutcome);
-    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(!market.disputed, EMarketDisputed);
     assert!(ctx.sender() == streak_system::owner_of(user_streak), EWrongStreakOwner);
 
     let gross = coin::value(&winning_coin);
@@ -660,7 +675,7 @@ public fun redeem_no_with_streak<Q>(
 ) {
     assert!(market.resolved, EMarketNotActive);
     assert!(market.outcome == 2, EWrongOutcome);
-    assert!(!market.disputed, EAlreadyDisputed);
+    assert!(!market.disputed, EMarketDisputed);
     assert!(ctx.sender() == streak_system::owner_of(user_streak), EWrongStreakOwner);
 
     let gross = coin::value(&winning_coin);

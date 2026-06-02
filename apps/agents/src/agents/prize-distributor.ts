@@ -8,23 +8,28 @@
  * per-(week, user) `claimed` map in the on-chain `PrizePool` aborts
  * double-claims, so a retry is safe.
  *
- * Two modes:
- *   - Default: stage the signature only; the user re-asks via
- *     `GET /prize/signature?week=N&rank=R` and submits the claim tx
- *     from their own wallet. This keeps the agent key off the user's
- *     hot path and matches the `expectedAmountForRank` distribution
- *     stored on-chain.
- *   - `PRIZE_AUTO_CLAIM=true`: the agent submits the claim PTB on the
- *     user's behalf. Useful for fully-custodial demos; not for mainnet.
+ * Mode: stage the signature only. The user re-asks via
+ *   `GET /prize/signature?week=N&rank=R`
+ * and submits the claim tx from their own wallet. This keeps the
+ * agent key off the user's hot path.
+ *
+ * A prior version of this file supported a `PRIZE_AUTO_CLAIM=true`
+ * mode that submitted the claim PTB on the user's behalf via the
+ * agent's hot-wallet key. The on-chain `claim_prize` enforces
+ *   `assert!(ctx.sender() == streak_system::owner_of(user_streak))`,
+ * which always aborted with ENotStreakOwner when the agent submitted
+ * for a user — `UserStreak.owner` is the user, not the agent. Every
+ * auto-claim burned gas, the off-chain `recordPrizeClaim` ran BEFORE
+ * the abort with `tx_digest: null`, and the leaderboard's `claimed`
+ * annotation lied until the next indexer poll. The auto-claim branch
+ * has been removed; if a fully-custodial demo is needed, the user
+ * must sign a sponsored PTB (out of scope for this file).
  */
 import {
-  buildClaimPrizeTx,
   createClient,
   DEFAULT_DISTRIBUTION_BPS,
-  executeTransaction,
   expectedAmountForRank,
   signClaimPayload,
-  streakIdForUser,
   type ClaimPayload,
 } from "@suipredict/sdk";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
@@ -33,16 +38,19 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import {
   listWeeklyLeaderboard,
-  recordPrizeClaim,
   weekIndexFor,
 } from "../gamification/store.js";
 
 const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
-const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
 const PRIZE_ADMIN_PRIVATE_KEY = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
 const PRIZE_WEEKLY_AMOUNT = BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0");
-const PRIZE_AUTO_CLAIM = process.env.PRIZE_AUTO_CLAIM === "true";
+// Top-N cap: ranks 1..N get signed; ranks > N have valid leaderboard
+// rows but no signed payload, so they can't claim. Matches the
+// on-chain `DEFAULT_DISTRIBUTION_BPS` length (10 entries) — the
+// default distribution is `0` for ranks beyond the table, so signing
+// for rank 11+ would be a no-op anyway. Documented in `docs/gamification.md`.
+const TOP_N = Number(process.env.PRIZE_DISTRIBUTOR_TOP_N ?? "10");
 
 async function signWithPrizeKey(payload: ClaimPayload) {
   if (!PRIZE_ADMIN_PRIVATE_KEY) {
@@ -104,7 +112,7 @@ export async function runPrizeDistributor(
   }
 
   const priorWeek = weekIndexFor(Date.now()) - 1;
-  const top = listWeeklyLeaderboard(priorWeek, 10);
+  const top = listWeeklyLeaderboard(priorWeek, TOP_N);
   if (top.length === 0) {
     return recordResult("PrizeDistributor", {
       action: "noop",
@@ -112,9 +120,7 @@ export async function runPrizeDistributor(
     });
   }
 
-  const autoClaimClient = PRIZE_AUTO_CLAIM ? createClient() : null;
   let signed = 0;
-  let autoClaimed = 0;
   let failed = 0;
 
   for (const row of top) {
@@ -134,59 +140,19 @@ export async function runPrizeDistributor(
       amount,
     };
     try {
-      const signedClaim = await signWithPrizeKey(payload);
-      recordPrizeClaim({
-        user: row.user,
-        week_index: priorWeek,
-        rank,
-        amount: Number(amount),
-        tx_digest: null,
-        claimed_at_ms: Date.now(),
-      });
+      await signWithPrizeKey(payload);
+      // Do NOT call `recordPrizeClaim` here — the user has not yet
+      // submitted the on-chain claim. Writing the off-chain row with
+      // `tx_digest: null` would poison the leaderboard's `claimed`
+      // annotation: the UI would hide the Claim button, but the
+      // on-chain `pool.claimed[week][user]` would still be false. The
+      // user could lose the signature, refresh the page, or never
+      // visit, and the leaderboard would lie. The off-chain row is
+      // written by the web client's POST /prize/claims (called after
+      // a successful on-chain claim) and backstopped by the
+      // position-indexer's PrizeClaimed poller. This agent only
+      // signs; it does not annotate.
       signed++;
-
-      if (PRIZE_AUTO_CLAIM && autoClaimClient) {
-        const userStreakId = await streakIdForUser(
-          autoClaimClient,
-          STREAK_REGISTRY_ID,
-          row.user,
-        );
-        if (!userStreakId) {
-          failed++;
-          console.error(
-            `[prize-distributor] no UserStreak for ${row.user} — skipping auto-claim`,
-          );
-          continue;
-        }
-        const tx = buildClaimPrizeTx({
-          poolId: PRIZE_POOL_ID,
-          prizeAdminId: PRIZE_ADMIN_ID,
-          userStreakId,
-          weekIndex: BigInt(priorWeek),
-          rank,
-          amount,
-          signatureB64: signedClaim.signatureB64,
-          poolIdForSig: PRIZE_POOL_ID,
-        });
-        try {
-          const res = await executeTransaction(autoClaimClient, tx, _ctx.signer);
-          recordPrizeClaim({
-            user: row.user,
-            week_index: priorWeek,
-            rank,
-            amount: Number(amount),
-            tx_digest: res.digest,
-            claimed_at_ms: Date.now(),
-          });
-          autoClaimed++;
-        } catch (err) {
-          failed++;
-          console.error(
-            `[prize-distributor] auto-claim failed for ${row.user}:`,
-            err,
-          );
-        }
-      }
     } catch (err) {
       failed++;
       console.error(`[prize-distributor] sign failed for ${row.user}:`, err);
@@ -195,7 +161,7 @@ export async function runPrizeDistributor(
 
   return recordResult("PrizeDistributor", {
     action: "distribute",
-    reasoning: `Week ${priorWeek}: ${signed} signed, ${autoClaimed} auto-claimed, ${failed} failed.`,
+    reasoning: `Week ${priorWeek}: signed ${signed}, failed ${failed} (top-${TOP_N}). User-driven claim only — distributor does not submit on-chain.`,
     confidence: 100,
   });
 }
