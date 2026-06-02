@@ -53,30 +53,35 @@ function buildSchedule() {
  * fallbacks for less-common vars.
  */
 function bootstrapEnv() {
-  // Sanity check: the prediction_market and streak_system/prize_pool
-  // modules all live in ONE published package (just with different
-  // source-namespace prefixes: `suipredict::` vs
-  // `suipredict_agent_policy::`). If two env vars point at different
-  // packages, agents that query on-chain events with one package id
-  // and submit PTBs targeting the other will silently find zero
-  // results. Warn loudly so the misconfiguration is visible at boot.
-  const pkgA = process.env.AGENT_POLICY_PACKAGE_ID;
-  const pkgB = process.env.PREDICT_PACKAGE_ID ?? process.env.MARKET_PACKAGE_ID;
-  if (pkgA && pkgB && pkgA !== pkgB) {
+  // The prediction_market and streak_system/prize_pool modules all
+  // live in ONE published package (just with different source-
+  // namespace prefixes: `suipredict::` vs
+  // `suipredict_agent_policy::`). The canonical env var is
+  // AGENT_POLICY_PACKAGE_ID; PREDICT_PACKAGE_ID and MARKET_PACKAGE_ID
+  // are legacy aliases. If they disagree, AGENT_POLICY_PACKAGE_ID
+  // wins — silently picking the first non-empty value (the previous
+  // behavior) let stale PREDICT_PACKAGE_ID values override the real
+  // deployed package, which made every event-indexer find zero hits.
+  const canonical = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+  const legacyA = process.env.PREDICT_PACKAGE_ID ?? "";
+  const legacyB = process.env.MARKET_PACKAGE_ID ?? "";
+  if (canonical && legacyA && canonical !== legacyA) {
     console.warn(
-      `[agents] AGENT_POLICY_PACKAGE_ID (${pkgA}) differs from PREDICT_PACKAGE_ID/MARKET_PACKAGE_ID (${pkgB}). ` +
-        `Re-run bootstrap to align them, or the streak sweeper will miss events.`,
+      `[agents] AGENT_POLICY_PACKAGE_ID (${canonical}) differs from PREDICT_PACKAGE_ID (${legacyA}); using AGENT_POLICY_PACKAGE_ID. ` +
+        "Update your .env to drop the stale PREDICT_PACKAGE_ID line.",
     );
   }
-  const pkg =
-    process.env.PREDICT_PACKAGE_ID ??
-    process.env.MARKET_PACKAGE_ID ??
-    process.env.AGENT_POLICY_PACKAGE_ID ??
-    "";
+  if (canonical && legacyB && canonical !== legacyB) {
+    console.warn(
+      `[agents] AGENT_POLICY_PACKAGE_ID (${canonical}) differs from MARKET_PACKAGE_ID (${legacyB}); using AGENT_POLICY_PACKAGE_ID. ` +
+        "Update your .env to drop the stale MARKET_PACKAGE_ID line.",
+    );
+  }
+  const pkg = canonical || legacyA || legacyB || "";
   if (pkg) {
+    process.env.AGENT_POLICY_PACKAGE_ID = pkg;
     process.env.PREDICT_PACKAGE_ID = pkg;
     process.env.MARKET_PACKAGE_ID = pkg;
-    process.env.AGENT_POLICY_PACKAGE_ID = pkg;
   }
   const deepRegistry =
     process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";

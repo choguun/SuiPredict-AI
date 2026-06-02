@@ -50,6 +50,10 @@ export default function AdminPage() {
   const dAppKit = useDAppKit();
   const isAdmin = !!ADMIN_ADDRESS && account?.address === ADMIN_ADDRESS;
   const walletConnected = !!account;
+  const [lastAction, setLastAction] = useState<{
+    label: string;
+    digest: string;
+  } | null>(null);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -77,11 +81,44 @@ export default function AdminPage() {
             </>
           )}
         </div>
+        {lastAction && (
+          <div
+            role="status"
+            className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200"
+          >
+            <span className="font-semibold">{lastAction.label}</span> submitted.
+            Digest:{" "}
+            <a
+              href={`https://testnet.suivision.xyz/txblock/${lastAction.digest}`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-emerald-300 underline underline-offset-2"
+            >
+              {shortAddr(lastAction.digest)}
+            </a>
+          </div>
+        )}
       </div>
 
-      <WithdrawFeesCard onSubmit={(d) => console.log("withdraw:", d)} dAppKit={dAppKit} disabled={!walletConnected} />
-      <SetDistributionCard onSubmit={(d) => console.log("distribution:", d)} dAppKit={dAppKit} disabled={!walletConnected} />
-      <ResolveDisputeCard onSubmit={(d) => console.log("dispute:", d)} dAppKit={dAppKit} disabled={!walletConnected} />
+      <WithdrawFeesCard
+        onSubmit={(d) => setLastAction({ label: "Withdraw fees", digest: d })}
+        dAppKit={dAppKit}
+        disabled={!walletConnected}
+      />
+      <SetDistributionCard
+        onSubmit={(d) =>
+          setLastAction({ label: "Set distribution", digest: d })
+        }
+        dAppKit={dAppKit}
+        disabled={!walletConnected}
+      />
+      <ResolveDisputeCard
+        onSubmit={(d) =>
+          setLastAction({ label: "Resolve dispute", digest: d })
+        }
+        dAppKit={dAppKit}
+        disabled={!walletConnected}
+      />
     </div>
   );
 }

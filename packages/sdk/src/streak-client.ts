@@ -87,6 +87,24 @@ export function buildRecordParticipationTx(params: {
 }
 
 /**
+ * Build `rotate_admin` transaction. The current admin (signer) calls
+ * this to hand `StreakAdmin.admin` over to a new address — used when
+ * the backend hot-wallet moves. After rotation, the new address is the
+ * only one `record_participation` will accept writes from.
+ */
+export function buildRotateStreakAdminTx(
+  streakAdminId: string,
+  newAdmin: string,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::streak_system::rotate_admin`,
+    arguments: [tx.object(streakAdminId), tx.pure.address(newAdmin)],
+  });
+  return tx;
+}
+
+/**
  * Build `redeem_with_streak` transaction. Burns winning YES tokens and
  * pays out collateral multiplied by the user's streak multiplier. The
  * 0.5% protocol fee is routed to the shared `FeeVault`.

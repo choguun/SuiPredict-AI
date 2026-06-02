@@ -6,16 +6,21 @@ import {
   dusdcToDollars,
   executeTransaction,
   getPolicyState,
-  getVaultSummary,
 } from "@suipredict/sdk";
+import { getVaultSummaryFromEnv } from "../markets/store.js";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 
 const PAUSE_UTILIZATION = Number(process.env.RISK_PAUSE_UTILIZATION ?? 0.80);
 
 export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
-  const vault = await getVaultSummary();
-  const utilization = vault.utilization ?? 0;
+  // Read the suipredict ProtocolVault utilization from the agents'
+  // own /vault/summary source (backed by VAULT_TOTAL_BALANCE and
+  // VAULT_ALLOCATED env vars). The legacy `getVaultSummary()` from
+  // @suipredict/sdk queries Mysten's predict-server — a different
+  // product — so it always returns 0/404 here.
+  const vault = getVaultSummaryFromEnv();
+  const utilization = vault.total_balance > 0 ? vault.allocated / vault.total_balance : 0;
   const client = createClient();
 
   let policySpent = 0;

@@ -557,13 +557,23 @@ async function main() {
   updateEnv(AGENTS_ENV, agentsUpdates);
   updateEnv(WEB_ENV, {
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
+    NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID: packageId,
     NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
     NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
     NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
     NEXT_PUBLIC_PRIZE_ADMIN_ID: prizeAdminId,
+    NEXT_PUBLIC_PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
     NEXT_PUBLIC_FEE_VAULT_ID: feeVaultId,
     NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
     NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
+    NEXT_PUBLIC_DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
+    NEXT_PUBLIC_ADMIN_ADDRESS: signerAddr,
+    // DEEPBOOK_*_POOL_ID / YES_COIN_TYPE are per-market values, written
+    // by the market-creator agent when it spins up a new DeepBook pool.
+    // AGENTS_URL is a deploy-time hint; production should set it to the
+    // public agents URL (the local default is the dev fallback).
+    NEXT_PUBLIC_AGENTS_URL:
+      process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001",
   });
 
   log("\n=== Bootstrap complete ===");

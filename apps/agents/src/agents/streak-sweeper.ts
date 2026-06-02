@@ -3,10 +3,8 @@
  *
  * Iterates the (user, day_index) pairs that the on-chain market resolution
  * touched, looks up each user's outcome (AllCorrect / SomeWrong /
- * NotSubmitted), and either:
- *   - Lazy-creates their `UserStreak` and calls `record_participation` in
- *     a single PTB (first-time users), or
- *   - Calls `record_participation` only.
+ * NotSubmitted), and calls `record_participation` on each of their
+ * `UserStreak` objects.
  *
  * For streak owners who did NOT mint that day, the sweep:
  *   - Always records a `NOT_SUBMITTED` row in the off-chain `daily_scores`
@@ -18,9 +16,12 @@
  *     logged and skipped for the on-chain streak; the leaderboard still
  *     shows the correct (broken) streak score.
  *
- * PTBs are batched at 20 users per transaction (Sui limit). Sweep is
- * idempotent: the on-chain `EAlreadyRecordedToday` abort simply skips
- * that user on retry.
+ * PTBs are batched at 20 users per transaction (Sui limit). On a batch
+ * abort (one user's `EAlreadyRecordedToday` / multi-day-gap violation
+ * kills the whole 20-user PTB), we fall back to per-user submission
+ * so the other 19 still get recorded. Sweep is idempotent: a user's
+ * `EAlreadyRecordedToday` abort on retry is treated as success
+ * (the on-chain state is already what we want).
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
@@ -50,6 +51,19 @@ const OUTCOME_NOT_SUBMITTED = 0;
 const OUTCOME_ALL_CORRECT = 1;
 const OUTCOME_SOME_WRONG = 2;
 const DAY_MS = 86_400_000;
+
+/**
+ * `streak_system::EAlreadyRecordedToday` aborts the tx with code 3. The
+ * SDK surfaces this as a plain `Error` whose `.message` contains the
+ * Sui Move-abort text — e.g. `"MoveAbort(...)` for instruction 0, abort
+ * code 3"`. We match on the literal code 3 (the contract constant) so
+ * this helper stays correct if the contract renames the constant.
+ */
+const E_ALREADY_RECORDED_ABORT_CODE = 3;
+function isAlreadyRecordedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /MoveAbort[^)]*\)\s*,\s*3\b/.test(msg);
+}
 
 interface ResolvedUser {
   user: string;
@@ -486,11 +500,55 @@ export async function runStreakSweeper(
         `[streak-sweeper] batch ${i / PTB_BATCH + 1} → ${res.digest}`,
       );
     } catch (err) {
-      failed += batch.length;
-      console.error(
-        `[streak-sweeper] batch ${i / PTB_BATCH + 1} failed:`,
-        err,
+      // PTB is atomic — one user's abort (typically EAlreadyRecordedToday
+      // from a prior successful sweep, or a multi-day-gap violation) kills
+      // the whole batch. Fall back to per-user submission so the other 19
+      // still get recorded. EAlreadyRecordedToday is treated as success
+      // (the on-chain state is already what we want); anything else counts
+      // as failed.
+      console.warn(
+        `[streak-sweeper] batch ${i / PTB_BATCH + 1} failed, falling back to per-user:`,
+        err instanceof Error ? err.message : err,
       );
+      for (const u of batch) {
+        const singleTx = buildSweepTx(
+          STREAK_REGISTRY_ID,
+          STREAK_ADMIN_ID,
+          [u],
+          BigInt(dayIndex),
+        );
+        try {
+          await executeTransaction(client, singleTx, ctx.signer);
+          recordDailyScore({
+            user: u.user,
+            day_index: dayIndex,
+            participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
+            all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
+            streak_after: 0,
+            category: u.category,
+          });
+          sent++;
+        } catch (perErr) {
+          if (isAlreadyRecordedError(perErr)) {
+            // Idempotent: a prior sweep already wrote today's row.
+            recordDailyScore({
+              user: u.user,
+              day_index: dayIndex,
+              participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
+              all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
+              streak_after: 0,
+              category: u.category,
+            });
+            sent++;
+          } else {
+            failed++;
+            console.error(
+              `[streak-sweeper] per-user ${u.user} failed:`,
+              perErr instanceof Error ? perErr.message : perErr,
+            );
+          }
+        }
+      }
     }
   }
 

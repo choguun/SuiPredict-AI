@@ -55,6 +55,7 @@ const EInvalidOutcome: u64 = 4;
 const EInvalidTier: u64 = 5;
 const EBadgeAlreadyClaimed: u64 = 6;
 const EBadgeNotReached: u64 = 7;
+const EInvalidNewAdmin: u64 = 8;
 
 // ============================================================
 // Capability: shared StreakAdmin gates backend writes
@@ -294,14 +295,14 @@ public fun record_participation(
 // ============================================================
 
 /// Rotate the streak admin (used when the backend hot-wallet rotates).
-/// `admin_cap` here is the deployer-issued `Publisher` proxy stored in
-/// `StreakAdmin.admin` itself.
-public fun rotate_admin(admin_cap: &StreakAdmin, new_admin: address, ctx: &TxContext) {
+/// `admin_cap` is the shared `StreakAdmin`; only its current `admin`
+/// can call this. The admin is updated in place so subsequent calls to
+/// `record_participation` from the new backend address succeed.
+public fun rotate_admin(admin_cap: &mut StreakAdmin, new_admin: address, ctx: &TxContext) {
     // Only the current admin can rotate.
     assert!(ctx.sender() == admin_cap.admin, ENotAdmin);
-    // Move admin_cap is not available; the rotation is conceptual in v1.
-    // To avoid mutable borrow, we add a separate rotator:
-    let _ = new_admin;
+    assert!(new_admin != @0x0, EInvalidNewAdmin);
+    admin_cap.admin = new_admin;
 }
 
 // ============================================================

@@ -38,18 +38,18 @@ export const DUSDC_SCALE = 1_000_000n;
  * Set via env at deploy time:
  *   AGENT_POLICY_PACKAGE_ID=0x...
  *
- * The default below is a *legacy* testnet address from a prior publish
- * and is **not** guaranteed to contain the gamification modules
- * (`streak_system`, `prize_pool`, `redeem_with_streak`,
- * `dispute_market`). Run `pnpm --filter @suipredict/agents bootstrap`
- * to publish a fresh package and overwrite this via env.
+ * The default below is the *currently-deployed* testnet address from
+ * `packages/contracts/Published.toml`. If the env var is unset and
+ * you've re-published the package, update this default (and re-run
+ * the agents bootstrap to write `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID`
+ * to `apps/web/.env.local`).
  */
 export const AGENT_POLICY_PACKAGE_ID =
   process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
   process.env.AGENT_POLICY_PACKAGE_ID ??
   process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
   process.env.MARKET_PACKAGE_ID ??
-  "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";
+  "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf";
 
 export const SUI_GRPC_URL = "https://fullnode.testnet.sui.io:443";
 
