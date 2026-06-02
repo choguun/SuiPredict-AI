@@ -34,7 +34,8 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
 
   const client = createClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
-  const results: string[] = [];
+  const claimed: string[] = [];
+  const noRewards: string[] = [];
   const errors: string[] = [];
 
   for (const market of markets) {
@@ -46,31 +47,43 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
         market.referral_id,
       );
       const result = await executeTransaction(client, tx, ctx.signer);
-      results.push(
-        `${market.id.slice(0, 12)}... referral sweep → ${result.digest.slice(0, 8)}`,
+      claimed.push(
+        `${market.id.slice(0, 12)}... → ${result.digest.slice(0, 8)}`,
       );
     } catch (err) {
       // Referral rewards may be zero — don't treat as failure
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("zero") || msg.includes("amount") || msg.includes("InsufficientBalance")) {
-        results.push(`${market.id.slice(0, 12)}... no rewards yet`);
+        noRewards.push(`${market.id.slice(0, 12)}...`);
       } else {
         errors.push(`${market.id.slice(0, 12)}: ${msg}`);
       }
     }
   }
 
+  // Surface action / confidence that reflects what actually happened.
+  // The previous version lumped "claimed" and "no rewards" into the
+  // same counter, so the boot health endpoint showed a green tick
+  // even when every market in the loop returned 0 — the same lying
+  // pattern r11 fixed for `PrizeDistributor`. If we ran the loop
+  // and didn't claim anything, the action is `skip`, not `sweep`.
   if (errors.length > 0) {
     return recordResult("ReferralKeeper", {
       action: "partial",
-      reasoning: `Sweep done. Errors: ${errors.join("; ")}`,
+      reasoning: `Claimed ${claimed.length} of ${markets.length}; ${noRewards.length} no-op; ${errors.length} errors. ${errors.join("; ")}`,
       confidence: 70,
     });
   }
-
+  if (claimed.length === 0) {
+    return recordResult("ReferralKeeper", {
+      action: "skip",
+      reasoning: `No referral rewards accrued across ${noRewards.length} market(s).`,
+      confidence: 60,
+    });
+  }
   return recordResult("ReferralKeeper", {
     action: "sweep",
-    reasoning: `Swept ${results.length} markets. ${results.join(" | ")}`,
+    reasoning: `Claimed ${claimed.length} of ${markets.length} markets${noRewards.length ? ` (${noRewards.length} no-op)` : ""}. ${claimed.join(" | ")}`,
     confidence: 88,
   });
 }

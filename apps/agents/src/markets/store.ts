@@ -582,5 +582,14 @@ function rowToMarket(row: unknown): MarketInfo {
     deepbook_quote_scalar: (r.deepbook_quote_scalar as number) ?? null,
     referral_id: (r.referral_id as string) ?? null,
     created_at_ms: r.created_at_ms as number,
+    // Dispute fields. `disputed` is INTEGER 0/1 in SQLite; coerce to a
+    // proper boolean so the SDK contract matches the TS reader. The
+    // other three are nullable — `dispute_count` defaults to 0 on the
+    // schema but is included here so a future row without it doesn't
+    // produce `undefined` in JSON.
+    disputed: Boolean(r.disputed),
+    dispute_count: (r.dispute_count as number) ?? 0,
+    dispute_evidence_uri: (r.dispute_evidence_uri as string) ?? null,
+    last_dispute_at_ms: (r.last_dispute_at_ms as number) ?? null,
   };
 }

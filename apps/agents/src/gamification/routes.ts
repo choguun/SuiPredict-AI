@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { keccak_256 } from "@noble/hashes/sha3";
 import {
+  createClient,
   expectedAmountForRank,
   DEFAULT_DISTRIBUTION_BPS,
   signClaimPayload,
@@ -161,11 +162,41 @@ export async function handleGamificationRoute(
     }
     // Re-derive the canonical amount from the rank table so the
     // signed payload always matches what the contract expects.
-    const amount = expectedAmountForRank(
-      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+    //
+    // Source of truth = on-chain `PrizePool.weekly_prize`, not the
+    // `PRIZE_WEEKLY_AMOUNT` env var. The env var is the bootstrap
+    // hint; the on-chain value is the cumulative sum of all `fund_pool`
+    // calls this week. If the operator funds the pool directly (script,
+    // manual tx, or out-of-band admin action) without restarting the
+    // agents, the env var is stale and signing an env-derived amount
+    // would land an `EPrizeTooLarge` abort at `claim_prize`. Reading
+    // the on-chain value first means the signed payload is always
+    // self-consistent with the pool the user is going to claim from.
+    //
+    // For the in-progress week, `weekly_prize` is live (mutated by
+    // `fund_pool`); for archived weeks, the view function still returns
+    // the cumulative amount at rotation time (the field is reset to 0
+    // in `rotate_week`, but the on-chain object retains the historical
+    // value before the reset — `claim_prize` reads it at claim time,
+    // not at rotation time, so signing the pre-rotate value is the
+    // correct one). If the read fails (RPC outage, wrong network),
+    // fall back to the env value with a clear `X-Amount-Source`
+    // header so the operator can tell which path the route took.
+    const { amount, amountSource } = await resolvePrizeAmount(
+      poolId,
+      week,
       rank,
-      DEFAULT_DISTRIBUTION_BPS,
     );
+    if (amount === 0n) {
+      json(res, 503, {
+        error:
+          "PrizePool weekly_prize is 0 — no funds available for this week. " +
+          "Run `fund_pool` on-chain to seed it, then retry.",
+        week_index: week,
+        rank,
+      });
+      return true;
+    }
     const payload: ClaimPayload = {
       poolId,
       weekIndex: BigInt(week),
@@ -184,6 +215,7 @@ export async function handleGamificationRoute(
           },
           signatureB64: signed.signatureB64,
           expectedAmount: amount.toString(),
+          amountSource,
         });
       })
       .catch((err) =>
@@ -318,4 +350,61 @@ export async function handleGamificationRoute(
   }
 
   return false;
+}
+
+/**
+ * Read `PrizePool.weekly_prize` from the on-chain object and derive the
+ * per-rank payout via `expectedAmountForRank`. The on-chain value is the
+ * cumulative sum of `fund_pool` calls for the pool's `current_week` —
+ * this is what the user is going to claim from, so the signed payload
+ * must use the same number or the `EPrizeTooLarge` cap (90% of pool
+ * balance) aborts `claim_prize`. The env var `PRIZE_WEEKLY_AMOUNT` is
+ * a fallback for the RPC-failure case; we surface `amountSource` so
+ * the caller (and the operator inspecting the response) can tell
+ * which path produced the number.
+ *
+ * `weekly_prize` is a flat `u64` field on the `PrizePool` struct (not
+ * wrapped in `Balance<T>`), so the gRPC JSON view renders it as a
+ * scalar string/number under `json.weekly_prize`. (The wrapped-balance
+ * shape was the r11 fix for `pool.balance`; this one is a plain u64
+ * and just `BigInt(...)`s directly.)
+ */
+async function resolvePrizeAmount(
+  poolId: string,
+  week: number,
+  rank: number,
+): Promise<{ amount: bigint; amountSource: "onchain" | "env" }> {
+  try {
+    const client = createClient();
+    const { objects } = await client.getObjects({
+      objectIds: [poolId],
+      include: { json: true },
+    });
+    const obj = objects[0];
+    if (obj && !(obj instanceof Error)) {
+      const json = obj.json as { weekly_prize?: string | number } | null;
+      if (json?.weekly_prize != null) {
+        const weekly = BigInt(json.weekly_prize);
+        return {
+          amount: expectedAmountForRank(weekly, rank, DEFAULT_DISTRIBUTION_BPS),
+          amountSource: "onchain",
+        };
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[prize/signature] on-chain weekly_prize read failed for ${poolId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+  // Fallback: env var. Logged at warn so the operator can see it in the
+  // boot health endpoint and investigate the RPC issue. Never silent.
+  return {
+    amount: expectedAmountForRank(
+      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+      rank,
+      DEFAULT_DISTRIBUTION_BPS,
+    ),
+    amountSource: "env",
+  };
 }

@@ -18,10 +18,35 @@ import { AGENT_POLICY_PACKAGE_ID, DUSDC_TYPE } from "./constants.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
-// Mirror on-chain DEFAULT_DISTRIBUTION_BPS.
+// Mirror on-chain DEFAULT_DISTRIBUTION_BPS. The vector MUST sum to BPS —
+// if a future edit breaks that invariant, throw at module load so the
+// bad value never reaches a real signing path. The previous mirror was
+// `[5000, 3000, 1500, 500, 1000×6]` summing to 16_000 bps; the contract
+// accepted it (no `create_pool` assertion), so every freshly-deployed
+// pool's `claim_prize` silently dropped rank-4 and beyond with
+// `EPrizeTooLarge` while the backend happily signed the 160% payloads.
 export const DEFAULT_DISTRIBUTION_BPS: number[] = [
-  5_000, 3_000, 1_500, 500, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+  5_000, // rank 1: 50%
+  3_000, // rank 2: 30%
+  1_500, // rank 3: 15%
+  500,   // rank 4: 5%
+  0,     // rank 5: 0%
+  0,     // rank 6: 0%
+  0,     // rank 7: 0%
+  0,     // rank 8: 0%
+  0,     // rank 9: 0%
+  0,     // rank 10: 0%
 ];
+{
+  const sum = DEFAULT_DISTRIBUTION_BPS.reduce((a, b) => a + b, 0);
+  if (sum !== 10_000) {
+    throw new Error(
+      `DEFAULT_DISTRIBUTION_BPS sums to ${sum} bps, expected 10_000. ` +
+        `The on-chain contract would reject this at create_pool, so the ` +
+        `SDK is refusing to load rather than sign malformed claim payloads.`,
+    );
+  }
+}
 
 export const BPS = 10_000;
 export const MAX_RANK = 100;

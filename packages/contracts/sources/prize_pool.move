@@ -31,17 +31,24 @@ const MAX_RANK: u64 = 100;
 const ED25519_FLAG: u8 = 0;
 
 // Default distribution bps across top-10 ranks (must sum to 10_000).
+// Top-4 takes the whole pot (50/30/15/5); ranks 5-10 receive 0 by default
+// and must be funded by the deployer via `set_distribution` if desired.
+// The previous default was `[5000, 3000, 1500, 500, 1000×6]` summing to
+// 16_000 bps (160%) — `create_pool` did not assert the sum, so every
+// freshly-deployed pool was broken: `claim_prize`'s 90% `EPrizeTooLarge`
+// cap silently dropped rank-4 (5%) and every rank ≥ 5, and the backend
+// still signed 16k-bps payloads that could never settle on-chain.
 const DEFAULT_DISTRIBUTION_BPS: vector<u64> = vector[
     5_000, // rank 1: 50%
     3_000, // rank 2: 30%
     1_500, // rank 3: 15%
     500,   // rank 4: 5%
-    1_000, // rank 5: 10%
-    1_000, // rank 6: 10%
-    1_000, // rank 7: 10%
-    1_000, // rank 8: 10%
-    1_000, // rank 9: 10%
-    1_000, // rank 10: 10%
+    0,     // rank 5: 0%
+    0,     // rank 6: 0%
+    0,     // rank 7: 0%
+    0,     // rank 8: 0%
+    0,     // rank 9: 0%
+    0,     // rank 10: 0%
 ];
 
 // ============================================================
@@ -143,6 +150,19 @@ public fun create_pool<PrizeCoin>(
     initial_week: u64,
     ctx: &mut TxContext,
 ) {
+    // Reject a malformed default at deploy time. The previous default
+    // (sum 16_000 bps) slipped through this check and silently broke
+    // every freshly-deployed pool. Mirrors the assertion in
+    // `set_distribution` so a future change to the const can't regress
+    // without aborting the publish tx.
+    let mut default_sum = 0u64;
+    let mut i = 0;
+    let default_len = vector::length(&DEFAULT_DISTRIBUTION_BPS);
+    while (i < default_len) {
+        default_sum = default_sum + *vector::borrow(&DEFAULT_DISTRIBUTION_BPS, i);
+        i = i + 1;
+    };
+    assert!(default_sum == BPS, EInvalidDistribution);
     let pool = PrizePool<PrizeCoin> {
         id: object::new(ctx),
         admin: ctx.sender(),

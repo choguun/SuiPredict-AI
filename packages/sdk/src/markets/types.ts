@@ -5,7 +5,13 @@ export interface MarketInfo {
   category: string;
   expiry_ms: number;
   resolution_source: string;
-  status: "active" | "resolved" | "cancelled";
+  // `"disputed"` is written by `markMarketDisputed` (position-indexer
+  // polls `MarketDisputedEvent`); a disputed market is frozen on-chain
+  // and `redeem`/`redeem_no` abort with `EMarketDisputed` until the
+  // creator resolves the dispute. Excluded from the original union,
+  // which forced `rowToMarket` to lie about a market the indexer
+  // definitely knows is in dispute.
+  status: "active" | "resolved" | "cancelled" | "disputed";
   outcome?: "yes" | "no" | null;
   pool_id?: string | null;
   order_book_id?: string | null;
@@ -18,6 +24,16 @@ export interface MarketInfo {
   /** DeepBook referral ID for claiming trading fee rebates */
   referral_id?: string | null;
   created_at_ms?: number;
+  // Mirrors the `disputed`, `dispute_count`, `dispute_evidence_uri`,
+  // and `last_dispute_at_ms` columns in `markets` (apps/agents).
+  // `dispute_count` is the cumulative number of disputes filed against
+  // this market (preserved across `resolve_dispute` for the audit
+  // trail); `dispute_evidence_uri` is the most recent evidence URI;
+  // `last_dispute_at_ms` is the timestamp of the most recent dispute.
+  disputed?: boolean;
+  dispute_count?: number;
+  dispute_evidence_uri?: string | null;
+  last_dispute_at_ms?: number | null;
 }
 
 export interface OrderBookLevel {

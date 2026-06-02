@@ -19,7 +19,7 @@
  * "not authorized" hint is suppressed for that address).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useCurrentAccount,
   useDAppKit,
@@ -48,12 +48,34 @@ function shortAddr(a: string | null | undefined): string {
 export default function AdminPage() {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
-  const isAdmin = !!ADMIN_ADDRESS && account?.address === ADMIN_ADDRESS;
+  // Normalize both sides to lowercase hex. Sui addresses are
+  // case-insensitive, but the previous strict-equality check locked
+  // the operator out if `NEXT_PUBLIC_ADMIN_ADDRESS` was set with a
+  // leading 0x stripped, or with mixed-case hex. The strict form
+  // (`0x` + 64 hex chars) is also validated here so a typo doesn't
+  // silently fail-closed for the rest of the page.
+  const normalizedAdmin = ADMIN_ADDRESS.trim().toLowerCase();
+  const isValidAdmin = /^0x[0-9a-f]{64}$/.test(normalizedAdmin);
+  const normalizedAccount = (account?.address ?? "").toLowerCase();
+  const isAdmin = isValidAdmin && normalizedAccount === normalizedAdmin;
   const walletConnected = !!account;
   const [lastAction, setLastAction] = useState<{
     label: string;
     digest: string;
   } | null>(null);
+  // Surface a loud console warning at page load if the env is set
+  // but doesn't look like a Sui address — the operator will then
+  // know to fix `NEXT_PUBLIC_ADMIN_ADDRESS` instead of clicking
+  // through silently disabled forms.
+  useEffect(() => {
+    if (ADMIN_ADDRESS && !isValidAdmin) {
+      console.warn(
+        `[admin] NEXT_PUBLIC_ADMIN_ADDRESS=${JSON.stringify(
+          ADMIN_ADDRESS,
+        )} is not a 0x-prefixed 64-char hex address. Admin actions will be disabled until this is fixed.`,
+      );
+    }
+  }, [ADMIN_ADDRESS, isValidAdmin]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
