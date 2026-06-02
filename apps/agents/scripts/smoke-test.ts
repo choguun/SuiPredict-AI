@@ -241,7 +241,7 @@ async function clobFlow(
     return;
   }
   try {
-    const mintTx = buildMintSharesTx(marketId, vaultId, dusdcCoin.coinObjectId);
+    const mintTx = buildMintSharesTx(marketId, vaultId, dusdcCoin.coinObjectId, 1_000_000n);
     const r = await executeTransaction(txClient, mintTx, signer);
     record("clob_mint_shares", true, `digest ${r.digest.slice(0, 12)}…`);
   } catch (err) {

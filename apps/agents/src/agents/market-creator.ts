@@ -246,7 +246,12 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               `[market-creator] FEE_VAULT_ID not configured — skipping initial mint for ${marketId}`,
             );
           } else {
-            const mintTx = buildMintSharesTx(marketId, FEE_VAULT_ID, dusdcCoin.objectId);
+            const mintTx = buildMintSharesTx(
+              marketId,
+              FEE_VAULT_ID,
+              dusdcCoin.objectId,
+              INITIAL_MINT_ATOMS,
+            );
             const mintResult = await executeTransaction(client, mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;
           }

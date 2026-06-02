@@ -308,6 +308,15 @@ export async function resolveDayOutcomes(
   });
   const dayStartMs = dayIndex * DAY_MS;
   const dayEndMs = dayStartMs + DAY_MS;
+  // Daily markets may expire anywhere in the day window or shortly after
+  // (the market-creator's `expiry_days` is rounded to the second, and
+  // a 1-day market created at 00:00:01 UTC has expiry at 00:00:01 the
+  // NEXT day — 1ms past `dayEndMs`). The previous strict window
+  // `[dayStartMs, dayEndMs)` missed those markets, so the sweep
+  // silently recorded `noop` for the day and the user kept a phantom
+  // streak. The 1-hour grace catches boundary cases while still
+  // rejecting markets that belong to a different day window.
+  const EXPIRY_GRACE_MS = 60 * 60 * 1000;
 
   // 1. Daily markets
   const createdRaw = await queryAllEvents(client, {
@@ -318,7 +327,11 @@ export async function resolveDayOutcomes(
     const ev = e as { parsedJson: { market_id?: string; expiry_ms?: string | number } };
     const expiry = Number(ev.parsedJson.expiry_ms ?? 0);
     const id = ev.parsedJson.market_id;
-    if (id && expiry >= dayStartMs && expiry < dayEndMs) {
+    if (
+      id &&
+      expiry >= dayStartMs &&
+      expiry < dayEndMs + EXPIRY_GRACE_MS
+    ) {
       dailyMarketIds.add(id);
     }
   }

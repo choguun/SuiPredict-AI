@@ -10,6 +10,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import {
+  AGENT_POLICY_PACKAGE_ID,
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
 } from "./constants.js";
@@ -38,15 +39,17 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** PredictionMarket package ID — override via PREDICT_MARKET_PACKAGE_ID env.
- *  The NEXT_PUBLIC_ variants are read first so Next.js inlines them into
- *  the client bundle; the bare variants are the server/agents fallbacks.
+/** PredictionMarket package ID — single source of truth is `AGENT_POLICY_PACKAGE_ID`
+ *  in `./constants.js`, which carries the on-chain address from
+ *  `packages/contracts/Published.toml`. The package contains
+ *  `prediction_market`, `streak_system`, `prize_pool`, `agent_policy`,
+ *  and `types`; `PREDICT_MARKET_PACKAGE_ID` is re-exported here for
+ *  backwards compatibility with the previous (and now-stale) name.
+ *
+ *  Override at deploy time via `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID`
+ *  (Next.js) or `AGENT_POLICY_PACKAGE_ID` (server/agents).
  */
-export const PREDICT_MARKET_PACKAGE_ID =
-  process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
-  process.env.PREDICT_MARKET_PACKAGE_ID ??
-  process.env.MARKET_PACKAGE_ID ??
-  "0x7377808da2e3d48282268c56e332ac282adca02db3a4d924505fa139067ff4e8";
+export const PREDICT_MARKET_PACKAGE_ID = AGENT_POLICY_PACKAGE_ID;
 
 const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 
@@ -124,12 +127,40 @@ export function buildMintSharesTx(
   marketId: string,
   vaultId: string,
   quoteIn: string,
+  amountAtoms: bigint,
 ): Transaction {
+  // Minimum per-leg amount: 1 YES share at the protocol's default
+  // scalar (1e6 = 1 share with 6 decimals). Markets created via
+  // `buildCreateMarketTx` use `tickSize: 1_000_000`, `lotSize: 1_000_000`,
+  // and `minSize: 1_000_000` — the on-chain `mint_shares` will reject
+  // any input below this. Validating here so a fractional-amount
+  // typo surfaces as a build-time error with a clear message rather
+  // than a Move abort at execute time. Mirrors the validation in
+  // `buildMintSharesBatchTx`.
+  const MIN_ATOMS = 1_000_000n;
+  if (amountAtoms <= 0n) {
+    throw new Error(
+      `buildMintSharesTx: amountAtoms must be > 0 (got ${amountAtoms})`,
+    );
+  }
+  if (amountAtoms < MIN_ATOMS) {
+    throw new Error(
+      `buildMintSharesTx: amountAtoms ${amountAtoms} is below the protocol minimum of ${MIN_ATOMS} (1 YES share). ` +
+        `Most markets use tickSize=lotSize=1_000_000.`,
+    );
+  }
   const tx = new Transaction();
+  // Split `amountAtoms` off the user's DUSDC coin in-PTB and pass the
+  // split result to `mint_shares`. A previous version of this builder
+  // passed the whole `Coin<DUSDC>` to `mint_shares` without splitting,
+  // which deposited the user's entire balance. The batch variant
+  // (`buildMintSharesBatchTx`) already splits correctly; this single-
+  // market variant now matches.
+  const [mintCoin] = tx.splitCoins(tx.object(quoteIn), [tx.pure.u64(amountAtoms)]);
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(quoteIn)],
+    arguments: [tx.object(marketId), tx.object(vaultId), mintCoin],
   });
   return tx;
 }

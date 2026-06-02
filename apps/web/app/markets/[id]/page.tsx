@@ -14,6 +14,7 @@ import {
   buildDeepBookPlaceLimitOrderTx,
   buildDeepBookWithdrawSettledTx,
   buildMintSharesTx,
+  dollarsToDusdc,
   DUSDC_TYPE,
   extractCreatedObjectId,
   buildRedeemNoTx,
@@ -284,7 +285,13 @@ export default function MarketDetailPage() {
       });
       const coin = objects[0];
       if (!coin) throw new Error("No DUSDC — request from DeepBook testnet form");
-      const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId);
+      // Convert the displayed `qty` (in dollars) to DUSDC atoms
+      // (6 decimals). The SDK's `buildMintSharesTx` splits that
+      // amount off the user's DUSDC bag in-PTB and passes only the
+      // split coin to `mint_shares` — the whole bag is never
+      // deposited.
+      const amountAtoms = dollarsToDusdc(qty);
+      const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId, amountAtoms);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Minted YES + NO: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
