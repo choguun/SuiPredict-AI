@@ -11,14 +11,14 @@ import {
   listMarkets,
   getMarketOrderBook,
   buildMintSharesBatchTx,
+  DUSDC_TYPE,
   type MarketInfo,
 } from "@suipredict/sdk";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
 import { toast } from "sonner";
 import Link from "next/link";
 
-const DBUSDC =
-  "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
+const QUOTE_COIN = DUSDC_TYPE;
 
 const FEE_VAULT_ID =
   process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
@@ -118,16 +118,16 @@ export function DailyPredictionCard() {
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
-        coinType: DBUSDC,
+        coinType: QUOTE_COIN,
       });
       const coin = objects[0];
       if (!coin) {
-        throw new Error("No DBUSDC — request from DeepBook testnet form");
+        throw new Error("No DUSDC — request from DeepBook testnet form");
       }
       // Single PTB: split the input coin N ways and mint into each market.
       // Sequential txs would consume the coin in the first tx, leaving the
       // rest with a stale object reference and a runtime error.
-      const amountPerMarket = BigInt(1_000_000); // 1 DBUSDC
+      const amountPerMarket = BigInt(1_000_000); // 1 DUSDC
       const tx = buildMintSharesBatchTx({
         marketIds: activeMarketIds,
         vaultId: FEE_VAULT_ID,

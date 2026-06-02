@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import {
   buildVaultDepositTx,
   buildVaultWithdrawTx,
-  DBUSDC_TYPE,
+  DUSDC_TYPE,
   getVaultSummaryClob,
   VLP_TYPE,
 } from "@suipredict/sdk";
@@ -71,14 +71,14 @@ export default function VaultPage() {
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
-        coinType: DBUSDC_TYPE,
+        coinType: DUSDC_TYPE,
       });
       const coin = objects[0];
-      if (!coin) throw new Error("No DBUSDC");
+      if (!coin) throw new Error("No DUSDC");
       const tx = buildVaultDepositTx(
         VAULT_ID,
         coin.objectId,
-        DBUSDC_TYPE,
+        DUSDC_TYPE,
         account.address,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
@@ -131,7 +131,7 @@ export default function VaultPage() {
             Liquidity Vault
           </h1>
           <p className="max-w-2xl text-base leading-relaxed text-zinc-400">
-            Deposit DBUSDC to mint VLP shares. Your capital is actively managed by SuiPredict&apos;s
+            Deposit DUSDC to mint VLP shares. Your capital is actively managed by SuiPredict&apos;s
             autonomous AI agents to provide liquidity (CLOB market making) across prediction markets.
           </p>
         </div>
@@ -170,7 +170,7 @@ export default function VaultPage() {
 
       {/* Action Section */}
       <Card title="Manage Position" className="max-w-2xl border-white/10">
-        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 mt-2">Amount (DBUSDC)</label>
+        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 mt-2">Amount (DUSDC)</label>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
           <input
             type="number"

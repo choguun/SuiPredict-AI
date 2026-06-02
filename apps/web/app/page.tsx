@@ -83,7 +83,7 @@ export default async function HomePage() {
             Trade probability.
           </h1>
           <p className="text-base leading-relaxed text-zinc-400 sm:text-xl mb-8 max-w-2xl">
-            SuiPredict AI is the next-generation prediction market. Every market is backed by DBUSDC collateral. Split collateral into matched YES/NO shares and trade with instant settlement.
+            SuiPredict AI is the next-generation prediction market. Every market is backed by DUSDC collateral. Split collateral into matched YES/NO shares and trade with instant settlement.
           </p>
           
           <div className="flex flex-col sm:flex-row gap-4">

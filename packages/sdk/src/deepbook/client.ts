@@ -15,7 +15,7 @@ import { DBUSDC_TYPE } from "./constants.js";
 
 export type { BalanceManager, CoinMap, DeepBookClient, PoolMap };
 
-export const PREDICT_DEEPBOOK_POOL_KEY = "PREDICT_YES_DBUSDC";
+export const PREDICT_DEEPBOOK_POOL_KEY = "PREDICT_YES_DUSDC";
 export const PREDICT_BASE_COIN_KEY = "PREDICT_YES";
 export const PREDICT_QUOTE_COIN_KEY = "PREDICT_QUOTE";
 export const PREDICT_BALANCE_MANAGER_KEY = "PREDICT_MANAGER";

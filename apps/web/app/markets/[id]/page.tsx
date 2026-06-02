@@ -14,7 +14,7 @@ import {
   buildDeepBookPlaceLimitOrderTx,
   buildDeepBookWithdrawSettledTx,
   buildMintSharesTx,
-  DBUSDC_TYPE,
+  DUSDC_TYPE,
   extractCreatedObjectId,
   buildRedeemNoTx,
   buildRedeemNoWithStreakTx,
@@ -43,7 +43,7 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
 }
 
-const DBUSDC = DBUSDC_TYPE;
+const QUOTE_COIN = DUSDC_TYPE;
 
 const FEE_VAULT_ID =
   process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
@@ -218,7 +218,7 @@ export default function MarketDetailPage() {
   const deepBookQuoteCoinType =
     market?.deepbook_quote_coin_type ??
     process.env.NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_TYPE ??
-    DBUSDC;
+    QUOTE_COIN;
   const deepBookMarket = useMemo(() => {
     if (!deepBookPoolId || !deepBookBaseCoinType) return null;
     return {
@@ -261,7 +261,7 @@ export default function MarketDetailPage() {
     useDeepBookRoute
       ? `DeepBook V3 ${isBid ? "bid" : "ask"} YES at ${formatCents(yesLimitPrice)}`
       : isSyntheticBuyNo
-      ? `Split DBUSDC, keep NO, ask YES at ${formatCents(yesLimitPrice)}`
+      ? `Split DUSDC, keep NO, ask YES at ${formatCents(yesLimitPrice)}`
       : side === "yes"
       ? `${orderSide === "buy" ? "Bid" : "Ask"} YES at ${formatCents(displayedPrice)}`
       : `${isBid ? "Bid" : "Ask"} YES at ${formatCents(yesLimitPrice)}`;
@@ -276,14 +276,14 @@ export default function MarketDetailPage() {
   async function splitCollateral() {
     if (!account || !client || !market) return;
     setLoading(true);
-    const toastId = toast.loading("Minting YES + NO from DBUSDC…");
+    const toastId = toast.loading("Minting YES + NO from DUSDC…");
     try {
       const { objects } = await client.core.listCoins({
         owner: account.address,
-        coinType: DBUSDC,
+        coinType: QUOTE_COIN,
       });
       const coin = objects[0];
-      if (!coin) throw new Error("No DBUSDC — request from DeepBook testnet form");
+      if (!coin) throw new Error("No DUSDC — request from DeepBook testnet form");
       const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       toast.success(`Minted YES + NO: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
@@ -740,15 +740,15 @@ export default function MarketDetailPage() {
             <div className="flex justify-between gap-3 text-zinc-400">
               <span>Est. cost</span>
               <span className="font-medium text-white">
-                ${estimatedCost.toFixed(2)} DBUSDC
+                ${estimatedCost.toFixed(2)} DUSDC
               </span>
             </div>
             <div className="mt-2 flex justify-between gap-3 text-zinc-400">
-              <Tooltip content="The total DBUSDC balance needed to place this order">
+              <Tooltip content="The total DUSDC balance needed to place this order">
                 <span className="cursor-help underline decoration-white/20 underline-offset-4">Capital needed</span>
               </Tooltip>
               <span className="font-medium text-white">
-                ${capitalRequired.toFixed(2)} DBUSDC
+                ${capitalRequired.toFixed(2)} DUSDC
               </span>
             </div>
             <div className="mt-2 flex justify-between gap-3 text-zinc-400">
@@ -842,7 +842,7 @@ export default function MarketDetailPage() {
                       onChange={(e) => setDepositAsset(e.target.value as "quote" | "base")}
                       className="rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/50"
                     >
-                      <option value="quote">DBUSDC</option>
+                      <option value="quote">DUSDC</option>
                       <option value="base">YES</option>
                     </select>
                   </div>
@@ -873,7 +873,7 @@ export default function MarketDetailPage() {
 
         <Card title="Collateral">
           <p className="mb-4 text-sm leading-6 text-zinc-400">
-            Split 1 DBUSDC → 1 YES + 1 NO. Merge pair back to DBUSDC.
+            Split 1 DUSDC → 1 YES + 1 NO. Merge pair back to DUSDC.
           </p>
           <div className="grid grid-cols-2 gap-3 mt-2">
             <button

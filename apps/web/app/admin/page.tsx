@@ -4,7 +4,7 @@
  * Protocol admin panel — a single page that exposes the three
  * admin-gated on-chain operations a deployer needs:
  *
- *   1. Withdraw accumulated mint/redeem fees from `FeeVault<DBUSDC>`.
+ *   1. Withdraw accumulated mint/redeem fees from `FeeVault<DUSDC>`.
  *      Authority: connected wallet must equal `vault.admin` (set at
  *      `init_fee_vault` time).
  *   2. Update the prize-pool distribution curve (rank → bps). Authority:
@@ -167,7 +167,7 @@ function WithdrawFeesCard(props: {
     <Card title="Withdraw protocol fees">
       <div className="space-y-4">
         <p className="text-sm text-zinc-400">
-          Drains the requested amount of DBUSDC from the shared
+          Drains the requested amount of DUSDC from the shared
           <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">FeeVault</code>
           to the connected wallet. The wallet must equal
           <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">vault.admin</code>

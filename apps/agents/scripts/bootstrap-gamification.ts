@@ -30,6 +30,7 @@ import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import {
   createClient,
+  DEEP_TYPE,
   DUSDC_TYPE,
   executeTransaction,
   keypairFromPrivateKey,
@@ -562,6 +563,65 @@ async function main() {
   );
   log(`AgentPolicy:    ${agentPolicyId}`);
 
+  // 7b) Create a DeepBook V3 BalanceManager for the agent signer so
+  // the market-maker can trade without a one-off setup step. The
+  // BalanceManager is shared (so the agent key can deposit / place
+  // orders) and the ID is written to .env. We use a placeholder
+  // prediction-market config — the BalanceManager itself is
+  // pool-agnostic, and the prediction pool key is set at
+  // market-create time, not here.
+  //
+  // `AGENT_MANAGER_ID` (a separate on-chain manager for the
+  // RiskMonitor) does not exist as a contract object in the
+  // current published package — only `AgentPolicy` is on-chain.
+  // We deliberately leave it unset; the validator marks it
+  // `required: false`, and the RiskMonitor degrades to
+  // log-only when the env is empty.
+  let balanceManagerId = process.env.BALANCE_MANAGER_ID ?? "";
+  if (!balanceManagerId) {
+    try {
+      log("Creating DeepBook V3 BalanceManager for agent...");
+      const {
+        buildDeepBookCreateBalanceManagerTx,
+        createPredictionDeepBookClient,
+      } = await import("@suipredict/sdk");
+      const { SuiGrpcClient } = await import("@mysten/sui/grpc");
+      const deepbookClient = new SuiGrpcClient({
+        url: process.env.SUI_GRPC_URL ?? "https://fullnode.testnet.sui.io:443",
+        network: "testnet",
+      });
+      const dbClient = createPredictionDeepBookClient({
+        client: deepbookClient,
+        address: signerAddr,
+        market: {
+          poolKey: "PREDICT_YES_DUSDC",
+          poolId: "0x0",
+          baseCoinType:
+            `${packageId}::prediction_market::YES` as `${string}::${string}::${string}`,
+          quoteCoinType: DUSDC_TYPE,
+          baseScalar: 1_000_000,
+          quoteScalar: 1_000_000,
+        },
+      });
+      const tx = buildDeepBookCreateBalanceManagerTx(dbClient, signerAddr);
+      const res = await executeTransaction(txClient, tx, signer);
+      const id = await getSharedObjectIdFromTx(
+        grpc,
+        res.digest,
+        "balance_manager::BalanceManager",
+      );
+      if (id) {
+        balanceManagerId = id;
+        log(`  BalanceManager: ${balanceManagerId}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[bootstrap] BalanceManager creation failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          "Market-maker will retry on first tick and write BALANCE_MANAGER_ID_FILE.",
+      );
+    }
+  }
+
   // 8) Write env updates
   const agentsUpdates: Record<string, string> = {
     AGENT_POLICY_PACKAGE_ID: packageId,
@@ -579,6 +639,16 @@ async function main() {
     FEE_VAULT_ID: feeVaultId,
     AGENT_POLICY_ID: agentPolicyId,
   };
+  if (balanceManagerId) {
+    agentsUpdates.BALANCE_MANAGER_ID = balanceManagerId;
+  }
+  // REFERRAL_TREASURY_ADDRESS — destination for DeepBook referral
+  // sweeps and protocol fees. The SDK reads it from
+  // REFERRAL_TREASURY_ADDRESS (agents) or
+  // NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS (web). Default to the
+  // deployer signer — they're the protocol owner. Operators can
+  // override this in .env if their treasury is a multisig.
+  agentsUpdates.REFERRAL_TREASURY_ADDRESS = signerAddr;
   if (process.env.DUSDC_TREASURY_CAP_ID) {
     agentsUpdates.DUSDC_TREASURY_CAP_ID = process.env.DUSDC_TREASURY_CAP_ID;
   }
@@ -600,8 +670,21 @@ async function main() {
     NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
     NEXT_PUBLIC_DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
     NEXT_PUBLIC_ADMIN_ADDRESS: signerAddr,
-    // DEEPBOOK_*_POOL_ID / YES_COIN_TYPE are per-market values, written
+    // DeepBook defaults — POOL_KEY and the YES/QUOTE coin-type strings
+    // are protocol-wide constants (see packages/sdk/src/deepbook/client.ts).
+    // They are written here so the markets page can use them as the
+    // pre-market-pool fallback. Per-market POOL_IDs are still written
     // by the market-creator agent when it spins up a new DeepBook pool.
+    NEXT_PUBLIC_DEEPBOOK_POOL_KEY: "PREDICT_YES_DUSDC",
+    NEXT_PUBLIC_DEEPBOOK_YES_COIN_TYPE: `${packageId}::prediction_market::YES`,
+    NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_TYPE: DUSDC_TYPE,
+    NEXT_PUBLIC_DEEPBOOK_YES_COIN_SCALAR: "1000000",
+    NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_SCALAR: "1000000",
+    NEXT_PUBLIC_DEEP_TYPE: process.env.DEEP_TYPE ?? DEEP_TYPE,
+    // Treasury address — must match the agents REFERRAL_TREASURY_ADDRESS
+    // so the web frontend's REFERRAL_TREASURY_ADDRESS SDK constant
+    // resolves to the same on-chain destination.
+    NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS: signerAddr,
     // AGENTS_URL is a deploy-time hint; production should set it to the
     // public agents URL (the local default is the dev fallback).
     NEXT_PUBLIC_AGENTS_URL:

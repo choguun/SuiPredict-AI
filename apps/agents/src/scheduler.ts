@@ -29,6 +29,15 @@ export interface ScheduleEntry {
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 60_000);
 
+// Per-entry "currently running" flags. If a previous tick for an
+// agent is still in flight when the next cron boundary arrives,
+// the new tick is skipped (logged) rather than queued. Without
+// this guard, a slow streak-sweeper or position-indexer run can
+// pile up overlapping PTB batches and OOM the node, or worse,
+// double-write daily_scores rows. The flag is keyed by entry.name
+// (not a global counter) so other agents are unaffected.
+const inFlight = new Set<string>();
+
 export function startScheduler(
   ctx: AgentContext,
   entries: ScheduleEntry[],
@@ -39,13 +48,22 @@ export function startScheduler(
 function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
   const delay = msUntilNext(entry.cron);
   setTimeout(async () => {
-    try {
-      const result = await entry.fn(ctx);
-      console.log(
-        `[scheduler] ${entry.name} → ${result.action}: ${result.reasoning.slice(0, 100)}`,
+    if (inFlight.has(entry.name)) {
+      console.warn(
+        `[scheduler] ${entry.name} still running from previous tick; skipping this fire.`,
       );
-    } catch (err) {
-      console.error(`[scheduler] ${entry.name} crashed:`, err);
+    } else {
+      inFlight.add(entry.name);
+      try {
+        const result = await entry.fn(ctx);
+        console.log(
+          `[scheduler] ${entry.name} → ${result.action}: ${result.reasoning.slice(0, 100)}`,
+        );
+      } catch (err) {
+        console.error(`[scheduler] ${entry.name} crashed:`, err);
+      } finally {
+        inFlight.delete(entry.name);
+      }
     }
     scheduleNext(ctx, entry);
   }, delay);

@@ -39,7 +39,13 @@ const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "mainnet"
   | "devnet"
   | "localnet";
-const PREDICT_PACKAGE_ID = process.env.PREDICT_PACKAGE_ID ?? "";
+// Read PREDICT_PACKAGE_ID at call time, not at module load. The
+// `bootstrapEnv()` function in index.ts syncs this from
+// AGENT_POLICY_PACKAGE_ID *after* the module graph has already been
+// evaluated, so a top-level `const` here captures the empty string
+// even when AGENT_POLICY_PACKAGE_ID is set. Pulling it inside the
+// exported function lets bootstrapEnv's write to process.env take
+// effect on the first tick.
 const POLL_BATCH = 200;
 
 interface EventQuery {
@@ -85,11 +91,9 @@ interface MarketCreatedJson {
   market_id: string;
   creator?: string;
   title?: string;
-  description?: string;
-  category?: string;
   expiry_ms?: string | number;
-  resolution_source?: string;
   pool_id?: string;
+  balance_manager_id?: string;
 }
 interface MarketDisputedJson {
   market_id: string;
@@ -156,7 +160,8 @@ async function pollAndApply(
 export async function runPositionIndexer(
   _ctx: AgentContext,
 ): Promise<AgentResult> {
-  if (!PREDICT_PACKAGE_ID) {
+  const predictPackageId = process.env.PREDICT_PACKAGE_ID ?? "";
+  if (!predictPackageId) {
     return recordResult("PositionIndexer", {
       action: "skip",
       reasoning: "PREDICT_PACKAGE_ID not set — indexer inert.",
@@ -167,62 +172,65 @@ export async function runPositionIndexer(
     network: SUI_NETWORK,
   });
 
-  let minted = 0;
-  let redeemed = 0;
-  let orders = 0;
-  let cancellations = 0;
-  let created = 0;
-  let settlements = 0;
-  let resolutions = 0;
-  let disputes = 0;
-  let undisputed = 0;
-  try {
-    minted = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MintedEvent`,
-      "position_indexer.minted",
-      (ev) => {
-        const j = ev.parsedJson as MintedJson;
-        if (!j?.market_id || !j?.user) return;
-        const yes = Number(j.yes_minted ?? 0);
-        const no = Number(j.no_minted ?? 0);
-        if (yes <= 0 && no <= 0) return;
-        upsertPosition(j.market_id, j.user, yes, no);
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `Minted poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
-  try {
-    redeemed = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::RedeemedEvent`,
-      "position_indexer.redeemed",
-      (ev) => {
-        const j = ev.parsedJson as RedeemedJson;
-        if (!j?.market_id || !j?.user) return;
-        const burned = Number(j.winning_amount ?? 0);
-        if (burned <= 0) return;
-        // Both `redeem` and `redeem_no` emit the same RedeemedEvent
-        // struct, so the only way to know which side was burned is to
-        // look up the market's outcome (set by the resolver via
-        // MarketResolvedEvent). Decrement that side; clamp at 0 in
-        // case the on-chain mint was missed by this indexer.
-        const market = getMarket(j.market_id);
-        if (!market || !market.outcome) return;
-        const side = market.outcome === "yes" ? "yes" : "no";
-        decrementPosition(j.market_id, j.user, side, burned);
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `Redeemed poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  // Each event-type poller is independent. A failure on one (e.g. a
+  // transient RPC blip on `queryEvents(MarketResolvedEvent)`) must
+  // not skip the other 8 pollers — losing a single event type for a
+  // tick is recoverable on the next pass; losing all of them because
+  // one threw would leave the indexer silently stale for minutes.
+  // Each try/catch logs a warning and continues; failures are
+  // surfaced in the final reasoning string so the operator can spot
+  // a chronically-broken event type in /decisions.
+  const failures: string[] = [];
+  const guardedPoll = async (
+    label: string,
+    eventType: string,
+    stateKey: string,
+    apply: (ev: EventEnvelope) => void,
+  ): Promise<number> => {
+    try {
+      return await pollAndApply(client, eventType, stateKey, apply);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      failures.push(`${label}: ${msg.slice(0, 60)}`);
+      console.warn(`[position-indexer] ${label} poll failed: ${msg}`);
+      return 0;
+    }
+  };
+
+  const minted = await guardedPoll(
+    "Minted",
+    `${predictPackageId}::prediction_market::MintedEvent`,
+    "position_indexer.minted",
+    (ev) => {
+      const j = ev.parsedJson as MintedJson;
+      if (!j?.market_id || !j?.user) return;
+      const yes = Number(j.yes_minted ?? 0);
+      const no = Number(j.no_minted ?? 0);
+      if (yes <= 0 && no <= 0) return;
+      upsertPosition(j.market_id, j.user, yes, no);
+    },
+  );
+
+  const redeemed = await guardedPoll(
+    "Redeemed",
+    `${predictPackageId}::prediction_market::RedeemedEvent`,
+    "position_indexer.redeemed",
+    (ev) => {
+      const j = ev.parsedJson as RedeemedJson;
+      if (!j?.market_id || !j?.user) return;
+      const burned = Number(j.winning_amount ?? 0);
+      if (burned <= 0) return;
+      // Both `redeem` and `redeem_no` emit the same RedeemedEvent
+      // struct, so the only way to know which side was burned is to
+      // look up the market's outcome (set by the resolver via
+      // MarketResolvedEvent). Decrement that side; clamp at 0 in
+      // case the on-chain mint was missed by this indexer.
+      const market = getMarket(j.market_id);
+      if (!market || !market.outcome) return;
+      const side = market.outcome === "yes" ? "yes" : "no";
+      decrementPosition(j.market_id, j.user, side, burned);
+    },
+  );
 
   // MarketResolvedEvent — fired when the resolver/admin calls
   // `resolve_market`. Polled AFTER RedeemedEvent so the most recent
@@ -237,212 +245,171 @@ export async function runPositionIndexer(
   // the resolution wasn't yet seen. That ordering was the wrong
   // direction: redeem-on-resolved-market is the only legal redeem,
   // so the resolution cursor is always ≤ the redeem cursor.)
-  try {
-    resolutions = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
-      "position_indexer.market_resolved",
-      (ev) => {
-        const j = ev.parsedJson as MarketResolvedJson;
-        if (!j?.market_id || j?.outcome == null) return;
-        // outcome: 1 = YES, 2 = NO (per Move contract)
-        const n = Number(j.outcome);
-        if (n !== 1 && n !== 2) return;
-        markMarketResolved(j.market_id, n === 1 ? "yes" : "no");
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `MarketResolved poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const resolutions = await guardedPoll(
+    "MarketResolved",
+    `${predictPackageId}::prediction_market::MarketResolvedEvent`,
+    "position_indexer.market_resolved",
+    (ev) => {
+      const j = ev.parsedJson as MarketResolvedJson;
+      if (!j?.market_id || j?.outcome == null) return;
+      // outcome: 1 = YES, 2 = NO (per Move contract)
+      const n = Number(j.outcome);
+      if (n !== 1 && n !== 2) return;
+      markMarketResolved(j.market_id, n === 1 ? "yes" : "no");
+    },
+  );
 
   // OrderPlacedEvent — every user's limit/market order on every
   // DeepBook pool, not just the agent's. Stored in `chain_orders`
   // with the chain's u128 order_id as TEXT (SQLite's INTEGER maxes
   // out well below u128::MAX).
-  try {
-    orders = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::OrderPlacedEvent`,
-      "position_indexer.order_placed",
-      (ev) => {
-        const j = ev.parsedJson as OrderPlacedJson;
-        if (!j?.market_id || !j?.order_id) return;
-        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
-        recordChainOrder({
-          market_id: j.market_id,
-          order_id: String(j.order_id),
-          pool_id: j.pool_id ?? "",
-          client_order_id: Number(j.client_order_id ?? 0),
-          is_bid: Boolean(j.is_bid),
-          price: Number(j.price ?? 0),
-          quantity: Number(j.quantity ?? 0),
-          timestamp_ms: ts,
-        });
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `OrderPlaced poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const orders = await guardedPoll(
+    "OrderPlaced",
+    `${predictPackageId}::prediction_market::OrderPlacedEvent`,
+    "position_indexer.order_placed",
+    (ev) => {
+      const j = ev.parsedJson as OrderPlacedJson;
+      if (!j?.market_id || !j?.order_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordChainOrder({
+        market_id: j.market_id,
+        order_id: String(j.order_id),
+        pool_id: j.pool_id ?? "",
+        client_order_id: Number(j.client_order_id ?? 0),
+        is_bid: Boolean(j.is_bid),
+        price: Number(j.price ?? 0),
+        quantity: Number(j.quantity ?? 0),
+        timestamp_ms: ts,
+      });
+    },
+  );
 
   // SettledEvent — fired when a user calls `withdraw_settled` after
   // the pool processes their match. Useful for the agent's settle
   // sweeper and for "recent activity" feeds in the UI.
-  try {
-    settlements = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::SettledEvent`,
-      "position_indexer.settled",
-      (ev) => {
-        const j = ev.parsedJson as SettledJson;
-        if (!j?.market_id || !j?.trader) return;
-        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
-        recordSettlement({
-          market_id: j.market_id,
-          pool_id: j.pool_id ?? "",
-          trader: j.trader,
-          timestamp_ms: ts,
-        });
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `Settled poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const settlements = await guardedPoll(
+    "Settled",
+    `${predictPackageId}::prediction_market::SettledEvent`,
+    "position_indexer.settled",
+    (ev) => {
+      const j = ev.parsedJson as SettledJson;
+      if (!j?.market_id || !j?.trader) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordSettlement({
+        market_id: j.market_id,
+        pool_id: j.pool_id ?? "",
+        trader: j.trader,
+        timestamp_ms: ts,
+      });
+    },
+  );
 
   // MarketCreatedEvent — fired when any caller (this agent, another
   // agent, or a one-off script) calls `create_market`. Indexing it
   // ensures the REST `/markets` list and `/markets/:id` page see
   // markets the local agent did not create, and that the first-ever
   // market shows up before this agent's MarketCreator tick fires.
-  try {
-    created = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
-      "position_indexer.market_created",
-      (ev) => {
-        const j = ev.parsedJson as MarketCreatedJson;
-        if (!j?.market_id) return;
-        // Don't clobber a richer row written by the local MarketCreator
-        // (which also knows the deepbook pool/referral IDs). Only fill
-        // in fields the indexer can see in the event.
-        const existing = getMarket(j.market_id);
-        upsertMarket({
-          id: j.market_id,
-          title: existing?.title ?? j.title ?? "",
-          description: existing?.description ?? j.description ?? "",
-          category: existing?.category ?? j.category ?? "general",
-          expiry_ms: existing?.expiry_ms ?? Number(j.expiry_ms ?? 0),
-          resolution_source:
-            existing?.resolution_source ?? j.resolution_source ?? "",
-          status: existing?.status ?? "active",
-          pool_id: existing?.pool_id ?? j.pool_id ?? null,
-          deepbook_pool_id: existing?.deepbook_pool_id ?? j.pool_id ?? null,
-          deepbook_pool_key:
-            existing?.deepbook_pool_key ??
-            (j.pool_id ? `market_${j.market_id.slice(0, 8)}` : null),
-          deepbook_base_coin_type: existing?.deepbook_base_coin_type ?? null,
-          deepbook_quote_coin_type: existing?.deepbook_quote_coin_type ?? null,
-          deepbook_base_scalar: existing?.deepbook_base_scalar ?? 1_000_000,
-          deepbook_quote_scalar: existing?.deepbook_quote_scalar ?? 1_000_000,
-          referral_id: existing?.referral_id ?? null,
-          created_at_ms: existing?.created_at_ms ?? Date.now(),
-        });
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `MarketCreated poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const created = await guardedPoll(
+    "MarketCreated",
+    `${predictPackageId}::prediction_market::MarketCreatedEvent`,
+    "position_indexer.market_created",
+    (ev) => {
+      const j = ev.parsedJson as MarketCreatedJson;
+      if (!j?.market_id) return;
+      // Don't clobber a richer row written by the local MarketCreator
+      // (which also knows the deepbook pool/referral IDs). Only fill
+      // in fields the indexer can see in the event — the on-chain
+      // MarketCreatedEvent struct (prediction_market.move:171-178)
+      // only carries {market_id, pool_id, balance_manager_id, title,
+      // expiry_ms, creator}. The description / category /
+      // resolution_source come from the local MarketCreator row, so
+      // we deliberately fall through to `existing` for those.
+      const existing = getMarket(j.market_id);
+      upsertMarket({
+        id: j.market_id,
+        title: existing?.title ?? j.title ?? "",
+        description: existing?.description ?? "",
+        category: existing?.category ?? "general",
+        expiry_ms: existing?.expiry_ms ?? Number(j.expiry_ms ?? 0),
+        resolution_source: existing?.resolution_source ?? "",
+        status: existing?.status ?? "active",
+        pool_id: existing?.pool_id ?? j.pool_id ?? null,
+        deepbook_pool_id: existing?.deepbook_pool_id ?? j.pool_id ?? null,
+        deepbook_pool_key:
+          existing?.deepbook_pool_key ??
+          (j.pool_id ? `market_${j.market_id.slice(0, 8)}` : null),
+        deepbook_base_coin_type: existing?.deepbook_base_coin_type ?? null,
+        deepbook_quote_coin_type: existing?.deepbook_quote_coin_type ?? null,
+        deepbook_base_scalar: existing?.deepbook_base_scalar ?? 1_000_000,
+        deepbook_quote_scalar: existing?.deepbook_quote_scalar ?? 1_000_000,
+        referral_id: existing?.referral_id ?? null,
+        created_at_ms: existing?.created_at_ms ?? Date.now(),
+      });
+    },
+  );
 
   // OrderCancelledEvent — fired by `cancel_order` / `cancel_all_orders`.
   // We mark the matching `chain_orders` row cancelled so the UI can
   // drop it from the "open orders" view.
-  try {
-    cancellations = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::OrderCancelledEvent`,
-      "position_indexer.order_cancelled",
-      (ev) => {
-        const j = ev.parsedJson as OrderCancelledJson;
-        if (!j?.market_id || j?.order_id == null) return;
-        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
-        markOrderCancelled(j.market_id, String(j.order_id), ts);
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `OrderCancelled poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const cancellations = await guardedPoll(
+    "OrderCancelled",
+    `${predictPackageId}::prediction_market::OrderCancelledEvent`,
+    "position_indexer.order_cancelled",
+    (ev) => {
+      const j = ev.parsedJson as OrderCancelledJson;
+      if (!j?.market_id || j?.order_id == null) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      markOrderCancelled(j.market_id, String(j.order_id), ts);
+    },
+  );
 
   // MarketDisputedEvent — fired when a user calls `dispute_market` within
   // the 1-hour post-resolution window. The /markets/:id UI shows a
   // "Disputed" badge and the redeem button is hidden until the dispute
   // resolves. We persist `dispute_count` so the UI can show
   // "Disputed (3)" if multiple users raise the same challenge.
-  try {
-    disputes = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MarketDisputedEvent`,
-      "position_indexer.market_disputed",
-      (ev) => {
-        const j = ev.parsedJson as MarketDisputedJson;
-        if (!j?.market_id) return;
-        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
-        const evidence =
-          typeof j.evidence_uri === "string"
-            ? j.evidence_uri
-            : Array.isArray(j.evidence_uri)
-              ? String.fromCharCode(...(j.evidence_uri as number[]))
-              : "";
-        const count = Number(j.dispute_count ?? 1);
-        markMarketDisputed(j.market_id, evidence, count, ts);
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `MarketDisputed poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const disputes = await guardedPoll(
+    "MarketDisputed",
+    `${predictPackageId}::prediction_market::MarketDisputedEvent`,
+    "position_indexer.market_disputed",
+    (ev) => {
+      const j = ev.parsedJson as MarketDisputedJson;
+      if (!j?.market_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      const evidence =
+        typeof j.evidence_uri === "string"
+          ? j.evidence_uri
+          : Array.isArray(j.evidence_uri)
+            ? String.fromCharCode(...(j.evidence_uri as number[]))
+            : "";
+      const count = Number(j.dispute_count ?? 1);
+      markMarketDisputed(j.market_id, evidence, count, ts);
+    },
+  );
 
   // MarketUndisputedEvent — fired when the creator/admin calls
   // `resolve_dispute` to finalize a disputed market. The outcome may
   // differ from the original resolution; we store the override.
-  try {
-    undisputed = await pollAndApply(
-      client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MarketUndisputedEvent`,
-      "position_indexer.market_undisputed",
-      (ev) => {
-        const j = ev.parsedJson as MarketUndisputedJson;
-        if (!j?.market_id || j?.final_outcome == null) return;
-        const n = Number(j.final_outcome);
-        if (n !== 1 && n !== 2) return;
-        markMarketUndisputed(j.market_id, n === 1 ? "yes" : "no");
-      },
-    );
-  } catch (err) {
-    return recordResult("PositionIndexer", {
-      action: "index_failed",
-      reasoning: `MarketUndisputed poll failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
+  const undisputed = await guardedPoll(
+    "MarketUndisputed",
+    `${predictPackageId}::prediction_market::MarketUndisputedEvent`,
+    "position_indexer.market_undisputed",
+    (ev) => {
+      const j = ev.parsedJson as MarketUndisputedJson;
+      if (!j?.market_id || j?.final_outcome == null) return;
+      const n = Number(j.final_outcome);
+      if (n !== 1 && n !== 2) return;
+      markMarketUndisputed(j.market_id, n === 1 ? "yes" : "no");
+    },
+  );
 
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed.`;
   return recordResult("PositionIndexer", {
-    action: "index",
-    reasoning: `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed.`,
-    confidence: 100,
+    action: failures.length > 0 ? "index_partial" : "index",
+    reasoning:
+      failures.length > 0
+        ? `${summary} Skipped: ${failures.join("; ")}`
+        : summary,
+    confidence: failures.length > 0 ? 70 : 100,
   });
 }

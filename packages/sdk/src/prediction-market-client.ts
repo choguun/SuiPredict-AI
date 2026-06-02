@@ -50,7 +50,7 @@ export const PREDICT_MARKET_PACKAGE_ID =
 
 const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 
-/** FeeVault<DBUSDC> object ID — set after contract deployment. The
+/** FeeVault<DUSDC> object ID — set after contract deployment. The
  *  NEXT_PUBLIC_ variant is read first so Next.js inlines it into the
  *  client bundle; the bare `FEE_VAULT_ID` is the server/agents variant.
  */
@@ -77,7 +77,7 @@ export const REFERRAL_TREASURY_ADDRESS =
  * @param params.title            - Market question
  * @param params.resolutionSource - How the market resolves
  * @param params.expiryMs        - Unix timestamp (ms) when resolution becomes allowed
- * @param params.tickSize        - Price tick in quote units (e.g. 1_000_000 = 0.001 DBUSDC with 6 decimals)
+ * @param params.tickSize        - Price tick in quote units (e.g. 1_000_000 = 0.001 DUSDC with 6 decimals)
  * @param params.lotSize         - Minimum base-asset quantity per order (in YES * 10^decimals)
  * @param params.minSize         - Minimum order size in base units
  * @param params.deepCoinId      - Object ID of a Coin<DEEP> with at least 500 DEEP for pool creation fee (REQUIRED)
@@ -101,7 +101,7 @@ export function buildCreateMarketTx(params: {
       tx.pure.vector("u8", encodeUtf8(params.title)),
       tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),
       tx.pure.u64(params.expiryMs),
-      tx.pure.u64(params.tickSize ?? 1_000_000n),       // 0.001 DBUSDC tick
+      tx.pure.u64(params.tickSize ?? 1_000_000n),       // 0.001 DUSDC tick
       tx.pure.u64(params.lotSize ?? 1_000_000n),        // 1 YES minimum
       tx.pure.u64(params.minSize ?? 1_000_000n),        // 1 YES minimum
       tx.object(params.deepCoinId),
@@ -113,12 +113,12 @@ export function buildCreateMarketTx(params: {
 /**
  * Build `mint_shares` transaction.
  *
- * Deposits collateral (DBUSDC) and receives equal YES + NO tokens.
- * Takes a 1% protocol fee, routed to the shared `FeeVault<DBUSDC>`.
+ * Deposits collateral (DUSDC) and receives equal YES + NO tokens.
+ * Takes a 1% protocol fee, routed to the shared `FeeVault<DUSDC>`.
  *
  * @param marketId - PredictionMarket object ID
- * @param vaultId  - FeeVault<DBUSDC> object ID (set after `init_fee_vault<DBUSDC>`)
- * @param quoteIn  - Coin<DBUSDC> to deposit
+ * @param vaultId  - FeeVault<DUSDC> object ID (set after `init_fee_vault<DUSDC>`)
+ * @param quoteIn  - Coin<DUSDC> to deposit
  */
 export function buildMintSharesTx(
   marketId: string,
@@ -135,9 +135,9 @@ export function buildMintSharesTx(
 }
 
 /**
- * Build a single PTB that mints `amountPerMarket` of DBUSDC into each of
+ * Build a single PTB that mints `amountPerMarket` of DUSDC into each of
  * `marketIds` in one transaction. The input coin is split in-PTB so the
- * caller only needs to provide a single Coin<DBUSDC> with
+ * caller only needs to provide a single Coin<DUSDC> with
  * `amountPerMarket * marketIds.length` atoms of balance.
  *
  * Used by the daily-prediction card where the user locks in 3-5 markets
@@ -152,18 +152,28 @@ export function buildMintSharesBatchTx(params: {
 }): Transaction {
   const tx = new Transaction();
   if (params.marketIds.length === 0) return tx;
-  const [primaryCoin, ...splitCoins] = tx.splitCoins(tx.object(params.quoteIn), [
-    tx.pure.u64(params.amountPerMarket),
-    ...params.marketIds.slice(1).map(() => tx.pure.u64(params.amountPerMarket)),
-  ]);
+  // splitCoins(coin, [a1, a2, ..., aN]) returns exactly N result
+  // references. For N=1 the rest spread is `[]` (still correct) and
+  // for N>1 it captures coins 2..N. The destructured shape below
+  // covers both the single-market and multi-market cases without an
+  // off-by-one — the forEach below iterates `marketIds.length` times
+  // and indexes into the same-length `coins` array.
+  const amounts = params.marketIds.map(() => tx.pure.u64(params.amountPerMarket));
+  const [primaryCoin, ...splitCoins] = tx.splitCoins(
+    tx.object(params.quoteIn),
+    amounts,
+  );
   const coins = [primaryCoin, ...splitCoins];
+  if (coins.length !== params.marketIds.length) {
+    throw new Error(
+      `buildMintSharesBatchTx: splitCoins produced ${coins.length} coins for ${params.marketIds.length} markets`,
+    );
+  }
   params.marketIds.forEach((marketId, i) => {
-    const coinArg = coins[i];
-    if (!coinArg) return;
     tx.moveCall({
       target: `${PKG()}::prediction_market::mint_shares`,
       typeArguments: [DUSDC_TYPE],
-      arguments: [tx.object(marketId), tx.object(params.vaultId), coinArg],
+      arguments: [tx.object(marketId), tx.object(params.vaultId), coins[i]!],
     });
   });
   return tx;
@@ -196,8 +206,8 @@ export function buildResolveMarketTx(
  * Build `redeem` (YES winning) transaction.
  *
  * @param marketId    - PredictionMarket object ID
- * @param vaultId     - FeeVault<DBUSDC> object ID
- * @param winningCoin - Coin<YES<DBUSDC>> to redeem
+ * @param vaultId     - FeeVault<DUSDC> object ID
+ * @param winningCoin - Coin<YES<DUSDC>> to redeem
  */
 export function buildRedeemTx(
   marketId: string,
@@ -263,8 +273,8 @@ export function buildResolveDisputeTx(
  * Build `redeem_no` (NO winning) transaction.
  *
  * @param marketId    - PredictionMarket object ID
- * @param vaultId     - FeeVault<DBUSDC> object ID
- * @param winningCoin - Coin<NO<DBUSDC>> to redeem
+ * @param vaultId     - FeeVault<DUSDC> object ID
+ * @param winningCoin - Coin<NO<DUSDC>> to redeem
  */
 export function buildRedeemNoTx(
   marketId: string,
@@ -287,7 +297,7 @@ export function buildRedeemNoTx(
  * the owner so it can claim additional trading fees.
  *
  * @param marketId  - PredictionMarket object ID
- * @param poolId    - DeepBook Pool object ID (Pool<YES<DBUSDC>, DBUSDC>)
+ * @param poolId    - DeepBook Pool object ID (Pool<YES<DUSDC>, DUSDC>)
  * @param multiplier - Referral multiplier (e.g. 1_000_000_000 = 1.0x)
  */
 export function buildSetupReferralTx(
@@ -333,8 +343,8 @@ export function buildClaimReferralRewardsTx(
 /**
  * Build `withdraw_fees` transaction.
  *
- * @param vaultId - FeeVault<DBUSDC> object ID
- * @param amount  - Amount of DBUSDC to withdraw
+ * @param vaultId - FeeVault<DUSDC> object ID
+ * @param amount  - Amount of DUSDC to withdraw
  */
 export function buildWithdrawFeesTx(
   vaultId: string,
@@ -443,10 +453,10 @@ export function buildDepositIntoBalanceManagerTx(
 
 /**
  * Compute the YES coin type for a given market's PredictionMarket object.
- * YES<Q> = <package>::prediction_market::YES<DBUSDC>
+ * YES<Q> = <package>::prediction_market::YES<DUSDC>
  *
  * In Move, the generic type parameter is part of the type identity.
- * For a market at object ID M, the YES type is: <package>::prediction_market::YES<DBUSDC>
+ * For a market at object ID M, the YES type is: <package>::prediction_market::YES<DUSDC>
  */
 export function yesCoinType(
   packageId: string = PKG(),
@@ -461,7 +471,7 @@ export function noCoinType(
 }
 
 /**
- * Place a limit order on the DeepBook pool for YES/DBUSDC.
+ * Place a limit order on the DeepBook pool for YES/DUSDC.
  * Convenience wrapper around buildDeepBookPlaceLimitOrderTx.
  */
 export function buildPlaceYesLimitOrderTx(

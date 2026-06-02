@@ -4,6 +4,7 @@ import {
   buildRegisterMarketTx,
   buildSetupReferralTx,
   DBUSDC_TYPE,
+  DUSDC_TYPE,
   extractCreatedObjectId,
   yesCoinType,
 } from "@suipredict/sdk";
@@ -159,7 +160,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       title: spec.title,
       resolutionSource: spec.resolution_source,
       expiryMs,
-      tickSize: BigInt(1_000_000),  // 0.001 DBUSDC tick
+      tickSize: BigInt(1_000_000),  // 0.001 DUSDC tick
       lotSize: BigInt(1_000_000),    // 1 YES minimum
       minSize: BigInt(1_000_000),    // 1 YES minimum
       deepCoinId: deepCoin.objectId,
@@ -243,7 +244,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       deepbook_pool_key: poolId ? `market_${marketId.slice(0, 8)}` : null,
       deepbook_pool_id: poolId ?? null,
       deepbook_base_coin_type: poolId ? yesCoinType() : null,
-      deepbook_quote_coin_type: poolId ? DBUSDC_TYPE : null,
+      deepbook_quote_coin_type: poolId ? DUSDC_TYPE : null,
       deepbook_base_scalar: 1_000_000,
       deepbook_quote_scalar: 1_000_000,
       referral_id: referralId,
