@@ -352,16 +352,21 @@ export function listWeeklyLeaderboard(
 export function getUserWeekRank(
   user: string,
   weekIndex: number,
+  category: number = 0,
 ): WeeklyRow | null {
+  // `category = 0` keeps the call site backwards-compatible with
+  // callers that haven't been updated yet (the round-17 audit found
+  // the leaderboard category filter on the web side was ignored on
+  // the per-user lookup). 0 = "general" — the catch-all bucket.
   const row = getDb()
     .prepare(
       `SELECT w.*, CASE WHEN c.user IS NULL THEN 0 ELSE 1 END AS claimed
        FROM weekly_archive w
        LEFT JOIN prize_claims c
          ON c.user = w.user AND c.week_index = w.week_index
-       WHERE w.user = ? AND w.week_index = ?`,
+       WHERE w.user = ? AND w.week_index = ? AND w.category = ?`,
     )
-    .get(user, weekIndex) as WeeklyRow | undefined;
+    .get(user, weekIndex, category) as WeeklyRow | undefined;
   return row ? decorateClaimed(row) : null;
 }
 

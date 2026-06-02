@@ -20,6 +20,15 @@ interface AgentManifestEntry {
   kind: "primary" | "legacy";
 }
 
+interface HealthEnvelope {
+  package_id?: string;
+  deepbook_registry_id?: string;
+  vault_id?: string;
+  prize_pool_id?: string;
+  streak_registry_id?: string;
+  ts_ms?: number;
+}
+
 /** Short description for an agent, shown on the manifest card. Falls
  *  back to a generic line for agents added after the r15 wiring. */
 const AGENT_DESCRIPTIONS: Record<string, string> = {
@@ -38,60 +47,89 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   RedeemKeeper: "Legacy permissionless redeem",
 };
 
+// Env-side ID values, used to detect drift between the web bundle and
+// the agents runtime. The web inlines NEXT_PUBLIC_* values at build
+// time, so a deploy that changes one but not the other bricks every
+// PTB the web submits.
+const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvelope }> = [
+  { env: "NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID", label: "AGENT_POLICY_PACKAGE_ID", runtimeKey: "package_id" },
+  { env: "NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID", label: "DEEPBOOK_REGISTRY_ID", runtimeKey: "deepbook_registry_id" },
+  { env: "NEXT_PUBLIC_VAULT_OBJECT_ID", label: "VAULT_OBJECT_ID", runtimeKey: "vault_id" },
+  { env: "NEXT_PUBLIC_PRIZE_POOL_ID", label: "PRIZE_POOL_ID", runtimeKey: "prize_pool_id" },
+  { env: "NEXT_PUBLIC_STREAK_REGISTRY_ID", label: "STREAK_REGISTRY_ID", runtimeKey: "streak_registry_id" },
+];
+
+function driftLinesFor(h: HealthEnvelope): string[] {
+  const lines: string[] = [];
+  for (const { env, label, runtimeKey } of ENV_IDS) {
+    const envVal = process.env[env] ?? "";
+    const runtimeVal = String(h[runtimeKey] ?? "");
+    // `AGENT_POLICY_PACKAGE_ID` comes from the SDK constant rather than
+    // a raw env read because the SDK normalizes it across web/agents
+    // (see packages/sdk/src/constants.ts).
+    const localVal = label === "AGENT_POLICY_PACKAGE_ID" ? AGENT_POLICY_PACKAGE_ID : envVal;
+    if (!runtimeVal || !localVal) continue;
+    if (runtimeVal !== localVal) {
+      lines.push(
+        `${label}: web=${localVal.slice(0, 10)}… runtime=${runtimeVal.slice(0, 10)}…`,
+      );
+    }
+  }
+  return lines;
+}
+
 export default function AgentsPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [manifest, setManifest] = useState<AgentManifestEntry[]>([]);
   const [error, setError] = useState("");
-  const [drift, setDrift] = useState<string | null>(null);
+  const [drift, setDrift] = useState<string[]>([]);
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
-      try {
-        const base =
-          process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
-        const [decisionsRes, manifestRes, healthRes] = await Promise.all([
-          fetch(`${base}/decisions`),
-          fetch(`${base}/agents/manifest`),
-          fetch(`${base}/health`),
-        ]);
-        if (!decisionsRes.ok) throw new Error("Agent service unavailable");
-        setDecisions(await decisionsRes.json());
-        // Manifest may 404 on older agents builds; tolerate it by
-        // falling back to an empty list (the page then shows a
-        // "manifest unavailable" hint instead of crashing).
-        if (manifestRes.ok) {
-          setManifest(await manifestRes.json());
-        }
-        // /health returns the agents runtime's package id; if it
-        // differs from the value baked into the web bundle at build
-        // time, every PTB the web submits will fail with
-        // `package object not found`. Surface a banner so the
-        // operator redeploys the web bundle after a package update.
-        if (healthRes.ok) {
-          const h = (await healthRes.json()) as { package_id?: string };
-          const runtime = h.package_id ?? "";
-          if (
-            runtime &&
-            AGENT_POLICY_PACKAGE_ID &&
-            runtime !== AGENT_POLICY_PACKAGE_ID
-          ) {
-            setDrift(
-              `Web bundle package id ${AGENT_POLICY_PACKAGE_ID.slice(0, 10)}… ` +
-                `differs from agents runtime ${runtime.slice(0, 10)}… . ` +
-                "Redeploy the web bundle (run `pnpm build` after `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID` is set).",
-            );
-          } else {
-            setDrift(null);
-          }
-        }
+      const base =
+        process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+      // Decouple the three fetches: a /decisions 5xx no longer hides
+      // the manifest or the package-drift check (round-17 audit
+      // finding #22). Each fetch is independently error-tolerant.
+      const [decisionsRes, manifestRes, healthRes] = await Promise.allSettled([
+        fetch(`${base}/decisions`),
+        fetch(`${base}/agents/manifest`),
+        fetch(`${base}/health`),
+      ]);
+      if (cancelled) return;
+
+      if (decisionsRes.status === "fulfilled" && decisionsRes.value.ok) {
+        setDecisions(await decisionsRes.value.json());
         setError("");
-      } catch {
-        setError("Start agents with: pnpm dev:agents");
+      } else if (decisionsRes.status === "rejected" || (decisionsRes.status === "fulfilled" && !decisionsRes.value.ok)) {
+        setError("Start the agents service: `pnpm --filter @suipredict/agents dev`");
+      }
+
+      // Manifest may 404 on older agents builds; tolerate it by
+      // falling back to an empty list (the page then shows a
+      // "manifest unavailable" hint instead of crashing).
+      if (manifestRes.status === "fulfilled" && manifestRes.value.ok) {
+        setManifest(await manifestRes.value.json());
+      }
+
+      // /health returns the agents runtime's package id; if any of
+      // the five baked-in IDs differ from the value in the web
+      // bundle, every PTB the web submits will fail with `package
+      // object not found` (or, for vault/registry ids, "object
+      // not found"). Surface a per-id banner so the operator can
+      // rebuild with the right NEXT_PUBLIC_* values.
+      if (healthRes.status === "fulfilled" && healthRes.value.ok) {
+        const h = (await healthRes.value.json()) as HealthEnvelope;
+        setDrift(driftLinesFor(h));
       }
     }
-    load();
-    const id = setInterval(load, 8000);
-    return () => clearInterval(id);
+    void load();
+    const id = setInterval(() => { void load(); }, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   const primary = manifest.filter((a) => a.kind === "primary");
@@ -107,13 +145,22 @@ export default function AgentsPage() {
         </p>
       </div>
 
-      {drift && (
+      {drift.length > 0 && (
         <div
           role="alert"
           className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
         >
-          <p className="font-semibold">Package id drift detected</p>
-          <p className="mt-1 text-rose-300/80">{drift}</p>
+          <p className="font-semibold">Config id drift detected</p>
+          <ul className="mt-1 list-disc pl-5 text-rose-300/80">
+            {drift.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-rose-300/70">
+            Redeploy the web bundle (run <code>pnpm build</code> after
+            setting the matching <code>NEXT_PUBLIC_*</code> env) so the
+            bundled ids match the agents runtime.
+          </p>
         </div>
       )}
 

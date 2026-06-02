@@ -47,6 +47,10 @@ interface Props {
   prizeAdminId: string;
   weekIndex: number;
   rank: number;
+  // 0=general, 1=ai_news, 2=crypto_price, 3=other — must match the
+  // leaderboard's category filter or the server returns 403
+  // "user not on leaderboard for this week and category".
+  category?: number;
   weeklyPrize: bigint;
   alreadyClaimed?: boolean;
 }
@@ -97,6 +101,12 @@ export function ClaimPrizeButton(props: Props) {
       url.searchParams.set("week", String(weekIndex));
       url.searchParams.set("rank", String(rank));
       url.searchParams.set("user", account.address);
+      // Pass `category` so the server-side membership check uses the
+      // same leaderboard the user is looking at. Without it, a user
+      // with rank-1 in "AI news" could request a signature for the
+      // "crypto price" pool (round-17 audit finding #6). Defaults to
+      // 0 (general) for callers that haven't been updated yet.
+      url.searchParams.set("category", String(category ?? 0));
       // `amount` is intentionally NOT sent — the server is the single
       // source of truth for the rank table (re-derives via
       // `expectedAmountForRank`) and re-derives the canonical value
@@ -200,6 +210,7 @@ export function ClaimPrizeButton(props: Props) {
     rank,
     amount,
     amountUsdc,
+    category,
   ]);
 
   if (alreadyClaimed) {

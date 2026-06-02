@@ -3,6 +3,7 @@
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildClaimBadgeTx, buildCreateStreakTx } from "@suipredict/sdk";
+import { toast } from "sonner";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
 
@@ -53,21 +54,33 @@ export function StreakProfile() {
             disabled={!REGISTRY_ID}
             onClick={async () => {
               if (!REGISTRY_ID) return;
-              const tx = buildCreateStreakTx(REGISTRY_ID);
-              await dAppKit.signAndExecuteTransaction({ transaction: tx });
-              // The registry dynamic field is updated by the tx, so
-              // any component currently reading the streak id needs
-              // to refetch — the markets page especially, which
-              // chooses between `redeem_with_streak` and the plain
-              // `redeem` based on this hook's result.
-              //
-              // Query keys MUST match what the hooks actually register:
-              //   useUserStreakId → ["userStreakId", REGISTRY_ID, address]
-              //   useStreakInfo   → ["streakInfo", streakId]
-              // TanStack's prefix-match means a typo (e.g. "streak"
-              // vs "streakInfo") silently no-ops the invalidation.
-              queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
-              queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
+              const toastId = toast.loading("Creating your streak…");
+              try {
+                const tx = buildCreateStreakTx(REGISTRY_ID);
+                const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                // `$kind === "Transaction"` means the fullnode accepted
+                // the tx; other variants ("Failed", "EffectsCert")
+                // carry a different shape. Without this guard a failed
+                // streak-create would still invalidate the cache and
+                // toasting "created" — the round-17 L5 finding.
+                if (r.$kind === "Transaction") {
+                  toast.success(`Streak created: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+                  // The registry dynamic field is updated by the tx, so
+                  // any component currently reading the streak id needs
+                  // to refetch — the markets page especially, which
+                  // chooses between `redeem_with_streak` and the plain
+                  // `redeem` based on this hook's result.
+                  queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
+                  queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
+                } else {
+                  toast.error("Streak creation failed", { id: toastId });
+                }
+              } catch (err) {
+                toast.error(
+                  err instanceof Error ? err.message : "Streak creation failed",
+                  { id: toastId },
+                );
+              }
             }}
             className="mt-3 rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-50"
           >
@@ -149,9 +162,22 @@ export function StreakProfile() {
                 key={tier}
                 disabled={claimed || !eligible}
                 onClick={async () => {
-                  const tx = buildClaimBadgeTx(streakId!, tier);
-                  await dAppKit.signAndExecuteTransaction({ transaction: tx });
-                  streak.refetch();
+                  const toastId = toast.loading(`Claiming ${TIER_LABELS[idx]}…`);
+                  try {
+                    const tx = buildClaimBadgeTx(streakId!, tier);
+                    const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                    if (r.$kind === "Transaction") {
+                      toast.success(`${TIER_LABELS[idx]} badge claimed`, { id: toastId });
+                      streak.refetch();
+                    } else {
+                      toast.error("Badge claim failed", { id: toastId });
+                    }
+                  } catch (err) {
+                    toast.error(
+                      err instanceof Error ? err.message : "Badge claim failed",
+                      { id: toastId },
+                    );
+                  }
                 }}
                 className={`flex flex-col items-center gap-1 rounded-lg border p-2 text-[10px] font-bold uppercase tracking-wider transition ${
                   claimed

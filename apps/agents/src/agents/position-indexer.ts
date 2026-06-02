@@ -48,19 +48,37 @@ const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "mainnet"
   | "devnet"
   | "localnet";
-// Read PREDICT_PACKAGE_ID at call time, not at module load. The
-// `bootstrapEnv()` function in index.ts syncs this from
-// AGENT_POLICY_PACKAGE_ID *after* the module graph has already been
-// evaluated, so a top-level `const` here captures the empty string
-// even when AGENT_POLICY_PACKAGE_ID is set. Pulling it inside the
-// exported function lets bootstrapEnv's write to process.env take
-// effect on the first tick.
+// Read AGENT_POLICY_PACKAGE_ID at call time, not at module load. The
+// `bootstrapEnv()` function in index.ts syncs `PREDICT_PACKAGE_ID`
+// from this value (legacy alias for the old DeepBook Predict
+// contracts), but reading the canonical env directly avoids the
+// implicit coupling — a refactor that drops the alias would silently
+// break all 20 event subscriptions below.
 const POLL_BATCH = 200;
 
 interface EventQuery {
   MoveEventType: string;
 }
 type EventCursor = Parameters<SuiJsonRpcClient["queryEvents"]>[0]["cursor"];
+
+// On-chain `category` is a u8 (0=none/general, 1=ai_news, 2=crypto_price,
+// 3=other) — see prediction_market.move `MarketCreatedEvent`. The
+// `markets.category` SQLite column is free text, so map to the
+// vocabulary the rest of the system already uses. Used by the
+// `MarketCreated` handler below to avoid dropping the on-chain value
+// for markets not created by this agent's MarketCreator.
+function categoryLabel(code: number): string {
+  switch (code) {
+    case 1:
+      return "ai_news";
+    case 2:
+      return "crypto_price";
+    case 3:
+      return "other";
+    default:
+      return "general";
+  }
+}
 
 interface MintedJson {
   market_id: string;
@@ -181,11 +199,11 @@ async function pollAndApply(
 export async function runPositionIndexer(
   _ctx: AgentContext,
 ): Promise<AgentResult> {
-  const predictPackageId = process.env.PREDICT_PACKAGE_ID ?? "";
+  const predictPackageId = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
   if (!predictPackageId) {
     return recordResult("PositionIndexer", {
       action: "skip",
-      reasoning: "PREDICT_PACKAGE_ID not set — indexer inert.",
+      reasoning: "AGENT_POLICY_PACKAGE_ID not set — indexer inert.",
     });
   }
   const client = new SuiJsonRpcClient({
@@ -296,7 +314,10 @@ export async function runPositionIndexer(
         market_id: j.market_id,
         order_id: String(j.order_id),
         pool_id: j.pool_id ?? "",
-        client_order_id: Number(j.client_order_id ?? 0),
+        // Keep the on-chain u64 as a string — JS Number coercion
+        // would lose precision above 2^53-1. See chain_orders schema
+        // comment in markets/store.ts.
+        client_order_id: String(j.client_order_id ?? "0"),
         is_bid: Boolean(j.is_bid),
         price: Number(j.price ?? 0),
         quantity: Number(j.quantity ?? 0),
@@ -338,19 +359,22 @@ export async function runPositionIndexer(
       const j = ev.parsedJson as MarketCreatedJson;
       if (!j?.market_id) return;
       // Don't clobber a richer row written by the local MarketCreator
-      // (which also knows the deepbook pool/referral IDs). Only fill
-      // in fields the indexer can see in the event — the on-chain
-      // MarketCreatedEvent struct (prediction_market.move:171-178)
-      // only carries {market_id, pool_id, balance_manager_id, title,
-      // expiry_ms, creator}. The description / category /
-      // resolution_source come from the local MarketCreator row, so
-      // we deliberately fall through to `existing` for those.
+      // (which also knows the deepbook pool/referral IDs). The on-chain
+      // `MarketCreatedEvent` struct (prediction_market.move:182-196)
+      // carries {market_id, pool_id, balance_manager_id, title,
+      // expiry_ms, creator, category: u8} — description and
+      // resolution_source still come from the local MarketCreator
+      // row. The on-chain `category` is a u8 (0=none, 1=ai_news,
+      // 2=crypto_price, 3=other) added in r14; for markets not
+      // created by this agent, falling through to `existing.category`
+      // would silently drop the on-chain value to "general".
       const existing = getMarket(j.market_id);
+      const onChainCategory = j.category != null ? categoryLabel(Number(j.category)) : null;
       upsertMarket({
         id: j.market_id,
         title: existing?.title ?? j.title ?? "",
         description: existing?.description ?? "",
-        category: existing?.category ?? "general",
+        category: existing?.category ?? onChainCategory ?? "general",
         expiry_ms: existing?.expiry_ms ?? Number(j.expiry_ms ?? 0),
         resolution_source: existing?.resolution_source ?? "",
         status: existing?.status ?? "active",
@@ -713,7 +737,69 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations.`;
+  // AgentActionEvent — fired by agent_policy.move's `authorize_spend`
+  // and `log_action`. The on-chain stream is the only audit trail of
+  // who spent what under which policy, so risk-monitor alerting and
+  // future compliance queries need it indexed. The round-17 audit
+  // flagged this as a coverage gap (finding #4).
+  const agentActions = await guardedPoll(
+    "AgentAction",
+    `${predictPackageId}::agent_policy::AgentActionEvent`,
+    "position_indexer.agent_action",
+    (ev) => {
+      // No DB write yet — this advances the cursor and prepares the
+      // hook for a future risk-monitor log table. The decision log
+      // is enough surface for now.
+      const j = ev.parsedJson as { agent?: string; action?: string };
+      if (!j?.agent) return;
+    },
+  );
+
+  // ReferralSetEvent — fired by prediction_market::setup_referral.
+  // The referral-keeper can verify its own writes against this on-chain
+  // event (round-17 audit finding #4). The on-chain
+  // `ReferralSetEvent.referral_id: ID` is the shared object the
+  // keeper reads at sweep time.
+  const referralSet = await guardedPoll(
+    "ReferralSet",
+    `${predictPackageId}::prediction_market::ReferralSetEvent`,
+    "position_indexer.referral_set",
+    (ev) => {
+      const j = ev.parsedJson as {
+        market_id?: string;
+        referral_id?: string;
+      };
+      if (!j?.market_id || !j?.referral_id) return;
+    },
+  );
+
+  // RegistryCreated / MarketRegistered — one-time bootstrap events
+  // from registry.move. They fire once at registry init / per market
+  // register, so the volume is negligible. Subscribing keeps the
+  // indexer cursor consistent across the published event surface and
+  // surfaces the off-chain registry state for a future admin view
+  // (round-17 audit finding #4).
+  const registryCreated = await guardedPoll(
+    "RegistryCreated",
+    `${predictPackageId}::registry::RegistryCreated`,
+    "position_indexer.registry_created",
+    (ev) => {
+      const j = ev.parsedJson as { registry_id?: string; admin?: string };
+      if (!j?.registry_id) return;
+    },
+  );
+
+  const marketRegistered = await guardedPoll(
+    "MarketRegistered",
+    `${predictPackageId}::registry::MarketRegistered`,
+    "position_indexer.market_registered",
+    (ev) => {
+      const j = ev.parsedJson as { registry_id?: string; market_id?: string };
+      if (!j?.registry_id || !j?.market_id) return;
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

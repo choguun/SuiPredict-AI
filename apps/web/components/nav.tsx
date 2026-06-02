@@ -25,9 +25,7 @@ export function Nav() {
           {links.map((l) => {
             const active =
               pathname === l.href ||
-              (l.href === "/markets" && pathname.startsWith("/markets/")) ||
-              (l.href === "/dispute" && pathname.startsWith("/dispute/")) ||
-              (l.href.startsWith("/legacy") && pathname.startsWith("/legacy"));
+              (l.href === "/markets" && pathname.startsWith("/markets/"));
             return (
               <Link
                 key={l.href}

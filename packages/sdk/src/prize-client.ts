@@ -1,5 +1,5 @@
 /**
- * Prize pool SDK — wraps `prize_pool.move` (suipredict module).
+ * Prize pool SDK — wraps `prize_pool.move` (suipredict_agent_policy module).
  *
  * Functions:
  *   - buildFundPoolTx           — anyone adds prize funds

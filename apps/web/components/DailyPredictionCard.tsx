@@ -165,9 +165,16 @@ export function DailyPredictionCard() {
         amountPerMarket,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest = txDigest(r);
+      // $kind guard: a Failed / EffectsCert result carries no digest,
+      // so toasting "Predictions locked — unknown…" with a real success
+      // tone would lie to the user. The `txDigest` helper masks this
+      // with the string "unknown" — don't trust it for a success toast.
+      if (r.$kind !== "Transaction") {
+        toast.error("Batch mint failed");
+        return;
+      }
       toast.success(
-        `Predictions locked across ${activeMarketIds.length} markets — ${digest.slice(0, 12)}…`,
+        `Predictions locked across ${activeMarketIds.length} markets — ${r.Transaction.digest.slice(0, 12)}…`,
       );
       // The position-indexer polls MintedEvent every ~5s but the user's
       // own session is read from the SDK directly. Invalidate the

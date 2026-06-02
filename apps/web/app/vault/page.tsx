@@ -21,7 +21,7 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
 }
 
-const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID;
+const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
 
 export default function VaultPage() {
   const account = useCurrentAccount();
@@ -62,7 +62,11 @@ export default function VaultPage() {
   }, [account, client, refreshCounter]);
 
   async function deposit() {
-    if (!account || !client || !VAULT_ID) {
+    if (!account || !client) {
+      toast.error("Connect a wallet to deposit");
+      return;
+    }
+    if (!VAULT_ID) {
       toast.error("Set NEXT_PUBLIC_VAULT_OBJECT_ID for on-chain vault");
       return;
     }
@@ -82,7 +86,14 @@ export default function VaultPage() {
         account.address,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Deposited: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      // $kind guard: avoid toasting a fake "Deposited: unknown" on
+      // Failed / EffectsCert results. The string "unknown" was a label
+      // for non-Transaction results — never a real digest.
+      if (r.$kind !== "Transaction") {
+        toast.error("Deposit failed", { id: toastId });
+        return;
+      }
+      toast.success(`Deposited: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
@@ -92,13 +103,30 @@ export default function VaultPage() {
   }
 
   async function withdraw() {
-    if (!account || !VAULT_ID || !vlpCoinId) return;
+    if (!account) {
+      toast.error("Connect a wallet to withdraw");
+      return;
+    }
+    if (!VAULT_ID) {
+      toast.error("Set NEXT_PUBLIC_VAULT_OBJECT_ID for on-chain vault");
+      return;
+    }
+    if (!vlpCoinId) {
+      toast.error("No VLP coin to withdraw — deposit first or wait for indexer");
+      return;
+    }
     setLoading(true);
     const toastId = toast.loading("Withdrawing...");
     try {
       const tx = buildVaultWithdrawTx(VAULT_ID, vlpCoinId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Withdrawn: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      // Same $kind guard as deposit: surface a real error for Failed
+      // / EffectsCert variants instead of a "Withdrawn: unknown" toast.
+      if (r.$kind !== "Transaction") {
+        toast.error("Withdraw failed", { id: toastId });
+        return;
+      }
+      toast.success(`Withdrawn: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Withdraw failed", { id: toastId });

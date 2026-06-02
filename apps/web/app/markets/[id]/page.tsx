@@ -75,7 +75,30 @@ function formatDate(ms: number) {
 
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const marketId = decodeURIComponent(id);
+  // decodeURIComponent throws on malformed escapes (e.g. `%ZZ`); a
+  // typo'd URL would otherwise surface as a Next.js error overlay
+  // instead of the not_found card. Round-17 audit finding #23.
+  let marketId: string;
+  try {
+    marketId = decodeURIComponent(id);
+  } catch {
+    return (
+      <Card>
+        <div className="space-y-3 py-2">
+          <h2 className="text-lg font-semibold text-white">Market not found</h2>
+          <p className="text-sm text-zinc-400">
+            The URL contains a malformed market id.
+          </p>
+          <Link
+            href="/markets"
+            className="inline-block rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+          >
+            Back to markets
+          </Link>
+        </div>
+      </Card>
+    );
+  }
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -359,7 +382,14 @@ export default function MarketDetailPage() {
       // borderline-aligned tx would still fall through to the
       // "indexer hasn't seen it yet" toast.
       toast.loading(`Awaiting indexer: ${digest.slice(0, 16)}…`, { id: toastId });
-      const placed = await waitForOrderInBook(market.id, clientOrderId, 30_000);
+      // Bumped from 30s → 65s. The position-indexer runs on `*/1`
+      // (every minute), so a successful place_order can spend up to
+      // ~60s in the indexer's pending window before it surfaces in
+      // `chain_orders`. The 30s timeout was shorter than the indexer's
+      // worst-case lag; the first confirmation attempt was more
+      // likely to time out than succeed under load (round-17 audit
+      // finding #10).
+      const placed = await waitForOrderInBook(market.id, clientOrderId, 65_000);
       if (placed) {
         toast.success(`Order placed: ${digest.slice(0, 16)}…`, { id: toastId });
       } else {

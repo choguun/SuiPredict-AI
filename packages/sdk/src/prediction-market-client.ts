@@ -13,7 +13,6 @@ import {
   AGENT_POLICY_PACKAGE_ID,
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
-  PREDICT_PACKAGE_ID,
 } from "./constants.js";
 import { encodeUtf8 } from "./markets/constants.js";
 import {
@@ -639,7 +638,7 @@ export function buildMarketWithdrawSettledTx(
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
-    target: `${PREDICT_PACKAGE_ID}::prediction_market::withdraw_settled`,
+    target: `${PKG()}::prediction_market::withdraw_settled`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
@@ -867,7 +866,7 @@ export function createMarketDeepBookClient(
  *
  * @param vaultId     - ProtocolVault<QuoteCoin> object ID
  * @param coinId      - Object ID of a Coin<QuoteCoin> with amount > 0
- * @param quoteType   - The quote coin type (e.g. DUSDC_TYPE or DUSDC_TYPE)
+ * @param quoteType   - The quote coin type (e.g. DUSDC_TYPE or DBUSDC_TYPE)
  * @param recipient   - Address to receive the VLP coin (defaults to tx sender)
  */
 export function buildVaultDepositTx(

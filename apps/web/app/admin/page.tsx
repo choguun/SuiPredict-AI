@@ -29,11 +29,16 @@ import {
   buildSetDistributionTx,
   buildResolveDisputeTx,
   buildCreateMarketTx,
-  FEE_VAULT_ID,
   isValidSuiAddress,
 } from "@suipredict/sdk";
 import { Card, Stat, Badge } from "@/components/ui";
 
+// Read FEE_VAULT_ID from the env directly instead of the SDK's
+// `FEE_VAULT_ID` constant. The SDK constant falls back to the all-zero
+// Sui address, which would make the `!FEE_VAULT_ID` guard below a no-op
+// and surface as an opaque on-chain abort when the env is unset. The
+// raw env check ensures a friendly toast instead.
+const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 const PRIZE_POOL_ID = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.NEXT_PUBLIC_PRIZE_ADMIN_ID ?? "";
 const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
@@ -43,12 +48,14 @@ const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 // same env the agents use). Mainnet, testnet, and devnet are the only
 // three SuiVision indexes — `localnet` and unknown values fall back to
 // the testnet URL, which is the most likely to actually resolve for
-// dev machines.
-const SUI_NETWORK = (process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet") as
-  | "testnet"
-  | "mainnet"
-  | "devnet"
-  | "localnet";
+// dev machines. The `as` cast on a raw env value would silently accept
+// any string; narrow via runtime membership check.
+const SUI_NETWORKS = ["testnet", "mainnet", "devnet", "localnet"] as const;
+type SuiNetwork = (typeof SUI_NETWORKS)[number];
+const rawNetwork = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
+const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(rawNetwork)
+  ? (rawNetwork as SuiNetwork)
+  : "testnet";
 const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 
 function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {

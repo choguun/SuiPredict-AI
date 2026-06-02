@@ -14,14 +14,12 @@ const withPWA = withPWAInit({
 const nextConfig: NextConfig = {
   transpilePackages: ["@suipredict/sdk"],
   outputFileTracingRoot: path.join(__dirname, "../../"),
-  // Commit d34abee hid the Agents / Legacy / Settings nav links but the
-  // route directories still exist on disk and load on direct URL. Send
-  // them to the home page so the demo is not confused by reachable dead
-  // routes. The directories are kept for source history.
+  // Round-17 audit: the /agents and /settings redirects were hiding
+  // real functionality (drift banner, policy management) added in
+  // round 16. Re-enable direct-URL access; the legacy redirect stays
+  // so /legacy/predict/* still works for source-history callers.
   async redirects() {
     return [
-      { source: "/agents", destination: "/", permanent: false },
-      { source: "/settings", destination: "/", permanent: false },
       { source: "/legacy/:path*", destination: "/", permanent: false },
     ];
   },

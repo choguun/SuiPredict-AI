@@ -3,13 +3,14 @@
 import { useState } from "react";
 import { useWallets, useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
+import { toast } from "sonner";
 
 export function ConnectModal() {
   const [isOpen, setIsOpen] = useState(false);
   const wallets = useWallets();
   const currentAccount = useCurrentAccount();
   const dappKit = useDAppKit();
-  
+
   const enokiFlow = useEnokiFlow();
   const zkLogin = useZkLogin();
 
@@ -17,21 +18,37 @@ export function ConnectModal() {
   const isZkLogin = !!zkLogin?.address && !currentAccount?.address;
 
   const handleGoogleLogin = async () => {
+    // Read the Google OAuth client id defensively. `as string` would
+    // coerce the runtime placeholder "undefined" into the Enoki call
+    // and silently fail the OAuth round-trip; the round-17 audit
+    // found this exact footgun. Surface a visible toast instead of
+    // dropping the rejection to console.error.
+    const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+    if (!googleClientId) {
+      toast.error(
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID is not set in this deployment. Google zkLogin is disabled.",
+      );
+      return;
+    }
     const protocol = window.location.protocol;
     const host = window.location.host;
     const redirectUrl = `${protocol}//${host}/auth`;
-    
+
     enokiFlow
       .createAuthorizationURL({
         provider: "google",
-        clientId: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID as string,
+        clientId: googleClientId,
         redirectUrl: redirectUrl,
         network: "testnet",
       })
       .then((url) => {
         window.location.href = url;
       })
-      .catch(console.error);
+      .catch((err) => {
+        toast.error(
+          err instanceof Error ? err.message : "Google zkLogin failed",
+        );
+      });
   };
 
   const handleDisconnect = async () => {

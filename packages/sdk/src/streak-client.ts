@@ -1,5 +1,5 @@
 /**
- * Streak SDK — wraps `streak_system.move` (suipredict module).
+ * Streak SDK — wraps `streak_system.move` (suipredict_agent_policy module).
  *
  * Functions:
  *   - buildCreateStreakTx         — user creates their own UserStreak

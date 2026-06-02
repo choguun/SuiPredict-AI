@@ -71,7 +71,15 @@ export function getDb(): Database.Database {
         market_id TEXT NOT NULL,
         order_id TEXT NOT NULL,
         pool_id TEXT NOT NULL,
-        client_order_id INTEGER NOT NULL,
+        -- Stored as TEXT (not INTEGER) because the on-chain
+        -- client_order_id: u64 can exceed JavaScript's
+        -- Number.MAX_SAFE_INTEGER (2^53-1) once the user picks
+        -- values from a non-monotonic source. JS Number coercion via
+        -- Number(j.client_order_id ?? 0) (the round-15 writer) would
+        -- silently lose precision and the web's
+        -- String(o.client_order_id) match in waitForOrderInBook
+        -- would never resolve. See audit round-17 finding #8.
+        client_order_id TEXT NOT NULL,
         is_bid INTEGER NOT NULL,
         price INTEGER NOT NULL,
         quantity INTEGER NOT NULL,
@@ -404,20 +412,43 @@ export function recordTrade(trade: Omit<TradeRecord, "market_id"> & { market_id:
 }
 
 export function getOrderBook(marketId: string): OrderBookSnapshot {
+  // Read the on-chain order book (`chain_orders`, populated by the
+  // position-indexer from `OrderPlacedEvent`) instead of the synthetic
+  // `demo_orders` table. `demo_orders` only carries the MarketMaker's
+  // two-sided placeholder quotes; the production book is real user
+  // orders. JOIN to `markets` for the deepbook scalars — the on-chain
+  // `price` field is a u64 in DeepBook's scaled-integer space, so we
+  // need both scalars to normalize back to the [0,1] range the UI
+  // formats as bps (`price_bps = normalized * 10_000`).
   const rows = getDb()
     .prepare(
-      `SELECT * FROM demo_orders WHERE market_id = ? AND filled < quantity ORDER BY price_bps`,
+      `SELECT co.*, m.deepbook_base_scalar, m.deepbook_quote_scalar
+       FROM chain_orders co
+       LEFT JOIN markets m ON co.market_id = m.id
+       WHERE co.market_id = ?
+         AND co.cancelled_at_ms IS NULL
+         AND co.filled_quantity < co.quantity
+       ORDER BY co.price`,
     )
     .all(marketId) as Record<string, unknown>[];
 
   const bids: OrderBookLevel[] = [];
   const asks: OrderBookLevel[] = [];
   for (const r of rows) {
-    const remaining = (r.quantity as number) - (r.filled as number);
+    const remaining = (r.quantity as number) - (r.filled_quantity as number);
     if (remaining <= 0) continue;
+    const baseScalar = (r.deepbook_base_scalar as number | null) ?? 1_000_000;
+    const quoteScalar = (r.deepbook_quote_scalar as number | null) ?? 1_000_000;
+    const rawPrice = r.price as number;
+    // DeepBook stores price as `rawPrice = normalized * quoteScalar / baseScalar`
+    // so to recover the [0,1] probability we invert: normalized = raw * base / quote.
+    // If the scalars are missing for some reason, fall back to treating `price`
+    // as already-normalized rather than emitting 0/NaN.
+    const normalized =
+      baseScalar && quoteScalar ? (rawPrice * baseScalar) / quoteScalar : rawPrice;
     const level: OrderBookLevel = {
-      price: (r.price_bps as number) / 10_000,
-      price_bps: r.price_bps as number,
+      price: normalized,
+      price_bps: Math.round(normalized * 10_000),
       quantity: remaining,
       order_id: String(r.order_id),
     };
@@ -548,7 +579,7 @@ export function recordChainOrder(o: {
   market_id: string;
   order_id: string;
   pool_id: string;
-  client_order_id: number;
+  client_order_id: string;
   is_bid: boolean;
   price: number;
   quantity: number;
@@ -604,7 +635,7 @@ export function listChainOrders(
   market_id: string;
   order_id: string;
   pool_id: string;
-  client_order_id: number;
+  client_order_id: string;
   is_bid: boolean;
   price: number;
   quantity: number;
@@ -628,7 +659,7 @@ export function listChainOrders(
         market_id: row.market_id as string,
         order_id: row.order_id as string,
         pool_id: row.pool_id as string,
-        client_order_id: row.client_order_id as number,
+        client_order_id: String(row.client_order_id ?? ""),
         is_bid: Boolean(row.is_bid),
         price: row.price as number,
         quantity: row.quantity as number,

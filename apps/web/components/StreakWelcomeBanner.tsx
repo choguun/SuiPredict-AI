@@ -33,6 +33,17 @@ export function StreakWelcomeBanner() {
     setDismissed(dismissedAddrs.includes(account.address));
   }, [account]);
 
+  // Surface a console warning so operators can see the banner is
+  // silently gated when the env is unset. Mirrors the
+  // `providers-inner` pattern for NEXT_PUBLIC_ENOKI_API_KEY.
+  useEffect(() => {
+    if (!REGISTRY_ID) {
+      console.warn(
+        "[StreakWelcomeBanner] NEXT_PUBLIC_STREAK_REGISTRY_ID is not set — the StreakProfile CTA is also gated.",
+      );
+    }
+  }, []);
+
   if (!account || dismissed || idLoading || streakId) return null;
   if (!REGISTRY_ID) return null;
 

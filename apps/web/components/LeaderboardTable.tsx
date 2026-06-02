@@ -85,8 +85,9 @@ export function LeaderboardTable({
 
       {fetchError && (
         <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-          Could not reach agents service ({fetchError}). Start the backend
-          with `pnpm dev:agents` to see live data.
+          Could not reach agents service ({fetchError}). Start the agents
+          service with `pnpm --filter @suipredict/agents dev` (port 3001)
+          to see live data.
         </p>
       )}
       {rows.length === 0 ? (
@@ -128,6 +129,7 @@ export function LeaderboardTable({
                         rank={row.rank}
                         weeklyPrize={weeklyPrize}
                         alreadyClaimed={row.claimed === true}
+                        category={row.category}
                       />
                     ) : (
                       <span className="text-zinc-600">—</span>

@@ -86,9 +86,14 @@ export async function handleGamificationRoute(
   if (userMatch) {
     const addr = userMatch[1]!;
     const idx = Number(url.searchParams.get("week") ?? weekIndexFor(Date.now()));
-    const row = getUserWeekRank(addr, idx);
+    // Accept `category` so the per-user lookup matches the
+    // leaderboard's category filter — without it, a user with
+    // rank-1 in "AI news" shows up as rank-1 in the "crypto price"
+    // view (round-17 audit finding #7). 0 = general.
+    const category = Number(url.searchParams.get("category") ?? 0);
+    const row = getUserWeekRank(addr, idx, category);
     if (!row) {
-      json(res, 404, { error: "user not found for week", week_index: idx });
+      json(res, 404, { error: "user not found for week", week_index: idx, category });
       return true;
     }
     json(res, 200, row);
@@ -122,6 +127,10 @@ export async function handleGamificationRoute(
     const week = Number(url.searchParams.get("week") ?? -1);
     const rank = Number(url.searchParams.get("rank") ?? 0);
     const user = url.searchParams.get("user") ?? "";
+    // `category` is required: rank-1 in "AI news" must not be able
+    // to claim a rank-1 signature for the "crypto price" pool. The
+    // round-17 audit caught this cross-category exploit (finding #6).
+    const category = Number(url.searchParams.get("category") ?? 0);
     const poolId = process.env.PRIZE_POOL_ID ?? "";
     const adminPk = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
     if (week < 0 || rank <= 0 || !user || !poolId || !adminPk) {
@@ -132,16 +141,24 @@ export async function handleGamificationRoute(
       json(res, 400, { error: "invalid user address" });
       return true;
     }
+    if (!Number.isInteger(category) || category < 0 || category > 3) {
+      json(res, 400, { error: "category must be 0 (general), 1 (ai_news), 2 (crypto_price), or 3 (other)" });
+      return true;
+    }
     // Membership check: prefer the archive (finalized weeks), fall
-    // back to liveRollup for the in-progress week.
+    // back to liveRollup for the in-progress week. Pass `category`
+    // through so the rank lookup is category-scoped — a user with
+    // rank-1 in "AI news" cannot claim a rank-1 signature for
+    // "crypto price" by omitting the param.
     const currentWeek = weekIndexFor(Date.now());
     let row = week === currentWeek
-      ? liveRollup(week).find((r) => r.user === user) ?? null
-      : getUserWeekRank(user, week);
+      ? liveRollup(week, category).find((r) => r.user === user) ?? null
+      : getUserWeekRank(user, week, category);
     if (!row) {
       json(res, 403, {
-        error: "user not on leaderboard for this week",
+        error: "user not on leaderboard for this week and category",
         week_index: week,
+        category,
       });
       return true;
     }
