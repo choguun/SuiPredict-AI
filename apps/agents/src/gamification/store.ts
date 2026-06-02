@@ -166,6 +166,58 @@ function getDb(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_user_profiles_country
         ON user_profiles(country_code) WHERE country_code != '';
+
+      -- Parlays - mirrored from on-chain parlay events. The
+      -- position-indexer polls ParlayCreated / ParlayLegRecorded /
+      -- ParlayFinalized and writes here so the web /parlay page
+      -- can show the live leg-recording progress without a per-poll
+      -- RPC read. The admin worker (parlay-worker) uses this table
+      -- to know which parlays still need record_leg calls and
+      -- which are ready for finalize_parlay.
+      --
+      -- legs_recorded and legs_lost advance with the
+      -- ParlayLegRecorded events; finalized flips on
+      -- ParlayFinalized. The pool_id column is included so a future
+      -- cross-pool rollup can sum volume / payouts per pool.
+      CREATE TABLE IF NOT EXISTS parlays (
+        parlay_id TEXT PRIMARY KEY,
+        pool_id TEXT NOT NULL,
+        user TEXT NOT NULL,
+        collateral_amount INTEGER NOT NULL,
+        leg_count INTEGER NOT NULL,
+        payout_bps INTEGER NOT NULL,
+        legs_recorded INTEGER NOT NULL DEFAULT 0,
+        legs_lost INTEGER NOT NULL DEFAULT 0,
+        finalized INTEGER NOT NULL DEFAULT 0,
+        won INTEGER,                    -- nullable until finalized
+        payout INTEGER,                 -- nullable until finalized
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_parlays_user
+        ON parlays(user);
+      CREATE INDEX IF NOT EXISTS idx_parlays_pool
+        ON parlays(pool_id);
+      CREATE INDEX IF NOT EXISTS idx_parlays_unfinalized
+        ON parlays(finalized) WHERE finalized = 0;
+
+      -- StreakBadge mints - mirrored from badge_nft::BadgeMinted
+      -- events. Powers the badge collection view on the streak
+      -- page (showing the user which tiers they own) and the
+      -- future airdrop eligibility rollups. badge_id is the
+      -- primary key; the indexer is idempotent on re-poll because
+      -- of the INSERT OR IGNORE.
+      CREATE TABLE IF NOT EXISTS streak_badges (
+        badge_id TEXT PRIMARY KEY,
+        user TEXT NOT NULL,
+        tier INTEGER NOT NULL,
+        longest_streak_at_mint INTEGER NOT NULL,
+        minted_at_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_streak_badges_user
+        ON streak_badges(user);
+      CREATE INDEX IF NOT EXISTS idx_streak_badges_tier
+        ON streak_badges(tier);
     `);
   }
   return db;
@@ -632,4 +684,189 @@ export function getUserProfilesForUsers(users: string[]): Map<string, UserProfil
     for (const r of rows) out.set(r.user, r);
   }
   return out;
+}
+
+// ============================================================
+// parlays — multi-leg parlay bets
+// ============================================================
+
+export interface ParlayRow {
+  parlay_id: string;
+  pool_id: string;
+  user: string;
+  collateral_amount: number;
+  leg_count: number;
+  payout_bps: number;
+  legs_recorded: number;
+  legs_lost: number;
+  finalized: number; // 0/1
+  won: number | null;
+  payout: number | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+/**
+ * Insert or replace a parlay from the `ParlayCreated` event. The
+ * full row is written at create time; later `ParlayLegRecorded` /
+ * `ParlayFinalized` events update the progress columns.
+ */
+export function upsertParlayCreated(p: {
+  parlay_id: string;
+  pool_id: string;
+  user: string;
+  collateral_amount: number;
+  leg_count: number;
+  payout_bps: number;
+  created_at_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO parlays
+         (parlay_id, pool_id, user, collateral_amount, leg_count,
+          payout_bps, legs_recorded, legs_lost, finalized, won, payout,
+          created_at_ms, updated_at_ms)
+       VALUES
+         (@parlay_id, @pool_id, @user, @collateral_amount, @leg_count,
+          @payout_bps, 0, 0, 0, NULL, NULL,
+          @created_at_ms, @created_at_ms)
+       ON CONFLICT(parlay_id) DO UPDATE SET
+         pool_id=excluded.pool_id,
+         user=excluded.user,
+         collateral_amount=excluded.collateral_amount,
+         leg_count=excluded.leg_count,
+         payout_bps=excluded.payout_bps,
+         updated_at_ms=excluded.updated_at_ms`,
+    )
+    .run(p);
+}
+
+/**
+ * Advance `legs_recorded` / `legs_lost` from a `ParlayLegRecorded`
+ * event. We over-write both fields (not delta-add) because the event
+ * itself carries the authoritative count from the on-chain
+ * `record_leg` call — additive indexing would risk drift if an event
+ * was missed and re-polled.
+ */
+export function recordParlayLeg(p: {
+  parlay_id: string;
+  leg_index: number;
+  won: boolean;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `UPDATE parlays
+         SET legs_recorded = MAX(legs_recorded, @leg_index + 1),
+             legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
+             updated_at_ms = @ts_ms
+       WHERE parlay_id = @parlay_id`,
+    )
+    .run(p);
+}
+
+/**
+ * Mark a parlay as finalized. `won` and `payout` come straight from
+ * the `ParlayFinalized` event.
+ */
+export function recordParlayFinalized(p: {
+  parlay_id: string;
+  won: boolean;
+  payout: number;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `UPDATE parlays
+         SET finalized = 1,
+             won = @won,
+             payout = @payout,
+             updated_at_ms = @ts_ms
+       WHERE parlay_id = @parlay_id`,
+    )
+    .run({ ...p, won: p.won ? 1 : 0 });
+}
+
+/**
+ * Read the mirror for a single parlay. Returns null if the
+ * `ParlayCreated` event hasn't been indexed yet.
+ */
+export function getParlay(parlayId: string): ParlayRow | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM parlays WHERE parlay_id = ?`)
+    .get(parlayId) as ParlayRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * List unfinalized parlays for a user. Used by the parlay-worker
+ * (task #19) to find parlays that still need `record_leg` /
+ * `finalize_parlay` admin calls.
+ */
+export function listUnfinalizedParlaysForUser(user: string): ParlayRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM parlays WHERE user = ? AND finalized = 0 ORDER BY created_at_ms ASC`,
+    )
+    .all(user) as ParlayRow[];
+}
+
+/**
+ * List parlays that have all legs recorded but aren't yet
+ * finalized — the worker can call `finalize_parlay` on these.
+ */
+export function listReadyToFinalizeParlays(): ParlayRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM parlays
+        WHERE finalized = 0
+          AND legs_recorded >= leg_count
+        ORDER BY updated_at_ms ASC`,
+    )
+    .all() as ParlayRow[];
+}
+
+// ============================================================
+// streak_badges - StreakBadge NFT mints
+// ============================================================
+
+export interface StreakBadgeRow {
+  badge_id: string;
+  user: string;
+  tier: number;
+  longest_streak_at_mint: number;
+  minted_at_ms: number;
+}
+
+/**
+ * Insert a badge mint from a BadgeMinted event. The on-chain
+ * event is emitted from both mint_badge and mint_badge_to_kiosk
+ * so we don't need a separate event type for the kiosk path. The
+ * INSERT OR IGNORE makes re-polling the same cursor safe.
+ */
+export function recordBadgeMint(b: {
+  badge_id: string;
+  user: string;
+  tier: number;
+  longest_streak_at_mint: number;
+  minted_at_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO streak_badges
+         (badge_id, user, tier, longest_streak_at_mint, minted_at_ms)
+       VALUES
+         (@badge_id, @user, @tier, @longest_streak_at_mint, @minted_at_ms)`,
+    )
+    .run(b);
+}
+
+/** Read the badges a user currently owns. Sorted by tier desc so the
+ *  highest tier renders first in the UI. */
+export function listBadgesForUser(user: string): StreakBadgeRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM streak_badges WHERE user = ? ORDER BY tier DESC, minted_at_ms DESC`,
+    )
+    .all(user) as StreakBadgeRow[];
 }

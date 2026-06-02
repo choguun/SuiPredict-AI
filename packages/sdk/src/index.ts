@@ -78,6 +78,9 @@ export {
 // Streak + prize pool (gamification)
 export * from "./streak-client.js";
 export * from "./prize-client.js";
+export * from "./badge-nft-client.js";
+export * from "./parlay-client.js";
+export * from "./user-profile-client.js";
 
 // Legacy DeepBook Predict
 export * as predict from "./predict/index.js";

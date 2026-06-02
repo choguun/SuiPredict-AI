@@ -1,19 +1,42 @@
 "use client";
 
 import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AGENT_POLICY_PACKAGE_ID,
   buildCreatePolicyTx,
+  buildCreateProfileTx,
   buildPausePolicyTx,
   buildRevokePolicyTx,
+  buildSetCountryCodeTx,
+  buildSetForecasterKindTx,
   buildUnpausePolicyTx,
   extractCreatedObjectId,
+  FORECASTER_AI,
+  FORECASTER_BOT,
+  FORECASTER_HUMAN,
   getPolicyState,
+  MAX_COUNTRY_BYTES,
   dusdcToDollars,
   type AgentPolicyState,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+
+interface MirrorProfile {
+  user: string;
+  country_code: string;
+  forecaster_kind: number;
+  updated_at_ms: number;
+}
+
+const PROFILE_REGISTRY_ID = process.env.NEXT_PUBLIC_PROFILE_REGISTRY_ID ?? "";
+const AGENTS_URL = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+
+const KIND_LABELS: Record<number, string> = {
+  [FORECASTER_HUMAN]: "Human",
+  [FORECASTER_AI]: "AI-assisted",
+  [FORECASTER_BOT]: "Bot",
+};
 
 export default function SettingsPage() {
   const account = useCurrentAccount();
@@ -26,6 +49,55 @@ export default function SettingsPage() {
   const [policyState, setPolicyState] = useState<AgentPolicyState | null>(null);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const [profile, setProfile] = useState<MirrorProfile | null>(null);
+  const [profileMissing, setProfileMissing] = useState(false);
+  const [country, setCountry] = useState("");
+  const [forecasterKind, setForecasterKind] = useState<number>(FORECASTER_HUMAN);
+  const [profileStatus, setProfileStatus] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
+
+  // Pull the indexer-mirrored profile row whenever the connected
+  // account changes. The agents route reads `user_profiles` (populated
+  // by the position-indexer from `ProfileCreated` / `CountryCodeSet` /
+  // `ForecasterKindSet` events). A 404 means "no profile yet" — we
+  // surface the create button instead of an error.
+  useEffect(() => {
+    if (!account?.address) {
+      setProfile(null);
+      setProfileMissing(false);
+      return;
+    }
+    let cancelled = false;
+    fetch(`${AGENTS_URL}/profile/${account.address}`, { cache: "no-store" })
+      .then(async (r) => {
+        if (cancelled) return;
+        if (r.status === 404) {
+          setProfile(null);
+          setProfileMissing(true);
+          return;
+        }
+        if (!r.ok) {
+          setProfile(null);
+          setProfileMissing(false);
+          return;
+        }
+        const data = (await r.json()) as MirrorProfile;
+        setProfile(data);
+        setProfileMissing(false);
+        if (data.country_code) setCountry(data.country_code);
+        setForecasterKind(data.forecaster_kind);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProfile(null);
+          setProfileMissing(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.address]);
 
   async function loadPolicyInfo(id: string) {
     if (!client || !id) return;
@@ -116,6 +188,66 @@ export default function SettingsPage() {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function createProfile() {
+    if (!account || !PROFILE_REGISTRY_ID) return;
+    setProfileBusy(true);
+    setProfileStatus("Creating profile…");
+    try {
+      const tx = buildCreateProfileTx(PROFILE_REGISTRY_ID);
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (r.$kind !== "Transaction") {
+        throw new Error("Transaction failed");
+      }
+      setProfileStatus(
+        `Profile created! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+      );
+    } catch (e) {
+      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function saveCountry() {
+    if (!account || !profile) return;
+    setProfileBusy(true);
+    setProfileStatus("Saving country code…");
+    try {
+      const tx = buildSetCountryCodeTx(profile.user, country);
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (r.$kind !== "Transaction") {
+        throw new Error("Transaction failed");
+      }
+      setProfileStatus(
+        `Country saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+      );
+    } catch (e) {
+      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function saveKind() {
+    if (!account || !profile) return;
+    setProfileBusy(true);
+    setProfileStatus("Saving forecaster kind…");
+    try {
+      const tx = buildSetForecasterKindTx(profile.user, forecasterKind);
+      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      if (r.$kind !== "Transaction") {
+        throw new Error("Transaction failed");
+      }
+      setProfileStatus(
+        `Forecaster kind saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+      );
+    } catch (e) {
+      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setProfileBusy(false);
     }
   }
 
@@ -220,6 +352,97 @@ export default function SettingsPage() {
             the policy — irreversible.
           </p>
         </div>
+      </Card>
+
+      <Card title="Profile" className="border-white/10">
+        {!account ? (
+          <p className="text-zinc-400">Connect wallet to manage your profile.</p>
+        ) : !PROFILE_REGISTRY_ID ? (
+          <p className="text-amber-300">
+            NEXT_PUBLIC_PROFILE_REGISTRY_ID is not set — ask the operator
+            to publish `user_profile::init` and configure the env.
+          </p>
+        ) : profileMissing ? (
+          <div className="space-y-3 max-w-md">
+            <p className="text-sm text-zinc-400">
+              No profile yet. Creating one opts you into the national and
+              AI-forecaster leaderboards.
+            </p>
+            <button
+              onClick={createProfile}
+              disabled={profileBusy}
+              className="rounded-lg bg-gradient-to-r from-emerald-600 to-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:brightness-110 disabled:opacity-50"
+            >
+              Create profile
+            </button>
+          </div>
+        ) : !profile ? (
+          <p className="text-zinc-400">
+            Profile mirror is unreachable. Try again after the agents
+            service is up.
+          </p>
+        ) : (
+          <div className="space-y-5 max-w-md">
+            <p className="text-xs text-zinc-400">
+              Owner: <span className="font-mono text-cyan-300">{profile.user.slice(0, 10)}…{profile.user.slice(-4)}</span>
+            </p>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">
+                Country code
+              </label>
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
+                  value={country}
+                  onChange={(e) => setCountry(e.target.value.toLowerCase())}
+                  placeholder="us, th, jp…"
+                  maxLength={MAX_COUNTRY_BYTES}
+                  pattern="[a-z]{2,8}"
+                />
+                <button
+                  onClick={saveCountry}
+                  disabled={profileBusy || !country}
+                  className="rounded-lg bg-cyan-500/20 border border-cyan-500/30 px-4 py-2 text-sm font-semibold text-cyan-200 transition-all hover:bg-cyan-500/30 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] text-zinc-500">
+                ISO-3166 alpha-2, lowercased. Leave empty to clear.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">
+                Forecaster kind
+              </label>
+              <div className="flex gap-2">
+                <select
+                  className="flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
+                  value={forecasterKind}
+                  onChange={(e) => setForecasterKind(Number(e.target.value))}
+                >
+                  {[FORECASTER_HUMAN, FORECASTER_AI, FORECASTER_BOT].map((k) => (
+                    <option key={k} value={k}>
+                      {KIND_LABELS[k] ?? `kind ${k}`}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={saveKind}
+                  disabled={profileBusy}
+                  className="rounded-lg bg-cyan-500/20 border border-cyan-500/30 px-4 py-2 text-sm font-semibold text-cyan-200 transition-all hover:bg-cyan-500/30 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+            {profileStatus && (
+              <p className="text-xs font-mono text-cyan-400 break-all">
+                {profileStatus}
+              </p>
+            )}
+          </div>
+        )}
       </Card>
 
       <Card title="Contract Info" className="border-white/10">

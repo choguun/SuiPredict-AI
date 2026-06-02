@@ -67,6 +67,7 @@ export function ClaimPrizeButton(props: Props) {
     rank,
     weeklyPrize,
     alreadyClaimed,
+    category,
   } = props;
   const account = useCurrentAccount();
   const client = useCurrentClient();

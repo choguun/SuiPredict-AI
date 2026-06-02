@@ -2,7 +2,7 @@
 
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { buildClaimBadgeTx, buildCreateStreakTx } from "@suipredict/sdk";
+import { buildClaimBadgeTx, buildCreateStreakTx, buildMintBadgeTx } from "@suipredict/sdk";
 import { toast } from "sonner";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
@@ -164,10 +164,18 @@ export function StreakProfile() {
                 onClick={async () => {
                   const toastId = toast.loading(`Claiming ${TIER_LABELS[idx]}…`);
                   try {
-                    const tx = buildClaimBadgeTx(streakId!, tier);
+                    // `badge_nft::mint_badge` internally calls
+                    // `streak_system::claim_badge`, so this single
+                    // transaction both sets the on-chain flag and
+                    // mints the StreakBadge NFT to the user. Calling
+                    // `streak_system::claim_badge` separately is no
+                    // longer required — and was the round-17 audit
+                    // finding (the previous "claim flag" path minted
+                    // nothing visible to the user).
+                    const tx = buildMintBadgeTx({ streakId: streakId!, tier });
                     const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
                     if (r.$kind === "Transaction") {
-                      toast.success(`${TIER_LABELS[idx]} badge claimed`, { id: toastId });
+                      toast.success(`${TIER_LABELS[idx]} badge minted`, { id: toastId });
                       streak.refetch();
                     } else {
                       toast.error("Badge claim failed", { id: toastId });

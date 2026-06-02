@@ -2,9 +2,12 @@
  * Gamification REST routes.
  *
  *   GET /leaderboard/week?index=N&limit=M&category=K
+ *   GET /leaderboard/country?code=us&index=N&limit=M&category=K
  *   GET /leaderboard/user/:addr?week=N
  *   GET /prize/signature?week=N&rank=R&user=:addr&amount=:a
  *   GET /prize/claims?week=N
+ *   GET /profile/:addr
+ *   GET /streak/badges/:addr
  *
  * The first two back the off-chain leaderboard surface. The prize
  * signature endpoint re-signs the canonical claim payload so the user
@@ -20,7 +23,7 @@ import {
   signClaimPayload,
   type ClaimPayload,
 } from "@suipredict/sdk";
-import { weekIndexFor, recordPrizeClaim, getPrizeClaim } from "./store.js";
+import { weekIndexFor, recordPrizeClaim, getPrizeClaim, getUserProfile, listBadgesForUser } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { getUserWeekRank, listPrizeClaims } from "./store.js";
 
@@ -388,6 +391,46 @@ export async function handleGamificationRoute(
     } catch (err) {
       json(res, 500, { error: err instanceof Error ? err.message : String(err) });
     }
+    return true;
+  }
+
+  // GET /profile/:addr
+  //
+  // Reads the indexer-mirrored `user_profiles` row for a given user.
+  // The on-chain `UserProfile` is the source of truth; this route
+  // surfaces the off-chain SQLite mirror so the web settings page can
+  // populate the country-code / forecaster-kind inputs without
+  // requiring a per-user `devInspect` call against the Sui node.
+  //
+  // A 404 means "no row yet" — either the user has not created a
+  // profile, or the indexer hasn't picked up the `ProfileCreated`
+  // event. The web UI treats 404 the same as "no profile" and
+  // surfaces the create button.
+  const profileMatch = url.pathname.match(/^\/profile\/(0x[a-fA-F0-9]+)$/);
+  if (profileMatch) {
+    const addr = profileMatch[1]!;
+    const row = getUserProfile(addr);
+    if (!row) {
+      json(res, 404, { error: "no profile mirrored for this user", user: addr });
+      return true;
+    }
+    json(res, 200, row);
+    return true;
+  }
+
+  // GET /streak/badges/:addr
+  //
+  // Reads the indexer-mirrored `streak_badges` rows for a user.
+  // The web streak panel uses this to render which tiers the user
+  // has already minted (the on-chain `UserStreak.claimed_tiers` flag
+  // is the source of truth for eligibility, but the badge NFT
+  // itself lives at a separate object id and would otherwise require
+  // a `getOwnedObjects` call to enumerate).
+  const badgesMatch = url.pathname.match(/^\/streak\/badges\/(0x[a-fA-F0-9]+)$/);
+  if (badgesMatch) {
+    const addr = badgesMatch[1]!;
+    const rows = listBadgesForUser(addr);
+    json(res, 200, { user: addr, badges: rows });
     return true;
   }
 

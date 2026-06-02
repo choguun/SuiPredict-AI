@@ -42,6 +42,10 @@ import {
   recordStreakEvent,
   markPoolWeekSettled,
   upsertUserProfile,
+  upsertParlayCreated,
+  recordParlayLeg,
+  recordParlayFinalized,
+  recordBadgeMint,
 } from "../gamification/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
@@ -887,7 +891,121 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered, ${profileCreated} profiles created, ${countryCodeSet} country codes set, ${forecasterKindSet} forecaster kinds set.`;
+  // Parlay events — the `parlay` module emits three events that we
+  // mirror into the `parlays` table so the web `/parlay` page can
+  // show leg progress without a per-user RPC read.
+  //
+  // The on-chain `parlay` module is generic over the collateral
+  // type Q (parameterised as the dUSDC type in production). The
+  // event types include the type parameter at the end of the name:
+  //   `parlay::ParlayCreated<0x...::dusdc::DUSDC>`
+  // Sui's `queryEvents` filter is exact-match, so we have to
+  // interpolate the dUSDC type into the subscription string. The
+  // on-chain module's `parlay::create_pool` etc. are all generic,
+  // so a single subscription covers every collateral variant.
+  const DUSDC_TYPE = process.env.DUSDC_TYPE ?? "";
+  const parlayType = (eventName: string) =>
+    `${predictPackageId}::parlay::${eventName}<${DUSDC_TYPE}>`;
+
+  const parlayCreated = await guardedPoll(
+    "ParlayCreated",
+    parlayType("ParlayCreated"),
+    "position_indexer.parlay_created",
+    (ev) => {
+      const j = ev.parsedJson as {
+        parlay_id?: string;
+        pool_id?: string;
+        user?: string;
+        collateral?: string | number;
+        leg_count?: string | number;
+        payout_bps?: string | number;
+      };
+      if (!j?.parlay_id || !j?.user) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      upsertParlayCreated({
+        parlay_id: j.parlay_id,
+        pool_id: j.pool_id ?? "",
+        user: j.user,
+        collateral_amount: Number(j.collateral ?? 0),
+        leg_count: Number(j.leg_count ?? 0),
+        payout_bps: Number(j.payout_bps ?? 0),
+        created_at_ms: ts,
+      });
+    },
+  );
+
+  const parlayLegRecorded = await guardedPoll(
+    "ParlayLegRecorded",
+    parlayType("ParlayLegRecorded"),
+    "position_indexer.parlay_leg_recorded",
+    (ev) => {
+      const j = ev.parsedJson as {
+        parlay_id?: string;
+        leg_index?: string | number;
+        won?: boolean;
+      };
+      if (!j?.parlay_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordParlayLeg({
+        parlay_id: j.parlay_id,
+        leg_index: Number(j.leg_index ?? 0),
+        won: j.won === true,
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const parlayFinalized = await guardedPoll(
+    "ParlayFinalized",
+    parlayType("ParlayFinalized"),
+    "position_indexer.parlay_finalized",
+    (ev) => {
+      const j = ev.parsedJson as {
+        parlay_id?: string;
+        won?: boolean;
+        payout?: string | number;
+      };
+      if (!j?.parlay_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordParlayFinalized({
+        parlay_id: j.parlay_id,
+        won: j.won === true,
+        payout: Number(j.payout ?? 0),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  // BadgeMinted - emitted by badge_nft::mint_badge and
+  // mint_badge_to_kiosk. The streak page reads from
+  // streak_badges via the agents /streak/badges/:addr endpoint to
+  // show which tiers a user owns. Without this subscription a
+  // freshly-minted badge would not appear in the UI until the user
+  // manually refetched the on-chain object list.
+  const badgeMinted = await guardedPoll(
+    "BadgeMinted",
+    `${predictPackageId}::badge_nft::BadgeMinted`,
+    "position_indexer.badge_minted",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        tier?: string | number;
+        badge_id?: string;
+        longest_streak_at_mint?: string | number;
+        minted_at_ms?: string | number;
+      };
+      if (!j?.user || !j?.badge_id) return;
+      recordBadgeMint({
+        badge_id: j.badge_id,
+        user: j.user,
+        tier: Number(j.tier ?? 0),
+        longest_streak_at_mint: Number(j.longest_streak_at_mint ?? 0),
+        minted_at_ms: Number(j.minted_at_ms ?? Date.now()),
+      });
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered, ${profileCreated} profiles created, ${countryCodeSet} country codes set, ${forecasterKindSet} forecaster kinds set, ${parlayCreated} parlays created, ${parlayLegRecorded} parlay legs recorded, ${parlayFinalized} parlays finalized, ${badgeMinted} badges minted.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

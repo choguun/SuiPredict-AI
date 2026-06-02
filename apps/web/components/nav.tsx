@@ -7,6 +7,7 @@ import { ConnectModal } from "@/components/ConnectModal";
 const links = [
   { href: "/", label: "Home" },
   { href: "/markets", label: "Markets" },
+  { href: "/parlay", label: "Parlay" },
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/vault", label: "Vault" },
   { href: "/portfolio", label: "Portfolio" },

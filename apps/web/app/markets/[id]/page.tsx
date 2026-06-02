@@ -78,31 +78,47 @@ export default function MarketDetailPage() {
   // decodeURIComponent throws on malformed escapes (e.g. `%ZZ`); a
   // typo'd URL would otherwise surface as a Next.js error overlay
   // instead of the not_found card. Round-17 audit finding #23.
+  //
+  // The URL decode is performed in this thin wrapper component
+  // BEFORE mounting MarketDetailBody. Doing the validation here (in
+  // a component that calls no other hooks) lets us short-circuit to
+  // MalformedIdCard without tripping react-hooks/rules-of-hooks — the
+  // body component unconditionally calls all of its useState /
+  // useRef / useEffect hooks regardless of the id validity.
   let marketId: string;
   try {
     marketId = decodeURIComponent(id);
   } catch {
-    return (
-      <Card>
-        <div className="space-y-3 py-2">
-          <h2 className="text-lg font-semibold text-white">Market not found</h2>
-          <p className="text-sm text-zinc-400">
-            The URL contains a malformed market id.
-          </p>
-          <Link
-            href="/markets"
-            className="inline-block rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
-          >
-            Back to markets
-          </Link>
-        </div>
-      </Card>
-    );
+    return <MalformedIdCard />;
   }
+  return <MarketDetailBody marketId={marketId} />;
+}
+
+function MalformedIdCard() {
+  return (
+    <Card>
+      <div className="space-y-3 py-2">
+        <h2 className="text-lg font-semibold text-white">Market not found</h2>
+        <p className="text-sm text-zinc-400">
+          The URL contains a malformed market id.
+        </p>
+        <Link
+          href="/markets"
+          className="inline-block rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+        >
+          Back to markets
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
+function MarketDetailBody({ marketId }: { marketId: string }) {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const { streakId } = useUserStreakId(account?.address);
+
 
   const [market, setMarket] = useState<MarketInfo | null>(null);
   const [book, setBook] = useState<OrderBookSnapshot | null>(null);
