@@ -202,7 +202,28 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     if (poolId) {
       const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
       const referralResult = await executeTransaction(client, referralTx, ctx.signer);
-      referralId = await extractCreatedObjectId(client, referralResult.digest, "DeepBookPoolReferral");
+      // `extractCreatedObjectId` returns null if the struct name
+      // doesn't match the suffix used by gRPC's `objectTypes[objectId]`
+      // render — a typo here means `referral_id` is never persisted,
+      // `referral-keeper` then skips this market forever with no
+      // alert. Surface a loud warning on null so the operator can
+      // grep the tx digest in SuiVision and confirm the actual
+      // struct name (and update this string) before deploying.
+      referralId = await extractCreatedObjectId(
+        client,
+        referralResult.digest,
+        "DeepBookPoolReferral",
+      );
+      if (!referralId) {
+        console.warn(
+          `[market-creator] setup_referral tx ${referralResult.digest} succeeded but ` +
+            `extractCreatedObjectId(..., "DeepBookPoolReferral") returned null. ` +
+            `The on-chain DeepBookPoolReferral exists but its struct-name suffix ` +
+            `may have changed; the row's referral_id will stay null and ` +
+            `referral-keeper will skip this market. Inspect the tx in SuiVision ` +
+            `and update the suffix above.`,
+        );
+      }
     }
 
     // Step 3b: register the market in the global MarketRegistry so any

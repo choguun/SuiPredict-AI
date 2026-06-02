@@ -36,6 +36,19 @@ const PRIZE_POOL_ID = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.NEXT_PUBLIC_PRIZE_ADMIN_ID ?? "";
 const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 
+// SuiVision is the canonical Sui explorer; the per-network subdomain
+// matches the value in `process.env.NEXT_PUBLIC_SUI_NETWORK` (the
+// same env the agents use). Mainnet, testnet, and devnet are the only
+// three SuiVision indexes — `localnet` and unknown values fall back to
+// the testnet URL, which is the most likely to actually resolve for
+// dev machines.
+const SUI_NETWORK = (process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet") as
+  | "testnet"
+  | "mainnet"
+  | "devnet"
+  | "localnet";
+const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
+
 function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
   return r.$kind === "Transaction" ? r.Transaction!.digest : "submitted";
 }
@@ -111,7 +124,7 @@ export default function AdminPage() {
             <span className="font-semibold">{lastAction.label}</span> submitted.
             Digest:{" "}
             <a
-              href={`https://testnet.suivision.xyz/txblock/${lastAction.digest}`}
+              href={`${SUIVISION_TX_URL}${lastAction.digest}`}
               target="_blank"
               rel="noreferrer"
               className="font-mono text-emerald-300 underline underline-offset-2"
@@ -125,21 +138,21 @@ export default function AdminPage() {
       <WithdrawFeesCard
         onSubmit={(d) => setLastAction({ label: "Withdraw fees", digest: d })}
         dAppKit={dAppKit}
-        disabled={!walletConnected}
+        disabled={!walletConnected || !isAdmin}
       />
       <SetDistributionCard
         onSubmit={(d) =>
           setLastAction({ label: "Set distribution", digest: d })
         }
         dAppKit={dAppKit}
-        disabled={!walletConnected}
+        disabled={!walletConnected || !isAdmin}
       />
       <ResolveDisputeCard
         onSubmit={(d) =>
           setLastAction({ label: "Resolve dispute", digest: d })
         }
         dAppKit={dAppKit}
-        disabled={!walletConnected}
+        disabled={!walletConnected || !isAdmin}
       />
     </div>
   );

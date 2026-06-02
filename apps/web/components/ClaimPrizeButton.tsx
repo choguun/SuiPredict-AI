@@ -15,6 +15,13 @@ import { useUserStreakId } from "@/hooks/useUserStreakId";
  *   - `signatureB64` — ed25519 signature over the payload.
  *   - `expectedAmount` — the canonical reward for the user's rank, so the
  *                     client can render the amount without recomputing.
+ *   - `amountSource` — `"onchain"` if the server derived the amount from
+ *                     the on-chain `PrizePool.weekly_prize`, `"env"` if
+ *                     the on-chain read failed and the server fell back
+ *                     to the `PRIZE_WEEKLY_AMOUNT` env var. Surface this
+ *                     in the console for operator visibility — an `env`
+ *                     path in production is a sign the gRPC client is
+ *                     down and the operator should investigate.
  *
  * The `poolId` query param the client sends is *advisory*; the server
  * always signs with the prize pool configured in its env (it must, since
@@ -32,6 +39,7 @@ interface SignedClaimResponse {
   };
   signatureB64: string;
   expectedAmount: string;
+  amountSource?: "onchain" | "env";
 }
 
 interface Props {
@@ -135,6 +143,18 @@ export function ClaimPrizeButton(props: Props) {
       // The signed amount lives at `data.payload.amount`; the server
       // has already cross-checked it against its own rank table.
       const signedAmount = data.payload?.amount ?? amount.toString();
+      // Surface `amountSource` for operator visibility. An `"env"`
+      // path means the agents service couldn't read the on-chain
+      // `PrizePool.weekly_prize` and fell back to the env var — a
+      // gRPC outage in production that the operator should know
+      // about. `console.info` rather than a toast so the user isn't
+      // interrupted during the claim flow.
+      if (data.amountSource) {
+        console.info(
+          `[ClaimPrizeButton] amountSource=${data.amountSource} ` +
+            `(expectedAmount=${data.expectedAmount})`,
+        );
+      }
       toast.loading("Submitting on-chain claim…", { id: toastId });
       const tx = buildClaimPrizeTx({
         poolId,

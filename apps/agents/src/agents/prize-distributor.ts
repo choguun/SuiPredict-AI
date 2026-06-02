@@ -26,13 +26,17 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
 
-const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
-const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
-const PRIZE_WEEKLY_AMOUNT = BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0");
-
+// Env reads live inside `runPrizeDistributor` so a late write by
+// `bootstrapEnv` (apps/agents/src/index.ts) takes effect on the next
+// cron tick. Module-level reads snapshot the values at import time
+// and miss the bootstrap — same class of bug r11 fixed for the
+// package-id constants, missed for these three.
 export async function runPrizeDistributor(
   _ctx: AgentContext,
 ): Promise<AgentResult> {
+  const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
+  const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
+  const PRIZE_WEEKLY_AMOUNT = BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0");
   if (!PRIZE_POOL_ID || !PRIZE_ADMIN_ID) {
     return recordResult("PrizeDistributor", {
       action: "skip",

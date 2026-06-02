@@ -44,6 +44,13 @@ export default function DisputeMarketPage() {
     "loading" | "active" | "resolved" | "cancelled" | "disputed" | "not_found"
   >("loading");
   const [outcome, setOutcome] = useState<"yes" | "no" | null>(null);
+  // Stricter signal than `m.status === "disputed"`. The boolean is
+  // flipped by `markMarketDisputed` in the same SQL UPDATE that sets
+  // `status = 'disputed'`, but the boolean lets us reason about
+  // a hypothetical race where the indexer has set `disputed = 1`
+  // for a duplicate dispute (incrementing `dispute_count`) without
+  // re-writing `status` to `"disputed"`. Treat either as a block.
+  const [marketDisputed, setMarketDisputed] = useState(false);
 
   // Pre-flight: load the market's status from the off-chain indexer so we
   // can refuse to submit a dispute against an active/cancelled/already-
@@ -65,6 +72,7 @@ export default function DisputeMarketPage() {
         if (cancelled) return;
         setMarketStatus(m.status);
         setOutcome(m.outcome ?? null);
+        setMarketDisputed(Boolean(m.disputed));
       } catch {
         if (!cancelled) setMarketStatus("not_found");
       }
@@ -85,12 +93,18 @@ export default function DisputeMarketPage() {
   // on-chain check is authoritative. Surfacing the move-abort code as a
   // friendly message is the best we can do until the indexer records
   // `resolved_ms` (filed for a follow-up).
+  //
+  // `marketDisputed || marketStatus === "disputed"` covers both the
+  // happy-path (status flips to "disputed" the first time) and a
+  // hypothetical race where the boolean is set but the status is
+  // not yet refreshed.
   const statusBlocksSubmit =
     marketStatus === "loading" ||
     marketStatus === "not_found" ||
     marketStatus === "active" ||
     marketStatus === "cancelled" ||
-    marketStatus === "disputed";
+    marketStatus === "disputed" ||
+    marketDisputed;
 
   const canSubmit =
     !!account &&
@@ -108,7 +122,7 @@ export default function DisputeMarketPage() {
     statusHint = "This market is still active. Disputes can only be filed on resolved markets.";
   else if (marketStatus === "cancelled")
     statusHint = "This market was cancelled and cannot be disputed.";
-  else if (marketStatus === "disputed")
+  else if (marketStatus === "disputed" || marketDisputed)
     statusHint = "This market is already disputed. The market creator must resolve the dispute before a new one can be filed.";
 
   async function submit() {
