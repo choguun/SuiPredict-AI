@@ -60,8 +60,14 @@ export function StreakProfile() {
               // to refetch — the markets page especially, which
               // chooses between `redeem_with_streak` and the plain
               // `redeem` based on this hook's result.
+              //
+              // Query keys MUST match what the hooks actually register:
+              //   useUserStreakId → ["userStreakId", REGISTRY_ID, address]
+              //   useStreakInfo   → ["streakInfo", streakId]
+              // TanStack's prefix-match means a typo (e.g. "streak"
+              // vs "streakInfo") silently no-ops the invalidation.
               queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
-              queryClient.invalidateQueries({ queryKey: ["streak"] });
+              queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
             }}
             className="mt-3 rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-50"
           >

@@ -238,24 +238,29 @@ async function main() {
   // grab the publish transaction digest from Published.toml history.
   // For this script we expect the user to have run bootstrap once
   // already, or to set the env vars below manually if they're known.
+  //
+  // Read each value lazily — `--only=prize_pool` doesn't need the
+  // streak/prize-admin IDs at all, and the previous version of this
+  // block hard-exited on any missing var, which made partial-resume
+  // flows impossible. Each consumer below now guards its own use.
   const streakAdminId = process.env.STREAK_ADMIN_ID ?? "";
   const streakRegistryId = process.env.STREAK_REGISTRY_ID ?? "";
   const prizeAdminId = process.env.PRIZE_ADMIN_ID ?? "";
-  if (!streakAdminId || !streakRegistryId || !prizeAdminId) {
-    err(
-      "STREAK_ADMIN_ID, STREAK_REGISTRY_ID, and PRIZE_ADMIN_ID must be set " +
-        "in .env (these are shared objects created at publish time and need to be looked up manually).",
-    );
-  }
-  log(`  StreakAdmin:    ${streakAdminId}`);
-  log(`  StreakRegistry: ${streakRegistryId}`);
-  log(`  PrizeAdmin:     ${prizeAdminId}`);
+  log(`  StreakAdmin:    ${streakAdminId || "(unset — needed only for prize_pubkey / env writes)"}`);
+  log(`  StreakRegistry: ${streakRegistryId || "(unset — needed only for env writes)"}`);
+  log(`  PrizeAdmin:     ${prizeAdminId || "(unset — needed only for prize_pubkey)"}`);
 
   // 3) Set PrizeAdmin pubkey (idempotent — re-rotate if you rotate
   //    keys, but normally skip).
   let isNewPrizeKey = false;
   let prizePubkeyB64 = process.env.PRIZE_ADMIN_PUBKEY_B64 ?? "";
   if (shouldRun("prize_pubkey")) {
+    if (!prizeAdminId) {
+      err(
+        "prize_pubkey step requires PRIZE_ADMIN_ID in .env. " +
+          "Look up the shared PrizeAdmin object id from the package's publish effects and add it before re-running.",
+      );
+    }
     const existingKeyB64 = process.env.PRIZE_ADMIN_PRIVATE_KEY;
     const prizeKey = existingKeyB64
       ? Ed25519Keypair.fromSecretKey(existingKeyB64)
@@ -447,22 +452,28 @@ async function main() {
 
   // 9) Write env updates — surface matches bootstrap-gamification.ts
   //    so a re-run via either script produces the same .env keys.
+  //
+  // Only include shared-object-id keys when the value is non-empty,
+  // so a partial resume (e.g. `--only=prize_pool` from a fresh config)
+  // doesn't clobber good values in .env with empty strings. Steps that
+  // actually wrote a new id (fee_vault, prize_pool, registry, vault,
+  // policy) are always present in their respective `let` bindings.
   const agentsUpdates: Record<string, string> = {
     AGENT_POLICY_PACKAGE_ID: packageId,
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
-    STREAK_REGISTRY_ID: streakRegistryId,
-    STREAK_ADMIN_ID: streakAdminId,
-    PRIZE_POOL_ID: prizePoolId,
-    PRIZE_ADMIN_ID: prizeAdminId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
     PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
-    MARKET_REGISTRY_ID: marketRegistryId,
-    VAULT_OBJECT_ID: protocolVaultId,
-    FEE_VAULT_ID: feeVaultId,
-    AGENT_POLICY_ID: agentPolicyId,
   };
+  if (streakRegistryId) agentsUpdates.STREAK_REGISTRY_ID = streakRegistryId;
+  if (streakAdminId) agentsUpdates.STREAK_ADMIN_ID = streakAdminId;
+  if (prizeAdminId) agentsUpdates.PRIZE_ADMIN_ID = prizeAdminId;
+  if (prizePoolId) agentsUpdates.PRIZE_POOL_ID = prizePoolId;
+  if (marketRegistryId) agentsUpdates.MARKET_REGISTRY_ID = marketRegistryId;
+  if (protocolVaultId) agentsUpdates.VAULT_OBJECT_ID = protocolVaultId;
+  if (feeVaultId) agentsUpdates.FEE_VAULT_ID = feeVaultId;
+  if (agentPolicyId) agentsUpdates.AGENT_POLICY_ID = agentPolicyId;
   if (process.env.DUSDC_TREASURY_CAP_ID) {
     agentsUpdates.DUSDC_TREASURY_CAP_ID = process.env.DUSDC_TREASURY_CAP_ID;
   }
@@ -484,18 +495,12 @@ async function main() {
   // re-run via either script leaves a consistent apps/web/.env.local.
   // Per-market pool id is set by the market-creator agent on first
   // market creation; we write a placeholder here that the agent
-  // overwrites.
-  updateEnv(WEB_ENV, {
+  // overwrites. As with the agentsUpdates above, shared-object ids
+  // are only written when truthy so partial resumes don't clobber.
+  const webUpdates: Record<string, string> = {
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID: packageId,
-    NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
-    NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
-    NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
-    NEXT_PUBLIC_PRIZE_ADMIN_ID: prizeAdminId,
     NEXT_PUBLIC_PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
-    NEXT_PUBLIC_FEE_VAULT_ID: feeVaultId,
-    NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
-    NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
     NEXT_PUBLIC_DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
     NEXT_PUBLIC_ADMIN_ADDRESS: signerAddr,
     NEXT_PUBLIC_DEEPBOOK_POOL_KEY: "PREDICT_YES_DUSDC",
@@ -511,7 +516,15 @@ async function main() {
       signerAddr,
     NEXT_PUBLIC_AGENTS_URL:
       process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001",
-  });
+  };
+  if (streakRegistryId) webUpdates.NEXT_PUBLIC_STREAK_REGISTRY_ID = streakRegistryId;
+  if (streakAdminId) webUpdates.NEXT_PUBLIC_STREAK_ADMIN_ID = streakAdminId;
+  if (prizePoolId) webUpdates.NEXT_PUBLIC_PRIZE_POOL_ID = prizePoolId;
+  if (prizeAdminId) webUpdates.NEXT_PUBLIC_PRIZE_ADMIN_ID = prizeAdminId;
+  if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
+  if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
+  if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  updateEnv(WEB_ENV, webUpdates);
 
   log("\n=== Resume complete ===");
   log(`Package:        ${packageId}`);

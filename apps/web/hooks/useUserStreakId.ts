@@ -18,12 +18,14 @@ export function useUserStreakId(address: string | null | undefined): {
   const query = useQuery<string | null>({
     queryKey: ["userStreakId", REGISTRY_ID, address],
     enabled: !!address && !!REGISTRY_ID,
-    // Keep the query fresh (always refetch on remount) so a freshly
-    // created UserStreak is visible immediately on the markets page.
-    // The previous 60s TTL meant users who clicked "Start your streak"
-    // saw the redeem-without-streak branch for up to a minute on
-    // `/markets/[id]`, missing the multiplier for that first claim.
-    staleTime: 0,
+    // 30s TTL is a good balance: the user doesn't see a stale
+    // "no streak yet" state for long, and pages that subscribe to
+    // this hook (StreakProfile, /markets/[id], ClaimPrizeButton) don't
+    // burn 3 RPCs per session the way `staleTime: 0` would. When a
+    // streak is actually created, StreakProfile issues a precise
+    // `invalidateQueries({ queryKey: ["userStreakId"] })` so the
+    // refetch happens immediately for that one transition.
+    staleTime: 30_000,
     queryFn: async () => {
       if (!address || !REGISTRY_ID) return null;
       const client = createClient();

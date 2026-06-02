@@ -169,11 +169,18 @@ export function DailyPredictionCard() {
       // own session is read from the SDK directly. Invalidate the
       // relevant queries so /portfolio, the streak panel, and the
       // markets list reflect the new positions without a manual refresh.
-      queryClient.invalidateQueries({ queryKey: ["portfolio", account.address] });
+      //
+      // Query keys MUST match what the hooks actually register:
+      //   useUserStreakId → ["userStreakId", REGISTRY_ID, address]
+      //   useStreakInfo   → ["streakInfo", streakId]
+      //   useQuery in portfolio page (if converted) → ["portfolio", address]
+      // TanStack's prefix-match means a typo (e.g. "streak" vs
+      // "streakInfo") silently no-ops the invalidation — the previous
+      // round shipped a ["streak"] invalidation that did nothing.
       queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
-      queryClient.invalidateQueries({ queryKey: ["streak"] });
+      queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", account.address] });
       queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
-      queryClient.invalidateQueries({ queryKey: ["markets"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

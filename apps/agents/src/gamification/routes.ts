@@ -19,7 +19,7 @@ import {
   signClaimPayload,
   type ClaimPayload,
 } from "@suipredict/sdk";
-import { weekIndexFor } from "./store.js";
+import { weekIndexFor, recordPrizeClaim, getPrizeClaim } from "./store.js";
 import { liveRollup } from "../agents/leaderboard-worker.js";
 import { getUserWeekRank, listPrizeClaims } from "./store.js";
 
@@ -31,21 +31,42 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-export function handleGamificationRoute(
+async function readJsonBody<T = unknown>(req: IncomingMessage): Promise<T | null> {
+  // Accumulate the body, parse as JSON, return null on parse error or
+  // empty body. The previous version of this route file had no POST
+  // handlers so the body never needed to be read; the new
+  // /prize/claims (POST) handler uses this.
+  return await new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf-8");
+      if (!text) return resolve(null);
+      try {
+        resolve(JSON.parse(text) as T);
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on("error", () => resolve(null));
+  });
+}
+
+export async function handleGamificationRoute(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-): boolean {
+): Promise<boolean> {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end();
     return true;
   }
-  if (req.method !== "GET") return false;
+  if (req.method !== "GET" && req.method !== "POST") return false;
 
   // GET /leaderboard/week?index=N&limit=M&category=K
   const weekMatch = url.pathname.match(/^\/leaderboard\/week$/);
@@ -172,11 +193,109 @@ export function handleGamificationRoute(
   }
 
   // GET /prize/claims?week=N
+  // POST /prize/claims — record a user-driven claim so the leaderboard
+  //   stops offering the Claim button. The body is
+  //   `{ user, weekIndex, rank, amount, txDigest }` (string or number
+  //   for weekIndex; amount is decimal string for bigint safety). The
+  //   server trusts the txDigest string only as a label; the on-chain
+  //   `prize_pool::claim_prize` is the real source of truth for
+  //   whether a payout happened.
   const claimMatch = url.pathname.match(/^\/prize\/claims$/);
   if (claimMatch) {
-    const week = url.searchParams.get("week");
-    const weekNum = week != null ? Number(week) : undefined;
-    json(res, 200, listPrizeClaims(weekNum));
+    if (req.method === "GET") {
+      const week = url.searchParams.get("week");
+      const weekNum = week != null ? Number(week) : undefined;
+      json(res, 200, listPrizeClaims(weekNum));
+      return true;
+    }
+    // POST
+    //
+    // Auth model: same leaderboard-membership + rank-mismatch check
+    // as GET /prize/signature (lines 137-161). The previous version
+    // accepted any (user, week, rank) without verifying the user was
+    // actually on the leaderboard — an attacker could POST
+    // `{user: any_victim, week: current, rank: 1}` and mark the victim
+    // as Claimed in the off-chain table, hiding the Claim button from
+    // a legitimate winner. The on-chain `claim_prize` was unaffected
+    // (it gates on `pool.claimed[week][user]`), but the UI state was
+    // poisoned.
+    const body = await readJsonBody<{
+      user?: string;
+      weekIndex?: number | string;
+      rank?: number;
+      amount?: number | string;
+      txDigest?: string;
+    }>(req);
+    if (
+      !body ||
+      typeof body.user !== "string" ||
+      !/^0x[a-fA-F0-9]{1,64}$/.test(body.user) ||
+      (typeof body.weekIndex !== "number" && typeof body.weekIndex !== "string") ||
+      typeof body.rank !== "number" ||
+      body.rank <= 0
+    ) {
+      json(res, 400, { error: "missing or invalid fields" });
+      return true;
+    }
+    const weekIndex =
+      typeof body.weekIndex === "string" ? Number(body.weekIndex) : body.weekIndex;
+    if (!Number.isFinite(weekIndex) || weekIndex < 0) {
+      json(res, 400, { error: "invalid weekIndex" });
+      return true;
+    }
+    const amountNum =
+      typeof body.amount === "string" ? Number(body.amount) : body.amount ?? 0;
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      json(res, 400, { error: "invalid amount" });
+      return true;
+    }
+    // Membership check — same fallback used by /prize/signature so
+    // current-week claims work the same way.
+    const currentWeek = weekIndexFor(Date.now());
+    const row = weekIndex === currentWeek
+      ? liveRollup(weekIndex).find((r) => r.user === body.user) ?? null
+      : getUserWeekRank(body.user, weekIndex);
+    if (!row) {
+      json(res, 403, {
+        error: "user not on leaderboard for this week",
+        week_index: weekIndex,
+      });
+      return true;
+    }
+    if (row.rank !== body.rank) {
+      json(res, 400, {
+        error: "rank mismatch with leaderboard",
+        requested: body.rank,
+        actual: row.rank,
+      });
+      return true;
+    }
+    // Idempotency: a second POST for an already-claimed (user, week)
+    // returns 409. Without this, two concurrent claims both pass the
+    // membership check (both see `claimed: false`), both submit
+    // on-chain, and the second hits `EAlreadyClaimed` — but the second
+    // POST would still return 200 and overwrite the off-chain row.
+    const existing = getPrizeClaim(body.user, weekIndex);
+    if (existing) {
+      json(res, 409, {
+        error: "prize already claimed for this user and week",
+        week_index: weekIndex,
+      });
+      return true;
+    }
+    try {
+      recordPrizeClaim({
+        user: body.user,
+        week_index: weekIndex,
+        rank: body.rank,
+        amount: amountNum,
+        tx_digest: body.txDigest ?? null,
+        claimed_at_ms: Date.now(),
+      });
+      json(res, 200, { ok: true });
+    } catch (err) {
+      json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
     return true;
   }
 

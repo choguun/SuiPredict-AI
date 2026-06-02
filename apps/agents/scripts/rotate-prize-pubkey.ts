@@ -42,7 +42,13 @@ async function main() {
   const newKey = process.env.PRIZE_NEW_ADMIN_PRIVATE_KEY
     ? Ed25519Keypair.fromSecretKey(process.env.PRIZE_NEW_ADMIN_PRIVATE_KEY)
     : new Ed25519Keypair();
-  const newPubkey = newKey.getPublicKey().toSuiBytes();
+  // `toRawBytes()` returns the 32 raw ed25519 public-key bytes — the
+  // form the on-chain `ed25519::ed25519_verify` expects. The previous
+  // `toSuiBytes()` call returned 33 bytes (1 flag byte + 32 raw) and
+  // was incorrectly used here, which would have caused every
+  // `claim_prize` signature to fail verification. The bootstrap path
+  // (`resume-bootstrap.ts:264`) already uses the correct form.
+  const newPubkey = Array.from(newKey.getPublicKey().toRawBytes());
   console.log(
     `New admin pubkey (b64): ${Buffer.from(newPubkey).toString("base64")}`,
   );

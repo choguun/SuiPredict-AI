@@ -623,22 +623,28 @@ async function main() {
   }
 
   // 8) Write env updates
+  //
+  // Only include shared-object-id keys when the value is non-empty,
+  // so a partial bootstrap (e.g. a step that gas-exhausted and left
+  // the ID blank) doesn't clobber a good value in .env with an empty
+  // string. Same conditional-write pattern as the round-7 fix in
+  // resume-bootstrap.ts:241-251.
   const agentsUpdates: Record<string, string> = {
     AGENT_POLICY_PACKAGE_ID: packageId,
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
-    STREAK_REGISTRY_ID: streakRegistryId,
-    STREAK_ADMIN_ID: streakAdminId,
-    PRIZE_POOL_ID: prizePoolId,
-    PRIZE_ADMIN_ID: prizeAdminId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
     PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
-    MARKET_REGISTRY_ID: marketRegistryId,
-    VAULT_OBJECT_ID: protocolVaultId,
-    FEE_VAULT_ID: feeVaultId,
-    AGENT_POLICY_ID: agentPolicyId,
   };
+  if (streakRegistryId) agentsUpdates.STREAK_REGISTRY_ID = streakRegistryId;
+  if (streakAdminId) agentsUpdates.STREAK_ADMIN_ID = streakAdminId;
+  if (prizePoolId) agentsUpdates.PRIZE_POOL_ID = prizePoolId;
+  if (prizeAdminId) agentsUpdates.PRIZE_ADMIN_ID = prizeAdminId;
+  if (marketRegistryId) agentsUpdates.MARKET_REGISTRY_ID = marketRegistryId;
+  if (protocolVaultId) agentsUpdates.VAULT_OBJECT_ID = protocolVaultId;
+  if (feeVaultId) agentsUpdates.FEE_VAULT_ID = feeVaultId;
+  if (agentPolicyId) agentsUpdates.AGENT_POLICY_ID = agentPolicyId;
   if (balanceManagerId) {
     agentsUpdates.BALANCE_MANAGER_ID = balanceManagerId;
   }
@@ -657,17 +663,13 @@ async function main() {
     agentsUpdates.PRIZE_ADMIN_PRIVATE_KEY = secretStr;
   }
   updateEnv(AGENTS_ENV, agentsUpdates);
-  updateEnv(WEB_ENV, {
+  // Web env writes — same conditional pattern. Per-market pool id is
+  // set by the market-creator agent on first market creation; we write
+  // a placeholder here that the agent overwrites.
+  const webUpdates: Record<string, string> = {
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID: packageId,
-    NEXT_PUBLIC_STREAK_REGISTRY_ID: streakRegistryId,
-    NEXT_PUBLIC_STREAK_ADMIN_ID: streakAdminId,
-    NEXT_PUBLIC_PRIZE_POOL_ID: prizePoolId,
-    NEXT_PUBLIC_PRIZE_ADMIN_ID: prizeAdminId,
     NEXT_PUBLIC_PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
-    NEXT_PUBLIC_FEE_VAULT_ID: feeVaultId,
-    NEXT_PUBLIC_VAULT_OBJECT_ID: protocolVaultId,
-    NEXT_PUBLIC_AGENT_POLICY_ID: agentPolicyId,
     NEXT_PUBLIC_DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
     NEXT_PUBLIC_ADMIN_ADDRESS: signerAddr,
     // DeepBook defaults — POOL_KEY and the YES/QUOTE coin-type strings
@@ -681,15 +683,27 @@ async function main() {
     NEXT_PUBLIC_DEEPBOOK_YES_COIN_SCALAR: "1000000",
     NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_SCALAR: "1000000",
     NEXT_PUBLIC_DEEP_TYPE: process.env.DEEP_TYPE ?? DEEP_TYPE,
-    // Treasury address — must match the agents REFERRAL_TREASURY_ADDRESS
-    // so the web frontend's REFERRAL_TREASURY_ADDRESS SDK constant
-    // resolves to the same on-chain destination.
-    NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS: signerAddr,
     // AGENTS_URL is a deploy-time hint; production should set it to the
     // public agents URL (the local default is the dev fallback).
     NEXT_PUBLIC_AGENTS_URL:
       process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001",
-  });
+  };
+  if (streakRegistryId) webUpdates.NEXT_PUBLIC_STREAK_REGISTRY_ID = streakRegistryId;
+  if (streakAdminId) webUpdates.NEXT_PUBLIC_STREAK_ADMIN_ID = streakAdminId;
+  if (prizePoolId) webUpdates.NEXT_PUBLIC_PRIZE_POOL_ID = prizePoolId;
+  if (prizeAdminId) webUpdates.NEXT_PUBLIC_PRIZE_ADMIN_ID = prizeAdminId;
+  if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
+  if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
+  if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  // Treasury address — must match the agents REFERRAL_TREASURY_ADDRESS
+  // so the web frontend's REFERRAL_TREASURY_ADDRESS SDK constant
+  // resolves to the same on-chain destination. Honor an existing env
+  // override if the operator pre-configured a multisig treasury.
+  webUpdates.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS =
+    process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
+    process.env.REFERRAL_TREASURY_ADDRESS ??
+    signerAddr;
+  updateEnv(WEB_ENV, webUpdates);
 
   log("\n=== Bootstrap complete ===");
   log(`Package:        ${packageId}`);

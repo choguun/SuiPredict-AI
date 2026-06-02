@@ -2,7 +2,7 @@
 
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { getPortfolio, listMarkets, type PortfolioPosition } from "@suipredict/sdk";
 import { EmptyState } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";
@@ -10,23 +10,33 @@ import { useRouter } from "next/navigation";
 export default function PortfolioPage() {
   const account = useCurrentAccount();
   const router = useRouter();
-  const [positions, setPositions] = useState<PortfolioPosition[]>([]);
-  const [markets, setMarkets] = useState(0);
 
-  useEffect(() => {
-    listMarkets().then((m) => setMarkets(m.length)).catch(() => {});
-  }, []);
+  // Markets count is for the header subtitle. `listMarkets()` returns
+  // every market regardless of status (active / resolved / cancelled),
+  // but the header copy says "active markets" — filter client-side to
+  // keep the contract honest. A `countActiveMarkets` endpoint would be
+  // cheaper but isn't worth a new route for a single subtitle.
+  const { data: markets = [] } = useQuery({
+    queryKey: ["marketsList"],
+    queryFn: () => listMarkets().catch(() => []),
+    staleTime: 60_000,
+  });
+  const activeMarketCount = markets.filter((m) => m.status === "active").length;
 
-  useEffect(() => {
-    if (!account) return;
-    getPortfolio(account.address)
-      .then(setPositions)
-      .catch(() => setPositions([]));
-    const t = setInterval(() => {
-      getPortfolio(account.address).then(setPositions).catch(() => {});
-    }, 8000);
-    return () => clearInterval(t);
-  }, [account]);
+  // Positions use a `["portfolio", address]` key so other components
+  // (DailyPredictionCard after a successful batch mint) can invalidate
+  // this query and the user sees fresh positions without a refresh.
+  // Background refetch every 8s preserves the previous setInterval
+  // behaviour without a raw effect.
+  const { data: positions = [] } = useQuery<PortfolioPosition[]>({
+    queryKey: ["portfolio", account?.address],
+    enabled: !!account,
+    refetchInterval: 8_000,
+    queryFn: async () => {
+      if (!account) return [];
+      return getPortfolio(account.address).catch(() => []);
+    },
+  });
 
   if (!account) {
     return (
@@ -49,7 +59,7 @@ export default function PortfolioPage() {
             Your Portfolio
           </h1>
           <p className="max-w-2xl text-base leading-relaxed text-zinc-400">
-            Track your YES/NO share balances across {markets} active markets. 
+            Track your YES/NO share balances across {activeMarketCount} active markets.
             Redeem your winning shares directly from the individual market pages once resolved.
           </p>
         </div>

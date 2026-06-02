@@ -12,6 +12,9 @@
  *   - RedeemedEvent    → -winning_amount of the winning side → `positions`
  *   - OrderPlacedEvent → → `chain_orders` (any user's order, not just the agent's)
  *   - SettledEvent     → → `settlements` (withdraw_settled notifications)
+ *   - PrizeClaimed     → → `prize_claims` (backstops the POST /prize/claims
+ *                        web notification; converges the off-chain table
+ *                        even when the POST fails)
  *
  * `winning_amount` is the gross share count burned. To know which side
  * was burned we look up the market's outcome (set by the resolver via
@@ -33,6 +36,7 @@ import {
   upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
+import { getPrizeClaim, recordPrizeClaim } from "../gamification/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
@@ -105,6 +109,13 @@ interface MarketUndisputedJson {
   market_id: string;
   final_outcome?: string | number;
   resolver?: string;
+}
+interface PrizeClaimedJson {
+  pool_id: string;
+  week_index: string | number;
+  user: string;
+  rank: string | number;
+  amount: string | number;
 }
 interface OrderCancelledJson {
   market_id: string;
@@ -403,7 +414,38 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed.`;
+  // PrizeClaimed — fired by `prize_pool::claim_prize` whenever any
+  // user (web, agent, or scripted) successfully claims. We write to
+  // the off-chain `prize_claims` table so `liveRollup`'s `claimed`
+  // annotation is correct even when the web's `POST /prize/claims`
+  // notification fails (network blip, agents restart mid-tx, etc.).
+  //
+  // Idempotency: `getPrizeClaim` short-circuits if a row already
+  // exists, so a successful POST plus a successful indexer poll for
+  // the same on-chain event both leave the same row.
+  const prizeClaims = await guardedPoll(
+    "PrizeClaimed",
+    `${predictPackageId}::prize_pool::PrizeClaimed`,
+    "position_indexer.prize_claimed",
+    (ev) => {
+      const j = ev.parsedJson as PrizeClaimedJson;
+      if (!j?.user || j.week_index == null || j.rank == null) return;
+      const weekIndex = Number(j.week_index);
+      if (!Number.isFinite(weekIndex) || weekIndex < 0) return;
+      if (getPrizeClaim(j.user, weekIndex)) return; // already recorded
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordPrizeClaim({
+        user: j.user,
+        week_index: weekIndex,
+        rank: Number(j.rank),
+        amount: Number(j.amount ?? 0),
+        tx_digest: ev.id?.txDigest ?? null,
+        claimed_at_ms: ts,
+      });
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

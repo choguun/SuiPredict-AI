@@ -122,10 +122,36 @@ export function ClaimPrizeButton(props: Props) {
         poolIdForSig: poolId,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const digest = txDigest(r);
       toast.success(
-        `Claimed ${amountUsdc} DUSDC: ${txDigest(r).slice(0, 16)}…`,
+        `Claimed ${amountUsdc} DUSDC: ${digest.slice(0, 16)}…`,
         { id: toastId },
       );
+      // Notify the agents service so the off-chain `prize_claims` row
+      // is updated — without this, `liveRollup` still annotates the
+      // user as unclaimed and the leaderboard keeps showing the Claim
+      // button. The next click would pass the server's membership
+      // check (off-chain table is stale) and only fail on the on-chain
+      // `EAlreadyClaimed` Move abort, surfacing as a confusing
+      // "MoveAbort(...) 4" toast. The server endpoint is best-effort:
+      // the on-chain tx already succeeded, so a network error here
+      // just means the user has to refresh once for the UI to update.
+      try {
+        const recordUrl = new URL(`${base}/prize/claims`);
+        await fetch(recordUrl.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user: account.address,
+            weekIndex,
+            rank,
+            amount: signedAmount,
+            txDigest: digest,
+          }),
+        });
+      } catch (recordErr) {
+        console.warn("[ClaimPrizeButton] failed to record claim:", recordErr);
+      }
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Claim failed",

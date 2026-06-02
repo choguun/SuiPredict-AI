@@ -199,10 +199,10 @@ async function runCycle(ctx: AgentContext) {
 
 function startHealthServer() {
   const port = Number(process.env.PORT ?? 3001);
-  createServer((req, res) => {
+  createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     if (handleMarketsRoute(req, res, url)) return;
-    if (handleGamificationRoute(req, res, url)) return;
+    if (await handleGamificationRoute(req, res, url)) return;
     if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok" }));

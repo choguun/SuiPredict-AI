@@ -245,6 +245,23 @@ export function recordPrizeClaim(claim: PrizeClaim): void {
     .run(claim);
 }
 
+/**
+ * Look up a single claim by (user, week). Returns null if no claim
+ * row exists. Used by the `POST /prize/claims` idempotency check
+ * (and by future event-indexer backstops to confirm the row landed).
+ */
+export function getPrizeClaim(
+  user: string,
+  weekIndex: number,
+): PrizeClaim | null {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM prize_claims WHERE user = ? AND week_index = ?`,
+    )
+    .get(user, weekIndex) as PrizeClaim | undefined;
+  return row ?? null;
+}
+
 export function listPrizeClaims(weekIndex?: number): PrizeClaim[] {
   if (weekIndex != null) {
     return getDb()
