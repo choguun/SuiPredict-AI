@@ -1,6 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { buildClaimBadgeTx, buildCreateStreakTx } from "@suipredict/sdk";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
@@ -33,6 +34,7 @@ function badgesEarnedCount(claimed: boolean[] | undefined): number {
 export function StreakProfile() {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
+  const queryClient = useQueryClient();
   const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
   const streak = useStreakInfo(streakId);
 
@@ -53,6 +55,13 @@ export function StreakProfile() {
               if (!REGISTRY_ID) return;
               const tx = buildCreateStreakTx(REGISTRY_ID);
               await dAppKit.signAndExecuteTransaction({ transaction: tx });
+              // The registry dynamic field is updated by the tx, so
+              // any component currently reading the streak id needs
+              // to refetch — the markets page especially, which
+              // chooses between `redeem_with_streak` and the plain
+              // `redeem` based on this hook's result.
+              queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
+              queryClient.invalidateQueries({ queryKey: ["streak"] });
             }}
             className="mt-3 rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-50"
           >

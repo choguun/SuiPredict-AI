@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCurrentAccount,
   useCurrentClient,
@@ -45,6 +45,7 @@ export function DailyPredictionCard() {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
+  const queryClient = useQueryClient();
 
   const [activeMarketIds, setActiveMarketIds] = useState<string[]>([]);
   const [selections, setSelections] = useState<Record<string, Selection>>({});
@@ -164,6 +165,15 @@ export function DailyPredictionCard() {
       toast.success(
         `Predictions locked across ${activeMarketIds.length} markets — ${digest.slice(0, 12)}…`,
       );
+      // The position-indexer polls MintedEvent every ~5s but the user's
+      // own session is read from the SDK directly. Invalidate the
+      // relevant queries so /portfolio, the streak panel, and the
+      // markets list reflect the new positions without a manual refresh.
+      queryClient.invalidateQueries({ queryKey: ["portfolio", account.address] });
+      queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
+      queryClient.invalidateQueries({ queryKey: ["streak"] });
+      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
+      queryClient.invalidateQueries({ queryKey: ["markets"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

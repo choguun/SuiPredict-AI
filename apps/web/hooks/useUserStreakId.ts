@@ -18,7 +18,12 @@ export function useUserStreakId(address: string | null | undefined): {
   const query = useQuery<string | null>({
     queryKey: ["userStreakId", REGISTRY_ID, address],
     enabled: !!address && !!REGISTRY_ID,
-    staleTime: 60_000,
+    // Keep the query fresh (always refetch on remount) so a freshly
+    // created UserStreak is visible immediately on the markets page.
+    // The previous 60s TTL meant users who clicked "Start your streak"
+    // saw the redeem-without-streak branch for up to a minute on
+    // `/markets/[id]`, missing the multiplier for that first claim.
+    staleTime: 0,
     queryFn: async () => {
       if (!address || !REGISTRY_ID) return null;
       const client = createClient();

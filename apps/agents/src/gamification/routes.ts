@@ -87,6 +87,14 @@ export function handleGamificationRoute(
   // the requested rank matches the archived rank. The amount is then
   // re-derived from the rank table — `amountRaw` is ignored to avoid
   // the client computing a different value than the on-chain check.
+  //
+  // For the in-progress (current) week, the archive is empty — the
+  // Monday 00:05 UTC rollup hasn't run yet. We fall back to
+  // `liveRollup` so users who earned a slot in the current week can
+  // still claim. The on-chain `prize_pool::claim_prize` is idempotent
+  // via `claimed[(week, user)]`, so signing for a current-week rank
+  // is safe even if the next-week's rollup later assigns a different
+  // rank (the user only ever gets one payout per (week, user) pair).
   const sigMatch = url.pathname.match(/^\/prize\/signature$/);
   if (sigMatch) {
     const week = Number(url.searchParams.get("week") ?? -1);
@@ -102,9 +110,12 @@ export function handleGamificationRoute(
       json(res, 400, { error: "invalid user address" });
       return true;
     }
-    // Membership check: is the user on the leaderboard for this week,
-    // and is the requested rank consistent with the archive?
-    const row = getUserWeekRank(user, week);
+    // Membership check: prefer the archive (finalized weeks), fall
+    // back to liveRollup for the in-progress week.
+    const currentWeek = weekIndexFor(Date.now());
+    let row = week === currentWeek
+      ? liveRollup(week).find((r) => r.user === user) ?? null
+      : getUserWeekRank(user, week);
     if (!row) {
       json(res, 403, {
         error: "user not on leaderboard for this week",

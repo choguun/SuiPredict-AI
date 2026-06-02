@@ -89,11 +89,13 @@ export function ClaimPrizeButton(props: Props) {
       url.searchParams.set("week", String(weekIndex));
       url.searchParams.set("rank", String(rank));
       url.searchParams.set("user", account.address);
-      // `amount` is the rank-derived reward; the server re-derives and
-      // signs the canonical value. We pass it for transparency and to
-      // let the server's leaderboard-membership check (if present)
-      // compare against the rank table it has.
-      url.searchParams.set("amount", amount.toString());
+      // `amount` is intentionally NOT sent — the server is the single
+      // source of truth for the rank table (re-derives via
+      // `expectedAmountForRank`) and re-derives the canonical value
+      // before signing. Sending a client-computed amount would only
+      // produce false-positive "rank-table mismatch" warnings when
+      // `PRIZE_WEEKLY_AMOUNT` is updated server-side without a
+      // web rebuild.
       const res = await fetch(url.toString());
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -105,19 +107,9 @@ export function ClaimPrizeButton(props: Props) {
       if (!data.signatureB64) {
         throw new Error("signature endpoint returned no signature");
       }
-      // The signed amount lives at `data.payload.amount`; fall back to
-      // the locally-computed `amount` only if the server omits it (older
-      // backends). Cross-check against `expectedAmount` to catch a
-      // server / client rank-table mismatch before submitting gas.
+      // The signed amount lives at `data.payload.amount`; the server
+      // has already cross-checked it against its own rank table.
       const signedAmount = data.payload?.amount ?? amount.toString();
-      if (
-        data.expectedAmount &&
-        data.expectedAmount !== amount.toString()
-      ) {
-        console.warn(
-          `[ClaimPrizeButton] rank-table mismatch: server expectedAmount=${data.expectedAmount} client=${amount.toString()}; using signed value.`,
-        );
-      }
       toast.loading("Submitting on-chain claim…", { id: toastId });
       const tx = buildClaimPrizeTx({
         poolId,
