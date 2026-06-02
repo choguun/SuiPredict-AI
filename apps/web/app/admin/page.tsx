@@ -29,6 +29,7 @@ import {
   buildSetDistributionTx,
   buildResolveDisputeTx,
   FEE_VAULT_ID,
+  isValidSuiAddress,
 } from "@suipredict/sdk";
 import { Card, Stat, Badge } from "@/components/ui";
 
@@ -68,7 +69,7 @@ export default function AdminPage() {
   // (`0x` + 64 hex chars) is also validated here so a typo doesn't
   // silently fail-closed for the rest of the page.
   const normalizedAdmin = ADMIN_ADDRESS.trim().toLowerCase();
-  const isValidAdmin = /^0x[0-9a-f]{64}$/.test(normalizedAdmin);
+  const isValidAdmin = isValidSuiAddress(ADMIN_ADDRESS);
   const normalizedAccount = (account?.address ?? "").toLowerCase();
   const isAdmin = isValidAdmin && normalizedAccount === normalizedAdmin;
   const walletConnected = !!account;

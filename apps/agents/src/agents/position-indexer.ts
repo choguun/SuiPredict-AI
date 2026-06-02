@@ -33,10 +33,15 @@ import {
   markOrderCancelled,
   recordChainOrder,
   recordSettlement,
+  recordVaultFlow,
   upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
-import { recordPrizeClaim } from "../gamification/store.js";
+import {
+  recordPrizeClaim,
+  recordStreakEvent,
+  markPoolWeekSettled,
+} from "../gamification/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
@@ -454,7 +459,235 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims.`;
+  // StreakUpdated / StreakBroken / MilestoneReached — fired by
+  // `streak_system::record_participation`. Before r15 these were
+  // unsubscribed, so the streak UI's activity feed was always empty
+  // and milestones (3d / 7d / 14d / 30d / 100d) silently passed. We
+  // log to `streak_events` (idempotent on user+kind+day_index) so
+  // the leaderboard can show the user's history and the operator
+  // dashboard can spot a stuck sweep.
+  const streakUpdated = await guardedPoll(
+    "StreakUpdated",
+    `${predictPackageId}::streak_system::StreakUpdated`,
+    "position_indexer.streak_updated",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        new_streak?: string | number;
+        longest_streak?: string | number;
+        multiplier_tier?: string | number;
+        day_index?: string | number;
+      };
+      if (!j?.user || j.day_index == null) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordStreakEvent({
+        user: j.user,
+        kind: "updated",
+        new_streak: Number(j.new_streak ?? 0),
+        longest_streak: Number(j.longest_streak ?? 0),
+        multiplier_tier: Number(j.multiplier_tier ?? 0),
+        day_index: Number(j.day_index),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const streakBroken = await guardedPoll(
+    "StreakBroken",
+    `${predictPackageId}::streak_system::StreakBroken`,
+    "position_indexer.streak_broken",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        final_streak?: string | number;
+        day_index?: string | number;
+      };
+      if (!j?.user || j.day_index == null) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordStreakEvent({
+        user: j.user,
+        kind: "broken",
+        final_streak: Number(j.final_streak ?? 0),
+        day_index: Number(j.day_index),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const milestoneReached = await guardedPoll(
+    "MilestoneReached",
+    `${predictPackageId}::streak_system::MilestoneReached`,
+    "position_indexer.milestone_reached",
+    (ev) => {
+      const j = ev.parsedJson as {
+        user?: string;
+        milestone?: string | number;
+        day_index?: string | number;
+      };
+      if (!j?.user || j.day_index == null) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordStreakEvent({
+        user: j.user,
+        kind: "milestone",
+        milestone: Number(j.milestone ?? 0),
+        day_index: Number(j.day_index),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  // PoolSettled — fired by `prize_pool::settle_week` when the admin
+  // closes a week. After this, the leaderboard should mark any
+  // unclaimed top-10 entry as "lost the prize". Without this
+  // subscription the leaderboard kept offering claim txns for a
+  // closed week, and the on-chain `claim_prize` would abort with
+  // `EPoolSettled` (a confusing UX).
+  const poolSettled = await guardedPoll(
+    "PoolSettled",
+    `${predictPackageId}::prize_pool::PoolSettled`,
+    "position_indexer.pool_settled",
+    (ev) => {
+      const j = ev.parsedJson as {
+        pool_id?: string;
+        week_index?: string | number;
+      };
+      if (!j?.pool_id || j.week_index == null) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      markPoolWeekSettled(j.pool_id, Number(j.week_index), ts);
+    },
+  );
+
+  // PrizePoolFunded — informational. Anyone can call `fund_pool` to
+  // top up the prize. We log it for the activity feed so the
+  // leaderboard page can display "Sponsored by <funder>" or similar.
+  // No business logic depends on this row.
+  const prizePoolFunded = await guardedPoll(
+    "PrizePoolFunded",
+    `${predictPackageId}::prize_pool::PrizePoolFunded`,
+    "position_indexer.prize_pool_funded",
+    (_ev) => {
+      // No-op: we don't have a sponsor-feed table yet, but the poll
+      // confirms the subscription is healthy and bumps the cursor.
+      // When a sponsor feed ships, write to it here.
+    },
+  );
+
+  // VaultCreated / Deposited / Withdrawn / Allocated / Deallocated —
+  // fired by `vault.move`. The /vault page reads the live summary
+  // directly from the SDK, so these subscriptions are for the
+  // activity feed only. They keep the indexer cursor advancing
+  // through vault events so a future re-poll doesn't re-fetch the
+  // entire history.
+  const vaultCreated = await guardedPoll(
+    "VaultCreated",
+    `${predictPackageId}::vault::VaultCreated`,
+    "position_indexer.vault_created",
+    (ev) => {
+      const j = ev.parsedJson as { vault_id?: string; admin?: string };
+      if (!j?.vault_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: j.vault_id,
+        kind: "created",
+        actor: j.admin ?? null,
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const vaultDeposited = await guardedPoll(
+    "VaultDeposited",
+    `${predictPackageId}::vault::Deposited`,
+    "position_indexer.vault_deposited",
+    (ev) => {
+      const j = ev.parsedJson as {
+        vault_id?: string;
+        user?: string;
+        amount?: string | number;
+        vlp_minted?: string | number;
+      };
+      if (!j?.vault_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: j.vault_id,
+        kind: "deposit",
+        actor: j.user ?? null,
+        amount: Number(j.amount ?? 0),
+        vlp_delta: Number(j.vlp_minted ?? 0),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const vaultWithdrawn = await guardedPoll(
+    "VaultWithdrawn",
+    `${predictPackageId}::vault::Withdrawn`,
+    "position_indexer.vault_withdrawn",
+    (ev) => {
+      const j = ev.parsedJson as {
+        vault_id?: string;
+        user?: string;
+        amount?: string | number;
+        vlp_burned?: string | number;
+      };
+      if (!j?.vault_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: j.vault_id,
+        kind: "withdraw",
+        actor: j.user ?? null,
+        amount: Number(j.amount ?? 0),
+        vlp_delta: -Number(j.vlp_burned ?? 0),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const vaultAllocated = await guardedPoll(
+    "VaultAllocated",
+    `${predictPackageId}::vault::Allocated`,
+    "position_indexer.vault_allocated",
+    (ev) => {
+      const j = ev.parsedJson as {
+        vault_id?: string;
+        amount?: string | number;
+        total_allocated?: string | number;
+      };
+      if (!j?.vault_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: j.vault_id,
+        kind: "allocate",
+        amount: Number(j.amount ?? 0),
+        total_allocated: Number(j.total_allocated ?? 0),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const vaultDeallocated = await guardedPoll(
+    "VaultDeallocated",
+    `${predictPackageId}::vault::Deallocated`,
+    "position_indexer.vault_deallocated",
+    (ev) => {
+      const j = ev.parsedJson as {
+        vault_id?: string;
+        amount?: string | number;
+        total_allocated?: string | number;
+      };
+      if (!j?.vault_id) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: j.vault_id,
+        kind: "deallocate",
+        amount: Number(j.amount ?? 0),
+        total_allocated: Number(j.total_allocated ?? 0),
+        ts_ms: ts,
+      });
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

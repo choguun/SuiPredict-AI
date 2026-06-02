@@ -216,6 +216,38 @@ function startHealthServer() {
       res.end(JSON.stringify(getRecentDecisions(100)));
       return;
     }
+    if (url.pathname === "/agents/manifest") {
+      // Returns the live list of agents registered with the
+      // scheduler, including their cron expressions. The web
+      // `/agents` page consumes this so adding a new agent
+      // doesn't require a UI rebuild.
+      //
+      // Each entry has:
+      //   { name, cron, kind: "primary" | "legacy" }
+      // `kind` is derived from the entry's name against a small
+      // whitelist; expand the whitelist (or move it to .env) if
+      // a future agent is added that doesn't fit the dichotomy.
+      const legacyNames = new Set([
+        "MarketStrategist",
+        "PLPManager",
+        "RedeemKeeper",
+      ]);
+      const schedule = buildSchedule();
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(
+        JSON.stringify(
+          schedule.map((s) => ({
+            name: s.name,
+            cron: s.cron,
+            kind: legacyNames.has(s.name) ? "legacy" : "primary",
+          })),
+        ),
+      );
+      return;
+    }
     if (url.pathname === "/stats") {
       res.writeHead(200, {
         "Content-Type": "application/json",

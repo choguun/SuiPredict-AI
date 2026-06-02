@@ -34,3 +34,20 @@ export async function pickAtmStrike(
   const rounded = Math.round(spot / tickDollars) * tickDollars;
   return Math.max(rounded, strikeToDollars(BigInt(minStrike)));
 }
+
+/**
+ * True if `addr` is a syntactically valid Sui address AND is not the
+ * `0x0…000` placeholder. Used by the admin / referral-keeper / vault
+ * forward paths to skip a tx rather than abort on a non-existent
+ * recipient. Sui addresses are case-insensitive; the strict form is
+ * `0x` + 64 hex chars.
+ */
+export function isValidSuiAddress(addr: string | null | undefined): boolean {
+  if (!addr) return false;
+  const normalized = addr.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(normalized)) return false;
+  // Reject the all-zeros placeholder. The address technically
+  // validates, but transferring to it is a guaranteed abort.
+  if (/^0x0{64}$/.test(normalized)) return false;
+  return true;
+}

@@ -182,7 +182,7 @@ export default function VaultPage() {
           <div className="flex w-full sm:w-auto gap-3">
             <button
               type="button"
-              disabled={loading || !account}
+              disabled={loading || !account || !VAULT_ID}
               onClick={deposit}
               className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition-all hover:scale-[1.02] hover:shadow-emerald-900/50 disabled:opacity-50 disabled:scale-100"
             >
@@ -190,7 +190,7 @@ export default function VaultPage() {
             </button>
             <button
               type="button"
-              disabled={loading || !account || !vlpCoinId}
+              disabled={loading || !account || !vlpCoinId || !VAULT_ID}
               onClick={withdraw}
               className="flex-1 sm:flex-none rounded-xl border border-white/10 bg-white/5 px-8 py-3 text-sm font-bold text-white backdrop-blur-md transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
             >

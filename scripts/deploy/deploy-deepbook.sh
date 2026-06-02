@@ -19,7 +19,7 @@ OUT_FILE="${OUT_FILE:-./.env.deployed}"
 POOL_TICK_SIZE=10          # 0.00001 * 1_000_000 = 10 MIST
 POOL_LOT_SIZE=100000        # 0.1 * 1_000_000 = 100_000 MIST
 POOL_MIN_SIZE=100000       # 0.1 * 1_000_000 = 100_000 MIST
-POOL_CREATION_FEE=500000000 # 500 DEEP * 1_000_000 = 500_000_000 MIST
+POOL_CREATION_FEE=500000000 # 0.5 DEEP * 1_000_000_000 = 500_000_000 MIST (DeepBook testnet)
 
 # Pre-known testnet addresses
 DEEPBOOK_TESTNET="${DEEPBOOK_TESTNET:-0x74cd5657843c627f3d80f713b71e9f895bbbeb470956d8a8e1185badf6cc77c8}"
@@ -134,16 +134,15 @@ for obj in json.load(sys.stdin):
   log "=== Step 4: Create DEEP/DUSDC Pool ==="
   log "Pool params: tick=$POOL_TICK_SIZE lot=$POOL_LOT_SIZE min=$POOL_MIN_SIZE fee=$POOL_CREATION_FEE MIST"
 
-  # Approve pool creation fee spending (DEEP must be approved)
-  log "Approving pool creation fee ($((POOL_CREATION_FEE / 1000000)) DEEP)..."
-  APPROVE_OUT=$(sui client call \
-    --package "$TOKEN_PKG" \
-    --module "coin" \
-    --function "approve" \
-    --type-args "$DEEP_COIN_TYPE" \
-    --args "TODO: find CoinObject ID of a DEEP coin" "$POOL_CREATION_FEE" "$REGISTRY_ID" \
-    --json 2>&1) || warn "approve call failed (may not be needed for permissionless pool)"
-
+  # Pool creation: `create_permissionless_pool` takes the DEEP coin
+  # object directly as an arg, not via a prior `coin::approve` call.
+  # An approve-then-pool pattern is required only for the
+  # `create_pool` (governance) path, not the permissionless one.
+  # The earlier draft of this script had an `approve` call here with
+  # a TODO CoinObject ID — it was always a no-op and has been
+  # removed. If the operator sees a "DEEP not approved" error from
+  # the pool call below, check the v2 script (`deploy-self-hosted-v2.py`)
+  # for the correct gas-coin split pattern.
   POOL_OUT=$(sui client call \
     --package "$DEEPBOOK_PKG" \
     --module pool \

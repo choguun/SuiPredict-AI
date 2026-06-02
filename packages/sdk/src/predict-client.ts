@@ -344,6 +344,24 @@ export function buildPausePolicyTx(
   return tx;
 }
 
+/**
+ * Build `unpause` transaction. Owner-only counterpart to
+ * `buildPausePolicyTx` — the on-chain `unpause` asserts
+ * `ctx.sender() == policy.owner` (pause also allows the agent,
+ * unpause does not). Aborts with `ENotOwner` for any non-owner caller.
+ */
+export function buildUnpausePolicyTx(
+  policyId: string,
+  packageId = AGENT_POLICY_PACKAGE_ID,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::agent_policy::unpause`,
+    arguments: [tx.object(policyId)],
+  });
+  return tx;
+}
+
 export function buildAuthorizeSpendTx(
   policyId: string,
   amountDollars: number,

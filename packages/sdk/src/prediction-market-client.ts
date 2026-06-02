@@ -564,6 +564,179 @@ export function buildWithdrawSettledTx(
   return buildDeepBookWithdrawSettledTx(dbClient, poolKey);
 }
 
+// ─── Market-order / cancel / deposit wrappers ───────────────────────────────
+//
+// The on-chain entry points below all require both the `PredictionMarket<Q>`
+// shared object AND the underlying DeepBook `Pool<YES<Q>, Q>` plus the
+// user's `BalanceManager`. The market object carries `pool_id` and
+// `balance_manager_id` after `create_market`, so the caller can pass them
+// in directly. They are intentionally separate parameters (not folded
+// into a client) because these wrappers sit on the prediction-market
+// side of the boundary, not the DeepBook-client side; the market object
+// is required for `EMarketNotActive` and the dispute-window checks.
+
+// ─── Market-order entry ─────────────────────────────────────────────────────
+
+/**
+ * Build `place_market_order` transaction. Submits a taker order that
+ * sweeps the book at the best available price (DeepBook's place_market_order).
+ * Aborts with `EInvalidQuantity` if quantity == 0, `EMarketNotActive`
+ * if the market is resolved or disputed.
+ *
+ * @param marketId         - PredictionMarket<Q> object ID
+ * @param poolId           - DeepBook Pool<YES<Q>, Q> object ID
+ * @param balanceManagerId - User's BalanceManager object ID
+ * @param clientOrderId    - User-chosen order id (typically a monotonic counter)
+ * @param quantity         - Base-asset quantity (YES * 10^decimals)
+ * @param isBid            - true = buy YES with quote, false = sell YES for quote
+ */
+export function buildPlaceMarketOrderTx(params: {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+  clientOrderId: bigint;
+  quantity: bigint;
+  isBid: boolean;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::place_market_order`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.poolId),
+      tx.object(params.balanceManagerId),
+      tx.pure.u64(params.clientOrderId),
+      tx.pure.u64(params.quantity),
+      tx.pure.bool(params.isBid),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+// ─── Cancel wrappers ────────────────────────────────────────────────────────
+
+/**
+ * Build `cancel_order` transaction. Cancels a single open order by its
+ * DeepBook-assigned `order_id`. Aborts with `EMarketNotActive` if the
+ * market is resolved.
+ */
+export function buildCancelOrderTx(params: {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+  orderId: bigint;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::cancel_order`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.poolId),
+      tx.object(params.balanceManagerId),
+      tx.pure.u128(params.orderId),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+/**
+ * Build `cancel_orders` transaction. Batch-cancels a set of open orders.
+ * Each `orderId` is a u128 as DeepBook assigns them. The on-chain
+ * `cancel_live_orders` is the underlying call; the event is
+ * `OrdersBatchCancelledEvent` (one per tx, not one per order).
+ */
+export function buildCancelOrdersTx(params: {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+  orderIds: bigint[];
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::cancel_orders`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.poolId),
+      tx.object(params.balanceManagerId),
+      tx.pure.vector("u128", params.orderIds),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+/**
+ * Build `cancel_all_orders` transaction. Cancels every open order for
+ * this `BalanceManager` on the market's DeepBook pool. The on-chain
+ * function does not emit a batch event; the position-indexer observes
+ * the per-order `OrderCancelledEvent` (zero or more) that follow.
+ */
+export function buildCancelAllOrdersTx(params: {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::cancel_all_orders`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.poolId),
+      tx.object(params.balanceManagerId),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+// ─── BalanceManager top-up ──────────────────────────────────────────────────
+
+/**
+ * Build `deposit_for_trading` transaction. Deposits `Coin<YES<Q>>`,
+ * `Coin<Q>`, and `Coin<DEEP>` into the user's `BalanceManager` so they
+ * can place orders on the DeepBook pool. The three deposits are atomic
+ * (one tx) — the on-chain function aborts if any coin is missing.
+ *
+ * All three coin IDs are required; pre-validation is the caller's
+ * responsibility (e.g. resolve them from the user's Coin list first).
+ *
+ * @param marketId         - PredictionMarket<Q> object ID (referenced
+ *                           for symmetry with on-chain signature; the
+ *                           on-chain `_market` is unused — deposits go
+ *                           straight into the BalanceManager)
+ * @param balanceManagerId - User's BalanceManager object ID
+ * @param baseCoinId       - Coin<YES<DUSDC>> (held for ask orders)
+ * @param quoteCoinId      - Coin<DUSDC> (held for bid orders)
+ * @param deepCoinId       - Coin<DEEP> (held for fee rebates)
+ */
+export function buildDepositForTradingTx(params: {
+  marketId: string;
+  balanceManagerId: string;
+  baseCoinId: string;
+  quoteCoinId: string;
+  deepCoinId: string;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::deposit_for_trading`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(params.marketId),
+      tx.object(params.balanceManagerId),
+      tx.object(params.baseCoinId),
+      tx.object(params.quoteCoinId),
+      tx.object(params.deepCoinId),
+    ],
+  });
+  return tx;
+}
+
 // ─── DeepBook client factory ─────────────────────────────────────────────────
 
 /**

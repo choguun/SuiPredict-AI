@@ -82,6 +82,37 @@ export function buildFundPoolTx(
 }
 
 /**
+ * Build `create_pool` transaction. Deployer-only initialization of a
+ * `PrizePool<PrizeCoin>` shared object. The new pool is seeded with
+ * `initial_coin` (can be 0 — `fund_pool` can top it up later) and
+ * `current_week = initial_week`.
+ *
+ * The on-chain `create_pool` asserts the default distribution sums to
+ * `BPS` (10_000) so a bad hard-coded default aborts the publish tx
+ * rather than silently mis-paying every freshly-deployed pool.
+ *
+ * Bootstrap flow: deploy contracts → call `buildCreatePoolTx` once
+ * (typically with the deployer hot wallet) → save the resulting
+ * shared object id as `PRIZE_POOL_ID` in `.env`.
+ */
+export function buildCreatePoolTx(params: {
+  initialCoinId: string;
+  initialWeek: bigint;
+  prizeCoinType?: string;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prize_pool::create_pool`,
+    typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
+    arguments: [
+      tx.object(params.initialCoinId),
+      tx.pure.u64(params.initialWeek),
+    ],
+  });
+  return tx;
+}
+
+/**
  * Build `claim_prize` transaction. The `signature` must be an ed25519
  * signature over the canonical claim message (see `signClaimPayload`)
  * by the `PrizeAdmin` pubkey.

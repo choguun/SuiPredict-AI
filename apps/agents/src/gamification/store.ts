@@ -100,9 +100,147 @@ function getDb(): Database.Database {
         started_at_ms INTEGER NOT NULL,
         finished_at_ms INTEGER
       );
+
+      -- Streak event log. Populated by the position-indexer from the
+      -- on-chain `StreakUpdated` / `StreakBroken` / `MilestoneReached`
+      -- events (these are emitted by `streak_system::record_participation`
+      -- and were unsubscribed before r15 — the streak page showed stale
+      -- `current_streak` until the next indexer poll). Powers the
+      -- activity feed in the streak UI and the milestones card.
+      CREATE TABLE IF NOT EXISTS streak_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT NOT NULL,
+        kind TEXT NOT NULL,            -- 'updated' | 'broken' | 'milestone'
+        new_streak INTEGER,
+        final_streak INTEGER,
+        longest_streak INTEGER,
+        multiplier_tier INTEGER,
+        milestone INTEGER,             -- 1=3d, 2=7d, 3=14d, 4=30d, 5=100d
+        day_index INTEGER NOT NULL,
+        ts_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_streak_events_user_ts
+        ON streak_events(user, ts_ms DESC);
+      CREATE INDEX IF NOT EXISTS idx_streak_events_ts
+        ON streak_events(ts_ms DESC);
+
+      -- Per-pool weekly settlement state. Populated by the indexer
+      -- from `PoolSettled` events. The leaderboard-worker uses
+      -- `settledWeeks` to mark weeks as closed when computing the
+      -- `claimed` annotation (a settled week is past-claim, so any
+      -- unclaimed entry is "lost" the prize). Without this indexer
+      -- path the leaderboard could keep offering claim txns for a
+      -- week the on-chain pool has already marked settled.
+      CREATE TABLE IF NOT EXISTS pool_weeks (
+        pool_id TEXT NOT NULL,
+        week_index INTEGER NOT NULL,
+        settled INTEGER NOT NULL,      -- 0/1
+        settled_at_ms INTEGER,
+        PRIMARY KEY (pool_id, week_index)
+      );
     `);
   }
   return db;
+}
+
+/**
+ * Append a row to `streak_events`. Idempotent on (user, kind, day_index)
+ * via `INSERT OR IGNORE` so a re-poll of the same Move event doesn't
+ * double-write. `kind` is one of `'updated' | 'broken' | 'milestone'`.
+ */
+export function recordStreakEvent(ev: {
+  user: string;
+  kind: "updated" | "broken" | "milestone";
+  new_streak?: number;
+  final_streak?: number;
+  longest_streak?: number;
+  multiplier_tier?: number;
+  milestone?: number;
+  day_index: number;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO streak_events
+         (user, kind, new_streak, final_streak, longest_streak,
+          multiplier_tier, milestone, day_index, ts_ms)
+       VALUES
+         (@user, @kind, @new_streak, @final_streak, @longest_streak,
+          @multiplier_tier, @milestone, @day_index, @ts_ms)`,
+    )
+    .run({
+      user: ev.user,
+      kind: ev.kind,
+      new_streak: ev.new_streak ?? null,
+      final_streak: ev.final_streak ?? null,
+      longest_streak: ev.longest_streak ?? null,
+      multiplier_tier: ev.multiplier_tier ?? null,
+      milestone: ev.milestone ?? null,
+      day_index: ev.day_index,
+      ts_ms: ev.ts_ms,
+    });
+}
+
+export interface StreakEvent {
+  id: number;
+  user: string;
+  kind: "updated" | "broken" | "milestone";
+  new_streak: number | null;
+  final_streak: number | null;
+  longest_streak: number | null;
+  multiplier_tier: number | null;
+  milestone: number | null;
+  day_index: number;
+  ts_ms: number;
+}
+
+/** Recent streak events for the activity feed, newest first. */
+export function listStreakEvents(
+  user?: string,
+  limit: number = 50,
+): StreakEvent[] {
+  const db = getDb();
+  if (user) {
+    return db
+      .prepare(
+        `SELECT * FROM streak_events WHERE user = ? ORDER BY ts_ms DESC LIMIT ?`,
+      )
+      .all(user, limit) as StreakEvent[];
+  }
+  return db
+    .prepare(
+      `SELECT * FROM streak_events ORDER BY ts_ms DESC LIMIT ?`,
+    )
+    .all(limit) as StreakEvent[];
+}
+
+/** Mark a (pool, week) as settled. Idempotent. */
+export function markPoolWeekSettled(
+  poolId: string,
+  weekIndex: number,
+  tsMs: number,
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pool_weeks (pool_id, week_index, settled, settled_at_ms)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(pool_id, week_index) DO UPDATE SET
+         settled=1, settled_at_ms=excluded.settled_at_ms`,
+    )
+    .run(poolId, weekIndex, tsMs);
+}
+
+/** True if a (pool, week) has been observed as settled on-chain. */
+export function isPoolWeekSettled(
+  poolId: string,
+  weekIndex: number,
+): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT settled FROM pool_weeks WHERE pool_id = ? AND week_index = ?`,
+    )
+    .get(poolId, weekIndex) as { settled: number } | undefined;
+  return row?.settled === 1;
 }
 
 export function recordDailyScore(score: DailyScore): void {

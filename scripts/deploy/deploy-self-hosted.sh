@@ -98,10 +98,10 @@ log "  Self-hosted DUSDC package: $SELF_DUSDC_PKG"
 ###############################################################################
 log "Step 4: Creating DEEP/DUSDC pool..."
 
-# Pool creation fee = 500 DEEP = 500_000_000 MIST
-# We have ~100k DEEP in one coin, need to split off 500 DEEP for the fee
+# Pool creation fee = 0.5 DEEP = 500_000_000 MIST (DeepBook testnet)
+# We have ~100k DEEP in one coin, need to split off 0.5 DEEP for the fee
 
-log "  Splitting 500 DEEP for pool creation fee..."
+log "  Splitting 0.5 DEEP for pool creation fee..."
 SPLIT_OUT=$(SUI_NETWORK="$NETWORK" sui client call \
     --package 0x2 \
     --module coin \

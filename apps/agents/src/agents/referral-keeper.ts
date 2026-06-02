@@ -30,6 +30,7 @@ import {
   createClient,
   DUSDC_TYPE,
   executeTransaction,
+  isValidSuiAddress,
   REFERRAL_TREASURY_ADDRESS,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -188,7 +189,7 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
   // deposit. `transferObjects` accepts multiple inputs in a single
   // PTB, so a sweep that produced N coins is one tx, not N.
   let forwardedDigest: string | null = null;
-  if (REFERRAL_TREASURY_ADDRESS) {
+  if (isValidSuiAddress(REFERRAL_TREASURY_ADDRESS)) {
     const postCoins = await listDusdcCoinIds(client, agentAddr);
     const newCoinIds: string[] = [];
     for (const id of postCoins) {
@@ -213,7 +214,7 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
     }
   } else {
     console.warn(
-      "[referral-keeper] REFERRAL_TREASURY_ADDRESS not set — claimed rewards will accumulate in the agent's hot wallet until the env is configured.",
+      "[referral-keeper] REFERRAL_TREASURY_ADDRESS is unset or the 0x0…000 placeholder — claimed rewards will accumulate in the agent's hot wallet until the env is configured with a real 0x-prefixed 64-char hex address.",
     );
   }
 

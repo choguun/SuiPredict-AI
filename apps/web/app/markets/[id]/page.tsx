@@ -954,7 +954,7 @@ export default function MarketDetailPage() {
               onClick={mergeCollateral}
               className="min-h-11 rounded-lg border border-white/10 bg-black/20 px-4 text-sm font-semibold text-zinc-300 transition-all hover:bg-white/5 disabled:opacity-50"
             >
-              Merge to USDC
+              Sell shares
             </button>
           </div>
         </Card>

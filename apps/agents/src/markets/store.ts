@@ -92,11 +92,87 @@ export function getDb(): Database.Database {
         cursor TEXT,
         updated_at_ms INTEGER NOT NULL
       );
+
+      -- Vault activity log. Populated by the position-indexer from the
+      -- on-chain `VaultCreated` / `Deposited` / `Withdrawn` / `Allocated` /
+      -- `Deallocated` events (these were unsubscribed before r15 — the
+      -- vault page reads its summary directly from the SDK, so the table
+      -- is purely a recent-activity feed for the vault UI). Powers an
+      -- optional "Recent flows" panel on /vault.
+      CREATE TABLE IF NOT EXISTS vault_flows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vault_id TEXT NOT NULL,
+        kind TEXT NOT NULL,         -- 'created' | 'deposit' | 'withdraw' | 'allocate' | 'deallocate'
+        actor TEXT,                 -- user (for deposit/withdraw) or admin
+        amount INTEGER NOT NULL DEFAULT 0,
+        vlp_delta INTEGER NOT NULL DEFAULT 0,
+        total_allocated INTEGER,
+        ts_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_vault_flows_vault_ts
+        ON vault_flows(vault_id, ts_ms DESC);
     `);
     migrateMarketColumns();
     seedDemoMarkets();
   }
   return db;
+}
+
+/** Append a vault activity row. Used by the position-indexer. */
+export function recordVaultFlow(flow: {
+  vault_id: string;
+  kind: "created" | "deposit" | "withdraw" | "allocate" | "deallocate";
+  actor?: string;
+  amount?: number;
+  vlp_delta?: number;
+  total_allocated?: number;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO vault_flows
+         (vault_id, kind, actor, amount, vlp_delta, total_allocated, ts_ms)
+       VALUES
+         (@vault_id, @kind, @actor, @amount, @vlp_delta, @total_allocated, @ts_ms)`,
+    )
+    .run({
+      vault_id: flow.vault_id,
+      kind: flow.kind,
+      actor: flow.actor ?? null,
+      amount: flow.amount ?? 0,
+      vlp_delta: flow.vlp_delta ?? 0,
+      total_allocated: flow.total_allocated ?? null,
+      ts_ms: flow.ts_ms,
+    });
+}
+
+export interface VaultFlow {
+  id: number;
+  vault_id: string;
+  kind: "created" | "deposit" | "withdraw" | "allocate" | "deallocate";
+  actor: string | null;
+  amount: number;
+  vlp_delta: number;
+  total_allocated: number | null;
+  ts_ms: number;
+}
+
+/** Recent vault flows, newest first. */
+export function listVaultFlows(
+  vaultId?: string,
+  limit: number = 50,
+): VaultFlow[] {
+  const db = getDb();
+  if (vaultId) {
+    return db
+      .prepare(
+        `SELECT * FROM vault_flows WHERE vault_id = ? ORDER BY ts_ms DESC LIMIT ?`,
+      )
+      .all(vaultId, limit) as VaultFlow[];
+  }
+  return db
+    .prepare(`SELECT * FROM vault_flows ORDER BY ts_ms DESC LIMIT ?`)
+    .all(limit) as VaultFlow[];
 }
 
 function migrateMarketColumns() {
