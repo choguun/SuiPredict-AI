@@ -127,7 +127,7 @@ export async function handleGamificationRoute(
       json(res, 400, { error: "missing required params" });
       return true;
     }
-    if (!/^0x[a-fA-F0-9]{1,64}$/.test(user)) {
+    if (!/^0x[a-fA-F0-9]{64}$/.test(user)) {
       json(res, 400, { error: "invalid user address" });
       return true;
     }
@@ -204,8 +204,21 @@ export async function handleGamificationRoute(
   if (claimMatch) {
     if (req.method === "GET") {
       const week = url.searchParams.get("week");
-      const weekNum = week != null ? Number(week) : undefined;
-      json(res, 200, listPrizeClaims(weekNum));
+      if (week != null) {
+        // Reject non-integer / negative week params: a `week=abc` would
+        // otherwise parse to NaN, fall through the `!= null` check, and
+        // return [] from the SQLite `WHERE week_index = ?` query. An
+        // operator hitting this endpoint to debug a missing claim
+        // would never know the input was rejected.
+        const weekNum = Number(week);
+        if (!Number.isInteger(weekNum) || weekNum < 0) {
+          json(res, 400, { error: "invalid week param" });
+          return true;
+        }
+        json(res, 200, listPrizeClaims(weekNum));
+      } else {
+        json(res, 200, listPrizeClaims());
+      }
       return true;
     }
     // POST
@@ -229,7 +242,7 @@ export async function handleGamificationRoute(
     if (
       !body ||
       typeof body.user !== "string" ||
-      !/^0x[a-fA-F0-9]{1,64}$/.test(body.user) ||
+      !/^0x[a-fA-F0-9]{64}$/.test(body.user) ||
       (typeof body.weekIndex !== "number" && typeof body.weekIndex !== "string") ||
       typeof body.rank !== "number" ||
       body.rank <= 0
@@ -241,12 +254,6 @@ export async function handleGamificationRoute(
       typeof body.weekIndex === "string" ? Number(body.weekIndex) : body.weekIndex;
     if (!Number.isFinite(weekIndex) || weekIndex < 0) {
       json(res, 400, { error: "invalid weekIndex" });
-      return true;
-    }
-    const amountNum =
-      typeof body.amount === "string" ? Number(body.amount) : body.amount ?? 0;
-    if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      json(res, 400, { error: "invalid amount" });
       return true;
     }
     // Membership check — same fallback used by /prize/signature so
@@ -270,6 +277,17 @@ export async function handleGamificationRoute(
       });
       return true;
     }
+    // Re-derive the canonical amount from the rank table. The
+    // `amount` in the request body is ignored — accepting it would let
+    // a client pollute the off-chain row with a wrong value, and the
+    // `ON CONFLICT DO UPDATE` in `recordPrizeClaim` would race the
+    // indexer's correct on-chain amount on the next poll. The server
+    // is the single source of truth for the rank table.
+    const amount = expectedAmountForRank(
+      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+      body.rank,
+      DEFAULT_DISTRIBUTION_BPS,
+    );
     // Idempotency: a second POST for an already-claimed (user, week)
     // returns 409. Without this, two concurrent claims both pass the
     // membership check (both see `claimed: false`), both submit
@@ -288,7 +306,7 @@ export async function handleGamificationRoute(
         user: body.user,
         week_index: weekIndex,
         rank: body.rank,
-        amount: amountNum,
+        amount: Number(amount),
         tx_digest: body.txDigest ?? null,
         claimed_at_ms: Date.now(),
       });

@@ -534,9 +534,15 @@ export function listChainOrders(
   quantity: number;
   timestamp_ms: number;
 }> {
+  // `cancelled_at_ms` is set by `markOrderCancelled` (driven by the
+  // OrderCancelledEvent poller) and by the user-side cancel tx. The
+  // UI's "open orders" panel filters by `cancelled_at_ms IS NULL`
+  // server-side so a cancelled row doesn't keep rendering after the
+  // user has dismissed the cancel toast.
   return getDb()
     .prepare(
       `SELECT * FROM chain_orders WHERE market_id = ?
+         AND cancelled_at_ms IS NULL
        ORDER BY timestamp_ms DESC LIMIT ?`,
     )
     .all(marketId, limit)

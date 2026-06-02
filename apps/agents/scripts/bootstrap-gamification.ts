@@ -395,9 +395,51 @@ async function main() {
   log(`PrizeAdmin:     ${prizeAdminId}`);
 
   // 3) Prize admin keypair
+  //
+  // SAFETY: bootstrap is supposed to run once per package, but in
+  // practice operators re-run it from a fresh machine after a
+  // disaster. If PRIZE_ADMIN_PUBKEY_B64 is in .env (an earlier run
+  // succeeded and wrote the value) but PRIZE_ADMIN_PRIVATE_KEY is
+  // missing (the new machine doesn't have the secret), a naive
+  // `loadOrCreatePrizeKeypair` would generate a fresh key, and the
+  // unconditional rotate_pubkey on the next step would overwrite the
+  // on-chain pubkey. The original signing server — still holding the
+  // old secret — would produce signatures that fail on-chain
+  // verification, breaking every future claim. The guards below
+  // refuse to rotate when:
+  //   (a) PRIZE_ADMIN_PUBKEY_B64 is set in .env (prior run recorded it)
+  //   (b) PRIZE_ADMIN_PRIVATE_KEY is missing on the new machine
+  //   (c) the operator has not explicitly opted in via --rotate-prize-pubkey
+  // and bail with a clear error. We also bail if the loaded/new
+  // keypair's pubkey doesn't match the recorded one, so a stale .env
+  // entry can't silently drive a rotation.
+  const ROTATE_PRIZE_PUBKEY = process.argv.includes("--rotate-prize-pubkey");
+  const existingKeyB64 = process.env.PRIZE_ADMIN_PRIVATE_KEY;
+  const existingPubkeyB64 = process.env.PRIZE_ADMIN_PUBKEY_B64 ?? "";
+  if (!existingKeyB64 && existingPubkeyB64 && !ROTATE_PRIZE_PUBKEY) {
+    err(
+      "Refusing to rotate prize admin pubkey: PRIZE_ADMIN_PUBKEY_B64 is set in .env " +
+        `(${existingPubkeyB64.slice(0, 16)}…) but PRIZE_ADMIN_PRIVATE_KEY is missing. ` +
+        "Generating a new keypair would clobber the on-chain pubkey and invalidate " +
+        "the signing key on the original server. Either:\n" +
+        "  • restore PRIZE_ADMIN_PRIVATE_KEY in .env and re-run, OR\n" +
+        "  • pass --rotate-prize-pubkey to forcibly generate a new key and rotate on-chain " +
+        "(only when you have intentionally lost access to the previous key).",
+    );
+  }
   const { keypair: prizeKey, isNew } = loadOrCreatePrizeKeypair();
   const prizePubkey = Array.from(prizeKey.getPublicKey().toRawBytes());
-  const prizePubkeyB64 = Buffer.from(prizePubkey).toString("base64");
+  const newPubkeyB64 = Buffer.from(prizePubkey).toString("base64");
+  if (existingPubkeyB64 && newPubkeyB64 !== existingPubkeyB64) {
+    err(
+      `Prize admin pubkey mismatch: the loaded/generated key produces a different pubkey ` +
+        `(${newPubkeyB64.slice(0, 16)}…) than the one recorded in PRIZE_ADMIN_PUBKEY_B64 ` +
+        `(${existingPubkeyB64.slice(0, 16)}…). Continuing would silently overwrite the on-chain ` +
+        "pubkey with a key the original signing server doesn't have. " +
+        "Either fix PRIZE_ADMIN_PRIVATE_KEY, or pass --rotate-prize-pubkey to accept the new key.",
+    );
+  }
+  const prizePubkeyB64 = newPubkeyB64;
   const prizeAddress = prizeKey.getPublicKey().toSuiAddress();
   log(
     `Prize admin: ${prizeAddress} (${isNew ? "NEW keypair generated" : "loaded from env"})`,
@@ -410,19 +452,26 @@ async function main() {
     log(`  SAVE THIS — PRIZE_ADMIN_PRIVATE_KEY: ${secretStr}`);
   }
 
-  // 4) Set pubkey on-chain
-  log("Setting PrizeAdmin pubkey on-chain...");
-  {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::prize_pool::rotate_pubkey`,
-      arguments: [
-        tx.object(prizeAdminId),
-        tx.pure.vector("u8", prizePubkey),
-      ],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    log(`  rotate_pubkey: ${res.digest}`);
+  // 4) Set pubkey on-chain. Skipped when the on-chain pubkey already
+  // matches the env's recorded value — re-running `rotate_pubkey`
+  // costs gas and produces the same bytes. The guards above ensure
+  // we never get here with a stale secret.
+  if (existingPubkeyB64 === prizePubkeyB64) {
+    log("On-chain PrizeAdmin pubkey already matches env; skipping rotate_pubkey.");
+  } else {
+    log("Setting PrizeAdmin pubkey on-chain...");
+    {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::prize_pool::rotate_pubkey`,
+        arguments: [
+          tx.object(prizeAdminId),
+          tx.pure.vector("u8", prizePubkey),
+        ],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      log(`  rotate_pubkey: ${res.digest}`);
+    }
   }
 
   // 5) Find a DBUSDC coin to seed the pool; mint from TreasuryCap if needed
@@ -634,9 +683,14 @@ async function main() {
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
-    PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
   };
+  // Conditional write: only set PRIZE_ADMIN_PUBKEY_B64 when we have
+  // a non-empty value. If the pubkey step was skipped (matching
+  // on-chain already, or a guard bailed), there's nothing to record.
+  if (prizePubkeyB64) {
+    agentsUpdates.PRIZE_ADMIN_PUBKEY_B64 = prizePubkeyB64;
+  }
   if (streakRegistryId) agentsUpdates.STREAK_REGISTRY_ID = streakRegistryId;
   if (streakAdminId) agentsUpdates.STREAK_ADMIN_ID = streakAdminId;
   if (prizePoolId) agentsUpdates.PRIZE_POOL_ID = prizePoolId;

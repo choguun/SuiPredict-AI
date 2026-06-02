@@ -36,7 +36,7 @@ import {
   upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
-import { getPrizeClaim, recordPrizeClaim } from "../gamification/store.js";
+import { recordPrizeClaim } from "../gamification/store.js";
 
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
@@ -420,9 +420,14 @@ export async function runPositionIndexer(
   // annotation is correct even when the web's `POST /prize/claims`
   // notification fails (network blip, agents restart mid-tx, etc.).
   //
-  // Idempotency: `getPrizeClaim` short-circuits if a row already
-  // exists, so a successful POST plus a successful indexer poll for
-  // the same on-chain event both leave the same row.
+  // Idempotency: `recordPrizeClaim` is `ON CONFLICT(user, week) DO
+  // UPDATE`, so a successful POST plus a successful indexer poll for
+  // the same on-chain event both leave the same row. We do NOT
+  // short-circuit on `getPrizeClaim(j.user, weekIndex)` because the
+  // web POST can have written a stale amount (e.g. before
+  // PRIZE_WEEKLY_AMOUNT was updated server-side) that the on-chain
+  // event now corrects. Skipping the indexer write would let the
+  // wrong amount persist forever.
   const prizeClaims = await guardedPoll(
     "PrizeClaimed",
     `${predictPackageId}::prize_pool::PrizeClaimed`,
@@ -432,7 +437,6 @@ export async function runPositionIndexer(
       if (!j?.user || j.week_index == null || j.rank == null) return;
       const weekIndex = Number(j.week_index);
       if (!Number.isFinite(weekIndex) || weekIndex < 0) return;
-      if (getPrizeClaim(j.user, weekIndex)) return; // already recorded
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
       recordPrizeClaim({
         user: j.user,

@@ -68,6 +68,13 @@ function shouldRun(step: string): boolean {
   return ONLY_FLAG.size === 0 || ONLY_FLAG.has(step);
 }
 
+// --rotate-prize-pubkey: opt-in to forcibly generating a new prize
+// admin keypair and overwriting the on-chain PrizeAdmin pubkey.
+// DANGEROUS — the previous on-chain pubkey may be signing live claims
+// on another machine. Use only when you have intentionally lost
+// access to the previous PRIZE_ADMIN_PRIVATE_KEY.
+const ROTATE_PRIZE_PUBKEY = process.argv.includes("--rotate-prize-pubkey");
+
 function log(msg: string) {
   console.log(`[resume] ${msg}`);
 }
@@ -262,12 +269,34 @@ async function main() {
       );
     }
     const existingKeyB64 = process.env.PRIZE_ADMIN_PRIVATE_KEY;
+    const existingPubkeyB64 = process.env.PRIZE_ADMIN_PUBKEY_B64 ?? "";
+    if (!existingKeyB64 && existingPubkeyB64 && !ROTATE_PRIZE_PUBKEY) {
+      err(
+        "Refusing to rotate prize admin pubkey: PRIZE_ADMIN_PUBKEY_B64 is set in .env " +
+          `(${existingPubkeyB64.slice(0, 16)}…) but PRIZE_ADMIN_PRIVATE_KEY is missing. ` +
+          "Generating a new keypair would clobber the on-chain pubkey and invalidate " +
+          "the signing key on the original server. Either:\n" +
+          "  • restore PRIZE_ADMIN_PRIVATE_KEY in .env and re-run, OR\n" +
+          "  • pass --rotate-prize-pubkey to forcibly generate a new key and rotate on-chain " +
+          "(only when you have intentionally lost access to the previous key).",
+      );
+    }
     const prizeKey = existingKeyB64
       ? Ed25519Keypair.fromSecretKey(existingKeyB64)
       : new Ed25519Keypair();
     isNewPrizeKey = !existingKeyB64;
     const prizePubkey = Array.from(prizeKey.getPublicKey().toRawBytes());
-    prizePubkeyB64 = Buffer.from(prizePubkey).toString("base64");
+    const newPubkeyB64 = Buffer.from(prizePubkey).toString("base64");
+    if (existingPubkeyB64 && newPubkeyB64 !== existingPubkeyB64) {
+      err(
+        `Prize admin pubkey mismatch: the secret in PRIZE_ADMIN_PRIVATE_KEY produces a different pubkey ` +
+          `(${newPubkeyB64.slice(0, 16)}…) than the one recorded in PRIZE_ADMIN_PUBKEY_B64 ` +
+          `(${existingPubkeyB64.slice(0, 16)}…). Re-running without --rotate-prize-pubkey would silently ` +
+          "overwrite the on-chain pubkey with a key the existing signing server doesn't have. " +
+          "Either fix PRIZE_ADMIN_PRIVATE_KEY, or pass --rotate-prize-pubkey to accept the new key.",
+      );
+    }
+    prizePubkeyB64 = newPubkeyB64;
     log(
       `Prize admin: ${prizeKey.getPublicKey().toSuiAddress()} (${isNewPrizeKey ? "NEW keypair generated" : "loaded from env"})`,
     );
@@ -463,9 +492,17 @@ async function main() {
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
-    PRIZE_ADMIN_PUBKEY_B64: prizePubkeyB64,
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
   };
+  // Conditional write: only set PRIZE_ADMIN_PUBKEY_B64 when the step
+  // actually ran AND produced a non-empty pubkey. A partial resume
+  // (e.g. --only=vault) would otherwise leave a stub
+  // `PRIZE_ADMIN_PUBKEY_B64=` line in .env that confuses operators
+  // reading the file later. The actual pubkey is set by the
+  // `prize_pubkey` step above.
+  if (prizePubkeyB64) {
+    agentsUpdates.PRIZE_ADMIN_PUBKEY_B64 = prizePubkeyB64;
+  }
   if (streakRegistryId) agentsUpdates.STREAK_REGISTRY_ID = streakRegistryId;
   if (streakAdminId) agentsUpdates.STREAK_ADMIN_ID = streakAdminId;
   if (prizeAdminId) agentsUpdates.PRIZE_ADMIN_ID = prizeAdminId;
