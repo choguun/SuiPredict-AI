@@ -1,0 +1,439 @@
+/**
+ * Parlay worker — every-minute cron.
+ *
+ * Drives the on-chain parlay lifecycle after the user has submitted
+ * `create_parlay` and the position-indexer has mirrored the
+ * `ParlayCreated` event into the off-chain `parlays` table. For each
+ * unfinalized parlay:
+ *
+ *   1. Walk the legs in order. For each leg whose index is `>=
+ *      legs_recorded` (i.e. still LEG_PENDING on-chain), check the
+ *      corresponding market's resolution status from the off-chain
+ *      `markets` table.
+ *
+ *   2. If the market is resolved (and not disputed), submit a
+ *      `parlay::record_leg` PTB. The on-chain check asserts the
+ *      market is `is_resolved == true` and not disputed, and that
+ *      the market id matches the leg's saved `market_id`. The worker
+ *      uses the off-chain `markets.status` to gate the call so we
+ *      don't waste gas on a doomed tx for an unresolved market.
+ *
+ *   3. Once `legs_recorded == leg_count` (i.e. every leg has been
+ *      recorded, whether won or lost), submit `parlay::finalize_parlay`.
+ *      The on-chain check asserts `legs_recorded == leg_count` and
+ *      `pool_id == object::id(pool)`, then pays out
+ *      `collateral * payout_bps / 10_000` if `legs_lost == 0`.
+ *
+ * The worker is best-effort per tick. A leg is skipped (and retried
+ * on the next tick) if:
+ *   - the underlying market isn't in the off-chain mirror yet
+ *     (positions indexer hasn't picked up `MarketCreatedEvent` for it);
+ *   - the market is in `disputed` status (don't finalize while a
+ *     dispute is pending);
+ *   - the market is still `active` (not yet resolved by the resolver);
+ *   - the call is for a `leg_index >= leg_count` (defensive — the
+ *     parlay struct invariant should prevent this, but a partial
+ *     indexer backfill could surface a row with mismatched counts).
+ *
+ * Each leg is its own PTB so a single failed leg (e.g. transient
+ * RPC error) doesn't abort the others. Finalize is one PTB per
+ * parlay since the on-chain check needs every leg recorded first.
+ *
+ * Why a dedicated worker (vs. folding this into the position-indexer):
+ *   - The indexer is generic event mirroring — it never signs txs.
+ *   - The lifecycle is admin-driven (the deployer keypair is the
+ *     caller of `record_leg` / `finalize_parlay`), so it must run
+ *     in the signer-bearing worker context, not the indexer.
+ *   - The cadence is the same as the position-indexer (every minute)
+ *     so leg recording and event mirroring stay in lockstep.
+ */
+import {
+  buildFinalizeParlayTx,
+  buildRecordLegTx,
+  DUSDC_TYPE,
+  type SuiClient,
+} from "@suipredict/sdk";
+import { isMoveAbortCode } from "@suipredict/sdk";
+import { Transaction } from "@mysten/sui/transactions";
+import { createClient, executeTransaction } from "@suipredict/sdk";
+import type { AgentContext, AgentResult } from "../lib.js";
+import { recordResult } from "../lib.js";
+import { getMarket } from "../markets/store.js";
+import {
+  listReadyToFinalizeParlays,
+  listUnfinalizedParlays,
+  type ParlayRow,
+} from "../gamification/store.js";
+
+const PKG = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+
+/**
+ * Per-leg retry cap for transient RPC errors. Permanent errors
+ * (Move aborts) are not retried — they will always fail and would
+ * just waste gas.
+ */
+const PER_LEG_MAX_RETRY = 2;
+
+/**
+ * Permanent Move-abort error codes emitted by `parlay::record_leg`
+ * and `parlay::finalize_parlay`. Surfaced via the shared
+ * `isMoveAbortCode(err, module, code)` helper so the worker doesn't
+ * maintain its own regex over Sui error text.
+ *
+ * Codes sourced from packages/contracts/sources/parlay.move:
+ *   EParlayAlreadyFinalized = 0
+ *   ELegMismatch            = 1
+ *   ELegAlreadyRecorded     = 2
+ *   EMarketNotResolved      = 3
+ *   EMarketDisputed         = 4
+ *   EParlayNotReady         = 5
+ *   EPoolUnderfunded        = 6
+ *   EInvalidNewAdmin        = 7
+ *   EInvalidLegCount        = 8
+ *   EZeroCollateral         = 9
+ *   EMaxPayoutBelowBps      = 10
+ *   EInsufficientLiquidity  = 11
+ *   EWithdrawTooLarge       = 12
+ *   EPayoutCapExceeded      = 13
+ *   ECoinTypeMismatch       = 14
+ */
+function isPermanentParlayError(err: unknown): boolean {
+  if (!isMoveAbortCode(err, "parlay", 0)) return false; // EParlayAlreadyFinalized
+  if (isMoveAbortCode(err, "parlay", 1)) return true; // ELegMismatch — leg.market_id mismatch
+  if (isMoveAbortCode(err, "parlay", 2)) return true; // ELegAlreadyRecorded — already recorded
+  if (isMoveAbortCode(err, "parlay", 3)) return true; // EMarketNotResolved — should be filtered by market.status check, but if race, skip
+  if (isMoveAbortCode(err, "parlay", 4)) return true; // EMarketDisputed — skip
+  if (isMoveAbortCode(err, "parlay", 5)) return true; // EParlayNotReady — finalize before all legs
+  if (isMoveAbortCode(err, "parlay", 6)) return true; // EPoolUnderfunded — operator must top up
+  if (isMoveAbortCode(err, "parlay", 7)) return true; // EInvalidNewAdmin
+  if (isMoveAbortCode(err, "parlay", 8)) return true; // EInvalidLegCount
+  if (isMoveAbortCode(err, "parlay", 9)) return true; // EZeroCollateral
+  if (isMoveAbortCode(err, "parlay", 10)) return true; // EMaxPayoutBelowBps
+  if (isMoveAbortCode(err, "parlay", 11)) return true; // EInsufficientLiquidity
+  if (isMoveAbortCode(err, "parlay", 12)) return true; // EWithdrawTooLarge
+  if (isMoveAbortCode(err, "parlay", 13)) return true; // EPayoutCapExceeded
+  if (isMoveAbortCode(err, "parlay", 14)) return true; // ECoinTypeMismatch
+  return false;
+}
+
+function isTransientError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Any Move abort is a contract-level decision; retrying just wastes gas.
+  if (/MoveAbort/.test(msg)) return false;
+  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Build a one-leg `record_leg` PTB for a single (parlay, market,
+ * leg_index) tuple. The market must be a `PredictionMarket<Q>` shared
+ * object whose type parameter matches the parlay's collateral
+ * type — in production both are `<pkg>::prediction_market::PredictionMarket<DUSDC_TYPE>`.
+ */
+function buildSingleRecordLegTx(
+  parlayId: string,
+  marketId: string,
+  legIndex: number,
+): Transaction {
+  return buildRecordLegTx({
+    parlayId,
+    marketId,
+    marketType: `${PKG}::prediction_market::PredictionMarket<${DUSDC_TYPE}>`,
+    legIndex,
+  });
+}
+
+/**
+ * Submit a `record_leg` PTB for one (parlay, leg_index) pair, with
+ * up to `PER_LEG_MAX_RETRY` retries on transient errors. Permanent
+ * errors (Move aborts) short-circuit and return their kind so the
+ * caller can log without burning the retry budget.
+ */
+type LegResult =
+  | { kind: "ok"; digest: string }
+  | { kind: "permanent"; err: unknown }
+  | { kind: "transient_exhausted"; err: unknown };
+
+async function recordOneLeg(
+  client: SuiClient,
+  signer: AgentContext["signer"],
+  parlayId: string,
+  marketId: string,
+  legIndex: number,
+): Promise<LegResult> {
+  for (let attempt = 0; attempt <= PER_LEG_MAX_RETRY; attempt++) {
+    try {
+      const tx = buildSingleRecordLegTx(parlayId, marketId, legIndex);
+      const res = await executeTransaction(client, tx, signer);
+      return { kind: "ok", digest: res.digest };
+    } catch (e) {
+      if (isPermanentParlayError(e)) {
+        return { kind: "permanent", err: e };
+      }
+      if (!isTransientError(e) || attempt === PER_LEG_MAX_RETRY) {
+        return { kind: "transient_exhausted", err: e };
+      }
+      // 1s, 2s backoff between retries
+      await sleep(1_000 * 2 ** attempt);
+    }
+  }
+  // Unreachable: the loop always returns or throws. Belt-and-suspenders.
+  return { kind: "transient_exhausted", err: new Error("exhausted") };
+}
+
+/**
+ * Process all unfinalized parlays: record each pending leg whose
+ * underlying market is resolved, then finalize any parlay whose
+ * `legs_recorded == leg_count`.
+ *
+ * Returns a short, human-readable summary for the cron log; the
+ * exact digest trail goes through `recordResult` (which already
+ * appends to `decisions`).
+ */
+export async function runParlayWorker(
+  ctx: AgentContext,
+): Promise<AgentResult> {
+  if (!PKG) {
+    return recordResult("ParlayWorker", {
+      action: "skip",
+      reasoning: "AGENT_POLICY_PACKAGE_ID not set — worker inert.",
+    });
+  }
+  if (!DUSDC_TYPE) {
+    return recordResult("ParlayWorker", {
+      action: "skip",
+      reasoning: "DUSDC_TYPE not set — worker inert.",
+    });
+  }
+  const client = createClient();
+
+  // ---- 1. Record pending legs for unfinalized parlays --------------
+  // Pull the full list once (not per-user) so a user with 5 parlays
+  // doesn't trigger 5 separate full-table scans. The index on
+  // `finalized` keeps the query bounded.
+  const allUnfinalized = listUnfinalizedParlays();
+  if (allUnfinalized.length === 0) {
+    return recordResult("ParlayWorker", {
+      action: "noop",
+      reasoning: "No unfinalized parlays.",
+      confidence: 100,
+    });
+  }
+
+  let legsRecorded = 0;
+  let legsSkippedUnresolved = 0;
+  let legsPermanentFailures = 0;
+  let legsTransientFailures = 0;
+  const sampleFailures: string[] = [];
+
+  for (const parlay of allUnfinalized) {
+    if (parlay.legs_recorded >= parlay.leg_count) continue;
+    for (let i = parlay.legs_recorded; i < parlay.leg_count; i++) {
+      // We don't store per-leg market_ids in the off-chain mirror
+      // (the ParlayCreated event only carries count). The on-chain
+      // leg struct holds them, but reading it requires a per-leg
+      // getObject call which is what the position-indexer is for.
+      //
+      // For now we read the underlying parlay object to enumerate
+      // its leg.market_ids. This is one round-trip per parlay (not
+      // per leg) so it stays cheap.
+      const legMarketIds = await readParlayLegMarketIds(client, parlay.parlay_id);
+      if (!legMarketIds) {
+        // Parlay object not found (deleted?) or RPC outage — skip
+        // and let the next tick retry. We don't mark anything
+        // permanent here because the indexer is the source of truth
+        // for the parlay row; if it comes back, we resume.
+        legsTransientFailures++;
+        if (sampleFailures.length < 3) {
+          sampleFailures.push(`parlay ${parlay.parlay_id}: leg market ids unreadable`);
+        }
+        break;
+      }
+      const marketId = legMarketIds[i];
+      if (!marketId) {
+        legsPermanentFailures++;
+        if (sampleFailures.length < 3) {
+          sampleFailures.push(`parlay ${parlay.parlay_id}: no market id for leg ${i}`);
+        }
+        break;
+      }
+      const market = getMarket(marketId);
+      if (!market) {
+        // Off-chain mirror hasn't seen the market yet (rare — the
+        // position-indexer picks up MarketCreatedEvent on the same
+        // minute-cadence, so a 1-tick lag is normal). Skip and
+        // retry next tick.
+        legsSkippedUnresolved++;
+        continue;
+      }
+      if (market.status === "disputed") {
+        // Don't advance the leg while a dispute is pending — the
+        // contract's `!is_disputed` check would abort the tx
+        // anyway. Skip and retry next tick.
+        legsSkippedUnresolved++;
+        continue;
+      }
+      if (market.status !== "resolved") {
+        // Market is still active (or undetermined). Wait for the
+        // resolver to flip it.
+        legsSkippedUnresolved++;
+        continue;
+      }
+      const result = await recordOneLeg(
+        client,
+        ctx.signer,
+        parlay.parlay_id,
+        marketId,
+        i,
+      );
+      if (result.kind === "ok") {
+        legsRecorded++;
+        console.log(
+          `[parlay-worker] leg ${i} of parlay ${parlay.parlay_id} → ${result.digest}`,
+        );
+        // The ParlayLegRecorded event lands in the indexer's next
+        // poll, which will update `legs_recorded` in the mirror.
+        // We don't update it here to avoid double-counting if the
+        // event re-polled and the worker also wrote it.
+      } else if (result.kind === "permanent") {
+        legsPermanentFailures++;
+        if (sampleFailures.length < 3) {
+          const msg =
+            result.err instanceof Error
+              ? result.err.message
+              : String(result.err);
+          sampleFailures.push(`leg ${i} of ${parlay.parlay_id}: ${msg}`);
+        }
+        // Permanent: don't retry. Move on to the next leg of
+        // this parlay (or the next parlay) — one leg's permanent
+        // failure doesn't block the rest.
+      } else {
+        legsTransientFailures++;
+        if (sampleFailures.length < 3) {
+          const msg =
+            result.err instanceof Error
+              ? result.err.message
+              : String(result.err);
+          sampleFailures.push(`leg ${i} of ${parlay.parlay_id}: ${msg}`);
+        }
+        // Transient exhausted: try the next leg — RPC may be
+        // flapping and a different leg's call might succeed. If
+        // RPC is truly down, all legs will fail and the next cron
+        // tick will retry.
+      }
+    }
+  }
+
+  // ---- 2. Finalize parlays whose legs are all recorded -------------
+  // The position-indexer updates `legs_recorded` from the
+  // ParlayLegRecorded event on its every-minute poll, so by the
+  // time this worker runs the `legs_recorded` count is fresh. Any
+  // parlay where `legs_recorded == leg_count` and `finalized == 0`
+  // is ready to settle.
+  const ready = listReadyToFinalizeParlays();
+  let finalized = 0;
+  let finalizeFailures = 0;
+  const finalizeSample: string[] = [];
+  for (const parlay of ready) {
+    try {
+      const tx = buildFinalizeParlayTx({
+        parlayId: parlay.parlay_id,
+        poolId: parlay.pool_id,
+        coinType: DUSDC_TYPE,
+      });
+      const res = await executeTransaction(client, tx, ctx.signer);
+      finalized++;
+      console.log(
+        `[parlay-worker] finalized parlay ${parlay.parlay_id} → ${res.digest}`,
+      );
+    } catch (e) {
+      finalizeFailures++;
+      if (finalizeSample.length < 3) {
+        const msg = e instanceof Error ? e.message : String(e);
+        finalizeSample.push(`parlay ${parlay.parlay_id}: ${msg}`);
+      }
+    }
+  }
+
+  if (
+    legsRecorded === 0 &&
+    legsSkippedUnresolved === 0 &&
+    legsPermanentFailures === 0 &&
+    legsTransientFailures === 0 &&
+    finalized === 0 &&
+    finalizeFailures === 0
+  ) {
+    return recordResult("ParlayWorker", {
+      action: "noop",
+      reasoning: `${allUnfinalized.length} unfinalized parlays, none ready to advance.`,
+      confidence: 100,
+    });
+  }
+
+  const reason =
+    `Parlays: ${legsRecorded} legs recorded, ${legsSkippedUnresolved} skipped (unresolved/disputed), ` +
+    `${legsPermanentFailures} permanent failures, ${legsTransientFailures} transient failures; ` +
+    `${finalized} finalized, ${finalizeFailures} finalize failures. ` +
+    (sampleFailures.length > 0
+      ? `Sample failures: ${sampleFailures.join(" | ")}.`
+      : "") +
+    (finalizeSample.length > 0
+      ? ` Finalize sample: ${finalizeSample.join(" | ")}.`
+      : "");
+
+  return recordResult("ParlayWorker", {
+    action:
+      legsPermanentFailures > 0 || finalizeFailures > 0 ? "partial" : "advance",
+    reasoning: reason,
+    confidence: finalized > 0 ? 90 : 50,
+  });
+}
+
+/**
+ * Read the `legs: vector<Leg>` field of a `Parlay<Q>` and pull out
+ * `market_id` for each leg in order. The parlay struct's leg
+ * entries render as `{ market_id: "0x…", predicted: 1 | 2, status: 0|1|2 }`
+ * in the JSON view.
+ *
+ * Returns `null` if the parlay object is missing or unreadable.
+ */
+async function readParlayLegMarketIds(
+  client: SuiClient,
+  parlayId: string,
+): Promise<string[] | null> {
+  try {
+    const { objects } = await client.getObjects({
+      objectIds: [parlayId],
+      include: { json: true },
+    });
+    const obj = objects[0];
+    if (!obj || obj instanceof Error) return null;
+    const json = obj.json as
+      | {
+          legs?: Array<{
+            market_id?: string | { id?: string };
+          }>;
+        }
+      | null;
+    if (!json?.legs) return null;
+    return json.legs.map((leg) => {
+      const mid = leg.market_id;
+      if (typeof mid === "string") return mid;
+      if (mid && typeof mid === "object" && "id" in mid) {
+        const id = (mid as { id: unknown }).id;
+        if (typeof id === "string") return id;
+      }
+      return "";
+    });
+  } catch (e) {
+    console.warn(
+      "[parlay-worker] readParlayLegMarketIds failed for",
+      parlayId,
+      e instanceof Error ? e.message : e,
+    );
+    return null;
+  }
+}

@@ -1005,7 +1005,41 @@ export async function runPositionIndexer(
     },
   );
 
-  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered, ${profileCreated} profiles created, ${countryCodeSet} country codes set, ${forecasterKindSet} forecaster kinds set, ${parlayCreated} parlays created, ${parlayLegRecorded} parlay legs recorded, ${parlayFinalized} parlays finalized, ${badgeMinted} badges minted.`;
+  // PoolFunded - emitted by `parlay::fund_pool`. Anyone can call this
+  // to top up the parlay pool (used by the protocol seed at bootstrap
+  // and by partner donations). The on-chain event includes the dUSDC
+  // type parameter (the parlay module is generic), so the subscription
+  // string is the same shape as the other parlay event subscriptions.
+  // Currently informational: the poll keeps the cursor advancing and
+  // the /parlay page can later surface "Sponsored by <funder>" if a
+  // sponsor-feed table ships.
+  const parlayPoolFunded = await guardedPoll(
+    "PoolFunded",
+    parlayType("PoolFunded"),
+    "position_indexer.parlay_pool_funded",
+    (_ev) => {
+      // No-op for now (see prizePoolFunded above).
+    },
+  );
+
+  // BadgePlacedInKiosk - emitted by `badge_nft::mint_badge_to_kiosk`
+  // (the kiosk variant of badge minting). Distinct from BadgeMinted
+  // which fires for both the wallet and kiosk paths. We don't have a
+  // dedicated kiosk column on `streak_badges` yet, so we just bump
+  // the cursor — the badge is already in the user's wallet via
+  // transfer::public_transfer and the /streak/badges/:addr endpoint
+  // will surface it through the BadgeMinted row. The poll exists so
+  // a re-indexer run doesn't re-fetch the entire badge history.
+  const badgePlacedInKiosk = await guardedPoll(
+    "BadgePlacedInKiosk",
+    `${predictPackageId}::badge_nft::BadgePlacedInKiosk`,
+    "position_indexer.badge_placed_in_kiosk",
+    (_ev) => {
+      // No-op — see comment above.
+    },
+  );
+
+  const summary = `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed, ${prizeClaims} prize claims, ${streakUpdated} streak updates, ${streakBroken} streak breaks, ${milestoneReached} milestones, ${poolSettled} pool settlements, ${prizePoolFunded} pool funds, ${vaultCreated} vault created, ${vaultDeposited} vault deposits, ${vaultWithdrawn} vault withdraws, ${vaultAllocated} vault allocations, ${vaultDeallocated} vault deallocations, ${agentActions} agent actions, ${referralSet} referral sets, ${registryCreated} registry created, ${marketRegistered} market registered, ${profileCreated} profiles created, ${countryCodeSet} country codes set, ${forecasterKindSet} forecaster kinds set, ${parlayCreated} parlays created, ${parlayLegRecorded} parlay legs recorded, ${parlayFinalized} parlays finalized, ${badgeMinted} badges minted, ${parlayPoolFunded} parlay pool funds, ${badgePlacedInKiosk} badges placed in kiosks.`;
   return recordResult("PositionIndexer", {
     action: failures.length > 0 ? "index_partial" : "index",
     reasoning:

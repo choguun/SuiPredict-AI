@@ -812,6 +812,26 @@ export function listUnfinalizedParlaysForUser(user: string): ParlayRow[] {
 }
 
 /**
+ * List every unfinalized parlay across all users. Used by the
+ * parlay-worker to enumerate work without N+1 user lookups. The
+ * `idx_parlays_unfinalized` partial index keeps this O(N over
+ * unfinalized) — at typical parlay volume this is <100 rows.
+ *
+ * `leg_count` is also used as the second key in the indexer
+ * (parlay.legs[].status flips are not in the off-chain mirror;
+ * the on-chain `record_leg` PTB is the only authority).
+ */
+export function listUnfinalizedParlays(): ParlayRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM parlays
+        WHERE finalized = 0
+        ORDER BY updated_at_ms ASC`,
+    )
+    .all() as ParlayRow[];
+}
+
+/**
  * List parlays that have all legs recorded but aren't yet
  * finalized — the worker can call `finalize_parlay` on these.
  */

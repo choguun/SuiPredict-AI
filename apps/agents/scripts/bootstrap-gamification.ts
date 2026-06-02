@@ -384,6 +384,15 @@ async function main() {
     "::streak_system::StreakRegistry",
   );
   const prizeAdminId = findSharedObject(objects, "::prize_pool::PrizeAdmin");
+  // ProfileRegistry is shared by `user_profile::init` at module publish
+  // time (no quote-coin type parameter, unlike FeeVault which needs a
+  // post-publish init call). The web `/settings` page reads
+  // `NEXT_PUBLIC_PROFILE_REGISTRY_ID` to build `create_profile` PTBs;
+  // without this write the user has no way to mint a UserProfile.
+  const profileRegistryId = findSharedObject(
+    objects,
+    "::user_profile::ProfileRegistry",
+  );
   // prediction_market::init does NOT share a FeeVault<Q> at publish
   // time — the quote-coin type Q is unknown until the deployer picks
   // one. We must call `init_fee_vault<DBUSDC>(admin_cap, vault_admin)`
@@ -393,6 +402,7 @@ async function main() {
   log(`StreakAdmin:    ${streakAdminId}`);
   log(`StreakRegistry: ${streakRegistryId}`);
   log(`PrizeAdmin:     ${prizeAdminId}`);
+  log(`ProfileReg:     ${profileRegistryId}`);
 
   // 3) Prize admin keypair
   //
@@ -697,6 +707,11 @@ async function main() {
   if (prizeAdminId) agentsUpdates.PRIZE_ADMIN_ID = prizeAdminId;
   if (marketRegistryId) agentsUpdates.MARKET_REGISTRY_ID = marketRegistryId;
   if (protocolVaultId) agentsUpdates.VAULT_OBJECT_ID = protocolVaultId;
+  // ProfileRegistry is shared by `user_profile::init` — write both
+  // the agents-side and the public web-side vars so the user_profile
+  // PTB builders (create_profile, set_country_code, set_forecaster_kind)
+  // can resolve the registry from any process.
+  if (profileRegistryId) agentsUpdates.NEXT_PUBLIC_PROFILE_REGISTRY_ID = profileRegistryId;
   if (feeVaultId) agentsUpdates.FEE_VAULT_ID = feeVaultId;
   if (agentPolicyId) agentsUpdates.AGENT_POLICY_ID = agentPolicyId;
   if (balanceManagerId) {
@@ -749,6 +764,9 @@ async function main() {
   if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
   if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
   if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  if (profileRegistryId) {
+    webUpdates.NEXT_PUBLIC_PROFILE_REGISTRY_ID = profileRegistryId;
+  }
   // Treasury address — must match the agents REFERRAL_TREASURY_ADDRESS
   // so the web frontend's REFERRAL_TREASURY_ADDRESS SDK constant
   // resolves to the same on-chain destination. Honor an existing env
@@ -769,6 +787,7 @@ async function main() {
   log(`MarketRegistry: ${marketRegistryId}`);
   log(`ProtocolVault:  ${protocolVaultId}`);
   log(`AgentPolicy:    ${agentPolicyId}`);
+  log(`ProfileReg:     ${profileRegistryId}`);
   log(`PrizeKey:       ${prizeAddress}${isNew ? " (NEW — save PRIZE_ADMIN_PRIVATE_KEY above)" : ""}`);
   log(`Weekly amt:     ${PRIZE_WEEKLY_AMOUNT} base units (${Number(PRIZE_WEEKLY_AMOUNT) / 1_000_000} DUSDC)`);
   log(`\nEnv files updated:`);

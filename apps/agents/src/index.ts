@@ -11,6 +11,7 @@ import { runPrizeDistributor } from "./agents/prize-distributor.js";
 import { runPrizeAdmin } from "./agents/prize-admin.js";
 import { runReferralKeeper } from "./agents/referral-keeper.js";
 import { runPositionIndexer } from "./agents/position-indexer.js";
+import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
 import { getAgentStats, getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
@@ -118,6 +119,7 @@ function buildSchedule() {
     { name: "PrizeDistributor",  cron: env("AGENT_CRON_PRIZE_DISTRIBUTOR",  "15 0 * * 1"),  fn: runPrizeDistributor },
     { name: "ReferralKeeper",    cron: env("AGENT_CRON_REFERRAL_KEEPER",    "*/15 * * * *"),fn: runReferralKeeper },
     { name: "PositionIndexer",   cron: env("AGENT_CRON_POSITION_INDEXER",   "*/1 * * * *"), fn: runPositionIndexer },
+    { name: "ParlayWorker",      cron: env("AGENT_CRON_PARLAY_WORKER",      "*/1 * * * *"), fn: runParlayWorker },
     { name: "RiskMonitor",       cron: env("AGENT_CRON_RISK_MONITOR",       "*/5 * * * *"), fn: runRiskMonitor },
     { name: "MarketMaker",       cron: env("AGENT_CRON_MARKET_MAKER",       "*/1 * * * *"), fn: runMarketMaker },
   ];

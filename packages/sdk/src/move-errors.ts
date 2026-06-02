@@ -16,6 +16,7 @@
  *   - streak_system.move          (E0..E8)
  *   - prize_pool.move             (E0..E9)
  *   - agent_policy.move           (E0..E6)
+ *   - parlay.move                 (E0..E14)
  *
  * If a new module is added, the abort codes must be added here too —
  * but the unknown-code fallback still returns a usable "Move abort N"
@@ -26,7 +27,8 @@ export type MoveModule =
   | "prediction_market"
   | "streak_system"
   | "prize_pool"
-  | "agent_policy";
+  | "agent_policy"
+  | "parlay";
 
 /**
  * `code: number` per module. We don't key the map by `(module, code)`
@@ -90,11 +92,30 @@ const AGENT_POLICY_CODES: Record<number, string> = {
   6: "EZeroAmount",
 };
 
+const PARLAY_CODES: Record<number, string> = {
+  0: "EParlayAlreadyFinalized",
+  1: "ELegMismatch",
+  2: "ELegAlreadyRecorded",
+  3: "EMarketNotResolved",
+  4: "EMarketDisputed",
+  5: "EParlayNotReady",
+  6: "EPoolUnderfunded",
+  7: "EInvalidNewAdmin",
+  8: "EInvalidLegCount",
+  9: "EZeroCollateral",
+  10: "EMaxPayoutBelowBps",
+  11: "EInsufficientLiquidity",
+  12: "EWithdrawTooLarge",
+  13: "EPayoutCapExceeded",
+  14: "ECoinTypeMismatch",
+};
+
 const MODULE_CODES: Record<MoveModule, Record<number, string>> = {
   prediction_market: PREDICTION_MARKET_CODES,
   streak_system: STREAK_SYSTEM_CODES,
   prize_pool: PRIZE_POOL_CODES,
   agent_policy: AGENT_POLICY_CODES,
+  parlay: PARLAY_CODES,
 };
 
 /** Extract the abort code from a Sui Move-abort error message.
