@@ -68,8 +68,17 @@ function buildForwardTx(coinIds: string[], treasury: string): Transaction {
 }
 
 export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult> {
+  // The schema has both `pool_id` (the on-chain `PredictionMarket.pool_id`
+  // field) and `deepbook_pool_id` (the indexer-set alias for the
+  // DeepBook pool). Most rows have both populated identically, but a
+  // manually-inserted row (admin script, one-off import) may have
+  // only `pool_id` set. Fall back to whichever is present so the
+  // keeper doesn't silently skip a valid market.
   const markets = listMarkets().filter(
-    (m) => m.status === "active" && m.deepbook_pool_id && m.referral_id,
+    (m) =>
+      m.status === "active" &&
+      (m.deepbook_pool_id ?? m.pool_id) &&
+      m.referral_id,
   );
 
   if (markets.length === 0) {
@@ -93,27 +102,64 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
   const noRewards: string[] = [];
   const errors: string[] = [];
 
-  for (const market of markets) {
-    if (!market.deepbook_pool_id || !market.referral_id) continue;
+  // Build the (market, poolId) work list once so the worker pool can
+  // race through it. Resolving the pool id here also short-circuits
+  // the no-referral case that the outer filter accepts.
+  const work = markets
+    .map((m) => {
+      const poolId = m.deepbook_pool_id ?? m.pool_id;
+      return poolId && m.referral_id ? { market: m, poolId } : null;
+    })
+    .filter((x): x is { market: typeof markets[number]; poolId: string } => x !== null);
 
-    try {
-      const tx = buildClaimReferralRewardsTx(
-        market.deepbook_pool_id,
-        market.referral_id,
-      );
-      const result = await executeTransaction(client, tx, ctx.signer);
-      claimed.push(
-        `${market.id.slice(0, 12)}... → ${result.digest.slice(0, 8)}`,
-      );
-    } catch (err) {
-      // Referral rewards may be zero — don't treat as failure
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("zero") || msg.includes("amount") || msg.includes("InsufficientBalance")) {
-        noRewards.push(`${market.id.slice(0, 12)}...`);
-      } else {
-        errors.push(`${market.id.slice(0, 12)}: ${msg}`);
+  // Bounded-concurrency worker pool. The previous version ran
+  // claims strictly serially via a `for` loop; with N=20+ markets
+  // on a testnet sweep that locked the agent for ~20× per-tx RTT
+  // and made the cron tick itself look stalled in the boot health
+  // dashboard. 8 in flight is well under the public RPC's per-IP
+  // rate limit while still cutting the sweep wall-clock by ~8×.
+  // Each worker only writes to its own slot in the pre-sized
+  // results array, so the (claimed | noRewards | errors) join
+  // order is deterministic regardless of completion order.
+  const CONCURRENCY = 8;
+  const results: Array<
+    | { kind: "claimed"; label: string }
+    | { kind: "noRewards"; label: string }
+    | { kind: "error"; label: string }
+  > = new Array(work.length);
+
+  let cursor = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= work.length) return;
+      const { market, poolId } = work[i]!;
+      try {
+        const tx = buildClaimReferralRewardsTx(poolId, market.referral_id!);
+        const result = await executeTransaction(client, tx, ctx.signer);
+        results[i] = {
+          kind: "claimed",
+          label: `${market.id.slice(0, 12)}... → ${result.digest.slice(0, 8)}`,
+        };
+      } catch (err) {
+        // Referral rewards may be zero — don't treat as failure
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("zero") || msg.includes("amount") || msg.includes("InsufficientBalance")) {
+          results[i] = { kind: "noRewards", label: `${market.id.slice(0, 12)}...` };
+        } else {
+          results[i] = { kind: "error", label: `${market.id.slice(0, 12)}: ${msg}` };
+        }
       }
     }
+  }
+  const workerCount = Math.min(CONCURRENCY, work.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  for (const r of results) {
+    if (!r) continue;
+    if (r.kind === "claimed") claimed.push(r.label);
+    else if (r.kind === "noRewards") noRewards.push(r.label);
+    else errors.push(r.label);
   }
 
   // Surface action / confidence that reflects what actually happened.

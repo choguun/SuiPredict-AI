@@ -29,6 +29,7 @@ import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "@suipredict/sdk";
 import {
   createClient,
   executeTransaction,
+  isMoveAbortCode,
   streakIdForUser,
   type SuiClient,
 } from "@suipredict/sdk";
@@ -82,16 +83,13 @@ const OUTCOME_SOME_WRONG = 2;
 const DAY_MS = 86_400_000;
 
 /**
- * `streak_system::EAlreadyRecordedToday` aborts the tx with code 3. The
- * SDK surfaces this as a plain `Error` whose `.message` contains the
- * Sui Move-abort text — e.g. `"MoveAbort(...)` for instruction 0, abort
- * code 3"`. We match on the literal code 3 (the contract constant) so
- * this helper stays correct if the contract renames the constant.
+ * `streak_system::EAlreadyRecordedToday` aborts the tx with code 3.
+ * The SDK surfaces this as a plain `Error` whose `.message` contains
+ * the Sui Move-abort text. We resolve the code via the shared helper
+ * so the agent doesn't maintain its own regex.
  */
-const E_ALREADY_RECORDED_ABORT_CODE = 3;
 function isAlreadyRecordedError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /MoveAbort[^)]*\)\s*,\s*3\b/.test(msg);
+  return isMoveAbortCode(err, "streak_system", 3);
 }
 
 /**
@@ -111,6 +109,71 @@ function isTransientError(err: unknown): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Pick the category for a user's daily-score row from the set of
+ * daily markets they participated in. See the r14 note in
+ * `resolveDayOutcomes` — the per-day market set is expected to share
+ * a single category, so first-seen-wins is representative. If a
+ * day mixes categories, the leaderboard worker will need a redesign
+ * (out of scope for r14).
+ */
+function pickUserCategory(
+  markets: Set<string>,
+  marketCategory: Map<string, 0 | 1 | 2 | 3>,
+): 0 | 1 | 2 | 3 {
+  for (const m of markets) {
+    const code = marketCategory.get(m);
+    if (code !== undefined) return code;
+  }
+  return 0;
+}
+
+/**
+ * Re-read `UserStreak.current_streak` for the given list of users
+ * and return a `{user → current_streak}` map. Used to populate
+ * `daily_scores.streak_after` immediately after a successful
+ * `record_participation` tx — the on-chain state is authoritative,
+ * the off-chain row was previously 0 until a separate poll caught
+ * up, which left leaderboard scores lagging reality by a full tick.
+ *
+ * The gRPC JSON view renders the `current_streak: u64` field as a
+ * decimal string. Defensive: any failure (object deleted, RPC
+ * outage, malformed JSON) returns an empty map; the caller then
+ * writes `streak_after: 0` which is no worse than the prior
+ * behavior. We deliberately don't fail the whole sweep on a single
+ * bad read.
+ */
+async function readCurrentStreaks(
+  client: SuiClient,
+  streakIds: (string | undefined)[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const ids = streakIds.filter((x): x is string => !!x);
+  if (ids.length === 0) return out;
+  try {
+    const { objects } = await client.getObjects({
+      objectIds: ids,
+      include: { json: true },
+    });
+    for (const obj of objects) {
+      if (!obj || obj instanceof Error) continue;
+      const json = obj.json as { current_streak?: string | number; id?: string } | null;
+      const raw = json?.current_streak;
+      if (raw == null) continue;
+      const n = typeof raw === "string" ? Number(raw) : raw;
+      if (typeof n === "number" && Number.isFinite(n) && obj.objectId) {
+        out.set(obj.objectId, n);
+      }
+    }
+  } catch (e) {
+    console.warn(
+      "[streak-sweeper] readCurrentStreaks failed; writing streak_after=0:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+  return out;
 }
 
 interface ResolvedUser {
@@ -323,8 +386,25 @@ export async function resolveDayOutcomes(
     MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
   });
   const dailyMarketIds = new Set<string>();
+  // `category` is read off the same `MarketCreatedEvent` stream and
+  // forwarded to the per-user `ResolvedUser` so the off-chain
+  // `daily_scores` row carries the topic. Pre-r14 events won't have
+  // it (deployed before the field was added) — those fall through to
+  // 0 ("none") which the leaderboard treats as "no topic filter".
+  // First-seen-wins for the user's category: daily markets of a
+  // single day should all share the same category, so the first
+  // match is representative. If a future deploy mixes categories in
+  // one day, the leaderboard worker would have to be reworked to
+  // emit one row per (user, market) pair — out of scope for r14.
+  const dailyMarketCategory = new Map<string, 0 | 1 | 2 | 3>();
   for (const e of createdRaw) {
-    const ev = e as { parsedJson: { market_id?: string; expiry_ms?: string | number } };
+    const ev = e as {
+      parsedJson: {
+        market_id?: string;
+        expiry_ms?: string | number;
+        category?: string | number;
+      };
+    };
     const expiry = Number(ev.parsedJson.expiry_ms ?? 0);
     const id = ev.parsedJson.market_id;
     if (
@@ -333,6 +413,9 @@ export async function resolveDayOutcomes(
       expiry < dayEndMs + EXPIRY_GRACE_MS
     ) {
       dailyMarketIds.add(id);
+      const raw = Number(ev.parsedJson.category ?? 0);
+      const code = (raw === 1 || raw === 2 || raw === 3) ? (raw as 1 | 2 | 3) : 0;
+      if (!dailyMarketCategory.has(id)) dailyMarketCategory.set(id, code);
     }
   }
   if (dailyMarketIds.size === 0) return [];
@@ -416,7 +499,9 @@ export async function resolveDayOutcomes(
     out.push({
       user,
       outcome: holdsWinning ? OUTCOME_ALL_CORRECT : OUTCOME_SOME_WRONG,
-      category: 0, // TODO: derive from `MarketCreatedEvent::category` once added
+      // First daily market the user touched — see the comment on
+      // `dailyMarketCategory` above for the first-seen-wins rationale.
+      category: pickUserCategory(markets, dailyMarketCategory),
     });
   }
   return out;
@@ -632,13 +717,21 @@ export async function runStreakSweeper(
     );
     try {
       const res = await executeTransaction(client, tx, ctx.signer);
+      // Re-read `current_streak` for every user in the batch so the
+      // off-chain `daily_scores.streak_after` reflects the on-chain
+      // state immediately rather than waiting for the next indexer
+      // poll. The read is one batched gRPC call, not N.
+      const streaks = await readCurrentStreaks(
+        client,
+        batch.map((u) => u.streakId),
+      );
       for (const u of batch) {
         recordDailyScore({
           user: u.user,
           day_index: dayIndex,
           participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
           all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
-          streak_after: 0, // populated when the off-chain indexer re-reads
+          streak_after: u.streakId ? (streaks.get(u.streakId) ?? 0) : 0,
           category: u.category,
         });
         sent++;
@@ -712,23 +805,41 @@ export async function runStreakSweeper(
           }
         }
         if (outcome.kind === "ok") {
+          // On a per-user success, re-read the user's current_streak
+          // so the off-chain `daily_scores.streak_after` reflects the
+          // post-sweep on-chain state. One extra gRPC call per user
+          // is acceptable on the fallback path; the happy batch path
+          // (above) does one batched read.
+          const streaks = await readCurrentStreaks(
+            client,
+            [u.streakId],
+          );
           recordDailyScore({
             user: u.user,
             day_index: dayIndex,
             participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
             all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
-            streak_after: 0,
+            streak_after: u.streakId ? (streaks.get(u.streakId) ?? 0) : 0,
             category: u.category,
           });
           sent++;
           consecutiveFailures = 0;
         } else if (outcome.kind === "already_recorded") {
+          // A prior sweep already wrote the on-chain state. Re-read
+          // it for the same reason as the `ok` branch: we want the
+          // off-chain `daily_scores` row to reflect the on-chain
+          // value, not the local view (which may differ if the
+          // user's market participation changed between sweeps).
+          const streaks = await readCurrentStreaks(
+            client,
+            [u.streakId],
+          );
           recordDailyScoreIfAbsent({
             user: u.user,
             day_index: dayIndex,
             participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
             all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
-            streak_after: 0,
+            streak_after: u.streakId ? (streaks.get(u.streakId) ?? 0) : 0,
             category: u.category,
           });
           sent++;

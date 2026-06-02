@@ -20,6 +20,18 @@ const INITIAL_MINT_ATOMS = BigInt(
   process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
 ); // 10 DBUSDC default — seeds the order book with an initial position
 
+/** Map the LLM's free-form category string to the gamification
+ *  enum emitted on `MarketCreatedEvent.category`. The leaderboard
+ *  worker filters on this code, so the mapping has to be consistent
+ *  between market-creator.ts and the streak-sweeper. Currently:
+ *  "crypto" → 2 (crypto price), everything else → 3 (other). The
+ *  LLM's "defi" / "politics" / "sports" don't have a dedicated
+ *  leaderboard bucket yet — falls through to "other". */
+function categoryToCode(category: string | undefined): 0 | 1 | 2 | 3 {
+  if (category === "crypto") return 2;
+  return 3;
+}
+
 const FALLBACK_MARKETS = [
   {
     title: "Will ETH flip BTC market cap in 2026?",
@@ -188,6 +200,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       lotSize: BigInt(1_000_000),    // 1 YES minimum
       minSize: BigInt(1_000_000),    // 1 YES minimum
       deepCoinId: deepCoin.objectId,
+      category: categoryToCode(spec.category),
     });
 
     const createResult = await executeTransaction(client, createTx, ctx.signer);

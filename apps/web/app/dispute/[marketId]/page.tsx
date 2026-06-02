@@ -6,7 +6,7 @@ import {
   useCurrentAccount,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { buildDisputeMarketTx, getMarket } from "@suipredict/sdk";
+import { buildDisputeMarketTx, getMarket, isMoveAbortCode } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 
 // On-chain `MAX_EVIDENCE_URI_BYTES` (packages/contracts/sources/prediction_market.move:51).
@@ -17,14 +17,16 @@ const MAX_EVIDENCE_URI_BYTES = 256;
 // `dispute_market` aborts with code 15 (`EMarketDisputed`) when the market
 // is already disputed, and code 16 (`EEvidenceUriTooLong`) for overlong
 // URIs. We surface these as friendly messages instead of raw Move aborts.
+// Codes resolved via the shared SDK helper (`@suipredict/sdk/move-errors`)
+// so the dispute page doesn't maintain its own regex.
 function friendlyDisputeError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/MoveAbort[^)]*\)\s*,\s*15\b/.test(msg)) {
+  if (isMoveAbortCode(err, "prediction_market", 15)) {
     return "This market is already disputed and is frozen. The market creator must resolve the dispute before a new one can be filed.";
   }
-  if (/MoveAbort[^)]*\)\s*,\s*16\b/.test(msg)) {
+  if (isMoveAbortCode(err, "prediction_market", 16)) {
     return `Evidence URI exceeds the 256-byte on-chain limit.`;
   }
+  const msg = err instanceof Error ? err.message : String(err);
   if (/EMarketDisputed|EEvidenceUriTooLong/.test(msg)) return msg;
   return msg;
 }

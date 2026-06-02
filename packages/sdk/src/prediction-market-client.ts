@@ -84,6 +84,12 @@ export const REFERRAL_TREASURY_ADDRESS =
  * @param params.lotSize         - Minimum base-asset quantity per order (in YES * 10^decimals)
  * @param params.minSize         - Minimum order size in base units
  * @param params.deepCoinId      - Object ID of a Coin<DEEP> with at least 500 DEEP for pool creation fee (REQUIRED)
+ * @param params.category        - Off-chain topic code forwarded to
+ *                                 `MarketCreatedEvent.category`. 0=none,
+ *                                 1=AI news, 2=crypto price, 3=other. The
+ *                                 on-chain `PredictionMarket` does not
+ *                                 store this — the indexer only reads it
+ *                                 from the event for leaderboards.
  */
 export function buildCreateMarketTx(params: {
   title: string;
@@ -93,6 +99,7 @@ export function buildCreateMarketTx(params: {
   lotSize?: bigint;
   minSize?: bigint;
   deepCoinId: string;
+  category?: number;
 }): Transaction {
   if (!params.deepCoinId) throw new Error("deepCoinId is required for pool creation");
   const tx = new Transaction();
@@ -108,6 +115,7 @@ export function buildCreateMarketTx(params: {
       tx.pure.u64(params.lotSize ?? 1_000_000n),        // 1 YES minimum
       tx.pure.u64(params.minSize ?? 1_000_000n),        // 1 YES minimum
       tx.object(params.deepCoinId),
+      tx.pure.u8(params.category ?? 0),
     ],
   });
   return tx;

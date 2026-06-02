@@ -40,7 +40,7 @@ export function getDb(): Database.Database {
         referral_id TEXT,
         created_at_ms INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS orders (
+      CREATE TABLE IF NOT EXISTS demo_orders (
         market_id TEXT NOT NULL,
         order_id INTEGER NOT NULL,
         owner TEXT NOT NULL,
@@ -301,7 +301,7 @@ export function upsertOrder(order: {
 }): void {
   getDb()
     .prepare(
-      `INSERT INTO orders (market_id, order_id, owner, is_bid, price_bps, quantity, filled, timestamp_ms)
+      `INSERT INTO demo_orders (market_id, order_id, owner, is_bid, price_bps, quantity, filled, timestamp_ms)
        VALUES (@market_id, @order_id, @owner, @is_bid, @price_bps, @quantity, @filled, @timestamp_ms)
        ON CONFLICT(market_id, order_id) DO UPDATE SET
          filled=excluded.filled, quantity=excluded.quantity`,
@@ -330,7 +330,7 @@ export function recordTrade(trade: Omit<TradeRecord, "market_id"> & { market_id:
 export function getOrderBook(marketId: string): OrderBookSnapshot {
   const rows = getDb()
     .prepare(
-      `SELECT * FROM orders WHERE market_id = ? AND filled < quantity ORDER BY price_bps`,
+      `SELECT * FROM demo_orders WHERE market_id = ? AND filled < quantity ORDER BY price_bps`,
     )
     .all(marketId) as Record<string, unknown>[];
 

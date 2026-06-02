@@ -98,6 +98,11 @@ interface MarketCreatedJson {
   expiry_ms?: string | number;
   pool_id?: string;
   balance_manager_id?: string;
+  // `category` was added to the on-chain event in r14 so the
+  // streak-sweeper can read the leaderboard topic without consulting
+  // the local markets row. Older events (pre-r14 deploys) won't
+  // carry it; the sweeper falls back to 0 ("none").
+  category?: string | number;
 }
 interface MarketDisputedJson {
   market_id: string;

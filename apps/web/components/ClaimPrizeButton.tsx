@@ -55,20 +55,6 @@ function txDigest(r: { $kind: string; Transaction?: { digest: string } }): strin
   return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
 }
 
-/**
- * localStorage key for a per-(user, week) "I just claimed" marker.
- * The POST /prize/claims call that records the off-chain row is
- * best-effort: a network blip leaves the off-chain table stale for
- * ~1 min until the position-indexer's PrizeClaimed poller catches up.
- * Without this marker the user can re-click the Claim button in that
- * gap, pass the server's membership check, submit a duplicate on-chain
- * tx, and see a confusing EAlreadyClaimed Move abort. The marker is
- * scoped by tx digest so a successful POST clearing the row won't
- * cause us to keep hiding the button forever — a separate `claimed`
- * prop drives the canonical UI state.
- */
-const claimedKey = (user: string, week: number) => `sp_claimed:${week}:${user}`;
-
 export function ClaimPrizeButton(props: Props) {
   const {
     poolId,
@@ -86,17 +72,6 @@ export function ClaimPrizeButton(props: Props) {
 
   const amount = expectedAmountForRank(weeklyPrize, rank);
   const amountUsdc = (Number(amount) / 1_000_000).toFixed(2);
-
-  // The server's `claimed` annotation is the source of truth, but it
-  // can lag the on-chain tx by up to a poll cycle. Show the "Claimed"
-  // pill immediately for users we've already tried to claim this
-  // week, even if the leaderboard hasn't refreshed yet. The marker
-  // is keyed by tx digest so a successful POST clearing the row
-  // doesn't permanently hide the button.
-  const [localClaimed, setLocalClaimed] = useState<string | null>(() => {
-    if (typeof window === "undefined" || !account?.address) return null;
-    return window.localStorage.getItem(claimedKey(account.address, weekIndex));
-  });
 
   const onClaim = useCallback(async () => {
     if (!account) {
@@ -172,17 +147,6 @@ export function ClaimPrizeButton(props: Props) {
         `Claimed ${amountUsdc} DUSDC: ${digest.slice(0, 16)}…`,
         { id: toastId },
       );
-      // Mark claimed locally so the button hides immediately. The
-      // server's `claimed` annotation on the leaderboard catches up
-      // within one indexer poll; the marker is cleared by the next
-      // successful leaderboard refetch that observes the server
-      // agrees (via the `claimed` prop).
-      try {
-        window.localStorage.setItem(claimedKey(account.address, weekIndex), digest);
-        setLocalClaimed(digest);
-      } catch {
-        /* localStorage may be unavailable in private mode — non-fatal */
-      }
       // Notify the agents service so the off-chain `prize_claims` row
       // is updated — without this, `liveRollup` still annotates the
       // user as unclaimed and the leaderboard keeps showing the Claim
@@ -239,32 +203,8 @@ export function ClaimPrizeButton(props: Props) {
   ]);
 
   if (alreadyClaimed) {
-    // Server confirms the claim landed — clear the local marker so
-    // future renders don't show stale state.
-    if (account?.address && localClaimed) {
-      try {
-        window.localStorage.removeItem(claimedKey(account.address, weekIndex));
-      } catch {
-        /* non-fatal */
-      }
-    }
     return (
       <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300">
-        Claimed
-      </span>
-    );
-  }
-
-  if (localClaimed) {
-    // Server hasn't caught up yet (the POST /prize/claims notification
-    // failed), but the on-chain tx succeeded. Hide the button to
-    // prevent a re-click that would surface EAlreadyClaimed as a
-    // confusing error.
-    return (
-      <span
-        title={`On-chain claim ${localClaimed.slice(0, 16)}… pending indexer confirmation`}
-        className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300"
-      >
         Claimed
       </span>
     );

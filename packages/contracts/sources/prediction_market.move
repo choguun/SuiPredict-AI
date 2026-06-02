@@ -186,6 +186,13 @@ public struct MarketCreatedEvent has copy, drop {
     title: vector<u8>,
     expiry_ms: u64,
     creator: address,
+    /// Topic code for off-chain leaderboards:
+    /// 0 = none / unset, 1 = AI news, 2 = crypto price, 3 = other.
+    /// Matches `gamification/store::DailyScore.category`. Set by the
+    /// caller at create-time (the on-chain `PredictionMarket` itself
+    /// does not store it — the indexer only needs it for the event
+    /// stream).
+    category: u8,
 }
 
 public struct MarketResolvedEvent has copy, drop {
@@ -328,6 +335,11 @@ public fun create_market<Q>(
     lot_size: u64,
     min_size: u64,
     deep_coin: Coin<DEEP>,
+    // Topic code carried on the `MarketCreatedEvent` (0=none, 1=AI
+    // news, 2=crypto price, 3=other). Not stored on the
+    // `PredictionMarket` itself — the indexer reads it from the
+    // event stream to feed off-chain leaderboards.
+    category: u8,
     ctx: &mut TxContext,
 ): (ID, ID, ID) {
     let creator = ctx.sender();
@@ -404,6 +416,7 @@ public fun create_market<Q>(
         title: market.title,
         expiry_ms,
         creator,
+        category,
     });
 
     transfer::share_object(market);
@@ -1043,4 +1056,105 @@ use std::option::{Self, Option};
 #[test_only]
 public fun init_for_testing(ctx: &mut TxContext) {
     init(ctx);
+}
+
+/// Build a `PredictionMarket<Q>` for tests without going through the
+/// on-chain `create_market` flow (which requires a real `Coin<DEEP>`
+/// for the DeepBook pool fee). The returned market has placeholder
+/// `pool_id` / `balance_manager_id` zeros; the dispute and resolve
+/// flows under test don't read those fields, so fabricating the ID
+/// with `object::id_from_address(@0x0)` is sufficient.
+///
+/// Uses `coin::create_treasury_cap_for_testing` to skip the
+/// `is_one_time_witness` check that the test framework enforces on
+/// `coin::create_currency`. Production `create_market` calls the
+/// real `create_currency` and works at runtime; the test-only path
+/// is intentionally permissive.
+#[test_only]
+public fun new_market_for_testing<Q>(
+    title: vector<u8>,
+    resolution_source: vector<u8>,
+    expiry_ms: u64,
+    creator: address,
+    ctx: &mut TxContext,
+): PredictionMarket<Q> {
+    let yes_cap = coin::create_treasury_cap_for_testing<YES<Q>>(ctx);
+    let no_cap = coin::create_treasury_cap_for_testing<NO<Q>>(ctx);
+    PredictionMarket<Q> {
+        id: object::new(ctx),
+        title,
+        yes_cap,
+        no_cap,
+        collateral: balance::zero(),
+        resolved: false,
+        outcome: 0,
+        expiry_ms,
+        resolution_source,
+        creator,
+        pool_id: object::id_from_address(@0x0),
+        balance_manager_id: object::id_from_address(@0x0),
+        referral_id: option::none(),
+        created_ms: 0,
+        disputed: false,
+        dispute_evidence_uri: vector[],
+        dispute_count: 0,
+        resolved_ms: 0,
+    }
+}
+
+/// Test-only getters so the suite can assert on state changes
+/// without destructuring the (non-drop) struct.
+#[test_only]
+public fun resolved_for_testing<Q>(market: &PredictionMarket<Q>): bool {
+    market.resolved
+}
+
+#[test_only]
+public fun outcome_for_testing<Q>(market: &PredictionMarket<Q>): u8 {
+    market.outcome
+}
+
+#[test_only]
+public fun disputed_for_testing<Q>(market: &PredictionMarket<Q>): bool {
+    market.disputed
+}
+
+#[test_only]
+public fun dispute_count_for_testing<Q>(market: &PredictionMarket<Q>): u64 {
+    market.dispute_count
+}
+
+#[test_only]
+public fun resolved_ms_for_testing<Q>(market: &PredictionMarket<Q>): u64 {
+    market.resolved_ms
+}
+
+/// Destroys a `PredictionMarket<Q>` for tests. The struct has no
+/// `drop` ability, so the test harness needs an explicit exit.
+#[test_only]
+public fun destroy_for_testing<Q>(market: PredictionMarket<Q>) {
+    let PredictionMarket {
+        id,
+        title: _,
+        yes_cap,
+        no_cap,
+        collateral,
+        resolved: _,
+        outcome: _,
+        expiry_ms: _,
+        resolution_source: _,
+        creator: _,
+        pool_id: _,
+        balance_manager_id: _,
+        referral_id: _,
+        created_ms: _,
+        disputed: _,
+        dispute_evidence_uri: _,
+        dispute_count: _,
+        resolved_ms: _,
+    } = market;
+    id.delete();
+    sui::test_utils::destroy(yes_cap);
+    sui::test_utils::destroy(no_cap);
+    sui::test_utils::destroy(collateral);
 }
