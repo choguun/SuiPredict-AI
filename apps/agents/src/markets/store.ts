@@ -113,6 +113,10 @@ function migrateMarketColumns() {
     deepbook_base_scalar: "INTEGER",
     deepbook_quote_scalar: "INTEGER",
     referral_id: "TEXT",
+    disputed: "INTEGER NOT NULL DEFAULT 0",
+    dispute_count: "INTEGER NOT NULL DEFAULT 0",
+    dispute_evidence_uri: "TEXT",
+    last_dispute_at_ms: "INTEGER",
   };
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) {
@@ -246,6 +250,43 @@ export function markMarketResolved(
       `UPDATE markets SET status = 'resolved', outcome = ? WHERE id = ?`,
     )
     .run(outcome, marketId);
+}
+
+export function markMarketDisputed(
+  marketId: string,
+  evidenceUri: string,
+  disputeCount: number,
+  timestampMs: number,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE markets
+       SET disputed = 1,
+           dispute_count = ?,
+           dispute_evidence_uri = ?,
+           last_dispute_at_ms = ?,
+           status = 'disputed'
+       WHERE id = ?`,
+    )
+    .run(disputeCount, evidenceUri, timestampMs, marketId);
+}
+
+export function markMarketUndisputed(
+  marketId: string,
+  finalOutcome: "yes" | "no",
+): void {
+  // After the dispute resolves, the market is back to its prior status
+  // (resolved) with the (possibly-overridden) outcome. `dispute_count`
+  // is preserved for the audit trail; only `disputed` is cleared.
+  getDb()
+    .prepare(
+      `UPDATE markets
+       SET disputed = 0,
+           status = 'resolved',
+           outcome = ?
+       WHERE id = ?`,
+    )
+    .run(finalOutcome, marketId);
 }
 
 export function upsertOrder(order: {
@@ -411,14 +452,19 @@ export function getVaultSummaryFromEnv(): {
   allocated: number;
   available: number;
 } {
-  const vaultId = process.env.VAULT_OBJECT_ID ?? "demo-vault";
-  const total = Number(process.env.VAULT_TOTAL_BALANCE ?? 1_000_000_000);
-  const allocated = Number(process.env.VAULT_ALLOCATED ?? 200_000_000);
+  // Return 0s when env vars are unset rather than fake 1B / 200M
+  // placeholders. The risk monitor would otherwise show 80% utilization
+  // on a non-existent vault and pause the agent policy. The 1B
+  // default was a leftover from the predict-server shadow that
+  // intentionally faked liquidity for UI demos.
+  const vaultId = process.env.VAULT_OBJECT_ID ?? "";
+  const total = Number(process.env.VAULT_TOTAL_BALANCE ?? 0);
+  const allocated = Number(process.env.VAULT_ALLOCATED ?? 0);
   return {
     vault_id: vaultId,
     total_balance: total,
     allocated,
-    available: total - allocated,
+    available: Math.max(0, total - allocated),
   };
 }
 

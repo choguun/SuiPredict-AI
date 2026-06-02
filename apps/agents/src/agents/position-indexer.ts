@@ -24,7 +24,9 @@ import {
   decrementPosition,
   getDb,
   getMarket,
+  markMarketDisputed,
   markMarketResolved,
+  markMarketUndisputed,
   markOrderCancelled,
   recordChainOrder,
   recordSettlement,
@@ -88,6 +90,17 @@ interface MarketCreatedJson {
   expiry_ms?: string | number;
   resolution_source?: string;
   pool_id?: string;
+}
+interface MarketDisputedJson {
+  market_id: string;
+  disputer?: string;
+  evidence_uri?: string | number[];
+  dispute_count?: string | number;
+}
+interface MarketUndisputedJson {
+  market_id: string;
+  final_outcome?: string | number;
+  resolver?: string;
 }
 interface OrderCancelledJson {
   market_id: string;
@@ -161,6 +174,8 @@ export async function runPositionIndexer(
   let created = 0;
   let settlements = 0;
   let resolutions = 0;
+  let disputes = 0;
+  let undisputed = 0;
   try {
     minted = await pollAndApply(
       client,
@@ -206,6 +221,40 @@ export async function runPositionIndexer(
     return recordResult("PositionIndexer", {
       action: "index_failed",
       reasoning: `Redeemed poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  // MarketResolvedEvent — fired when the resolver/admin calls
+  // `resolve_market`. Polled AFTER RedeemedEvent so the most recent
+  // resolution cursor is used; the on-chain `RedeemedEvent` always
+  // references a market whose resolution has already been emitted
+  // (the contract gates `redeem` on `market.resolved == true`).
+  // We poll it here — outside the redeem hot path — so the next
+  // tick's rede lookups see the outcome.
+  //
+  // (Earlier versions of this file polled MarketResolvedEvent FIRST
+  // and dropped the RedeemedEvent that arrived in the same tick if
+  // the resolution wasn't yet seen. That ordering was the wrong
+  // direction: redeem-on-resolved-market is the only legal redeem,
+  // so the resolution cursor is always ≤ the redeem cursor.)
+  try {
+    resolutions = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
+      "position_indexer.market_resolved",
+      (ev) => {
+        const j = ev.parsedJson as MarketResolvedJson;
+        if (!j?.market_id || j?.outcome == null) return;
+        // outcome: 1 = YES, 2 = NO (per Move contract)
+        const n = Number(j.outcome);
+        if (n !== 1 && n !== 2) return;
+        markMarketResolved(j.market_id, n === 1 ? "yes" : "no");
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `MarketResolved poll failed: ${err instanceof Error ? err.message : String(err)}`,
     });
   }
 
@@ -337,34 +386,63 @@ export async function runPositionIndexer(
     });
   }
 
-  // MarketResolvedEvent — fired when the resolver/admin calls `resolve_market`.
-  // Must run BEFORE RedeemedEvent so `decrementPosition` can look up the
-  // winning side. We also poll it after Redeemed below — running it first
-  // here is a best-effort to avoid races on the same indexer tick.
+  // MarketDisputedEvent — fired when a user calls `dispute_market` within
+  // the 1-hour post-resolution window. The /markets/:id UI shows a
+  // "Disputed" badge and the redeem button is hidden until the dispute
+  // resolves. We persist `dispute_count` so the UI can show
+  // "Disputed (3)" if multiple users raise the same challenge.
   try {
-    resolutions = await pollAndApply(
+    disputes = await pollAndApply(
       client,
-      `${PREDICT_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
-      "position_indexer.market_resolved",
+      `${PREDICT_PACKAGE_ID}::prediction_market::MarketDisputedEvent`,
+      "position_indexer.market_disputed",
       (ev) => {
-        const j = ev.parsedJson as MarketResolvedJson;
-        if (!j?.market_id || j?.outcome == null) return;
-        // outcome: 1 = YES, 2 = NO (per Move contract)
-        const n = Number(j.outcome);
-        if (n !== 1 && n !== 2) return;
-        markMarketResolved(j.market_id, n === 1 ? "yes" : "no");
+        const j = ev.parsedJson as MarketDisputedJson;
+        if (!j?.market_id) return;
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        const evidence =
+          typeof j.evidence_uri === "string"
+            ? j.evidence_uri
+            : Array.isArray(j.evidence_uri)
+              ? String.fromCharCode(...(j.evidence_uri as number[]))
+              : "";
+        const count = Number(j.dispute_count ?? 1);
+        markMarketDisputed(j.market_id, evidence, count, ts);
       },
     );
   } catch (err) {
     return recordResult("PositionIndexer", {
       action: "index_failed",
-      reasoning: `MarketResolved poll failed: ${err instanceof Error ? err.message : String(err)}`,
+      reasoning: `MarketDisputed poll failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  // MarketUndisputedEvent — fired when the creator/admin calls
+  // `resolve_dispute` to finalize a disputed market. The outcome may
+  // differ from the original resolution; we store the override.
+  try {
+    undisputed = await pollAndApply(
+      client,
+      `${PREDICT_PACKAGE_ID}::prediction_market::MarketUndisputedEvent`,
+      "position_indexer.market_undisputed",
+      (ev) => {
+        const j = ev.parsedJson as MarketUndisputedJson;
+        if (!j?.market_id || j?.final_outcome == null) return;
+        const n = Number(j.final_outcome);
+        if (n !== 1 && n !== 2) return;
+        markMarketUndisputed(j.market_id, n === 1 ? "yes" : "no");
+      },
+    );
+  } catch (err) {
+    return recordResult("PositionIndexer", {
+      action: "index_failed",
+      reasoning: `MarketUndisputed poll failed: ${err instanceof Error ? err.message : String(err)}`,
     });
   }
 
   return recordResult("PositionIndexer", {
     action: "index",
-    reasoning: `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions.`,
+    reasoning: `Indexed ${created} created, ${minted} mints, ${redeemed} redeems, ${orders} orders, ${cancellations} cancellations, ${settlements} settlements, ${resolutions} resolutions, ${disputes} disputes, ${undisputed} undisputed.`,
     confidence: 100,
   });
 }

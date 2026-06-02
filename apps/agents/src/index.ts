@@ -22,6 +22,82 @@ const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
 const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
 
 /**
+ * Boot-time config validator.
+ *
+ * Lists the env vars each agent needs in order to do real work, and
+ * prints a clear pass/fail table. The previous behavior was to boot
+ * the scheduler with whatever the .env had, and have every misconfig'd
+ * agent return a silent `action: "skip"` on its first tick — which
+ * made misconfig invisible at deploy time. The validator fails loud
+ * (non-zero exit) if any required var is empty, so a fresh deploy on
+ * a misconfigured host crashes here instead of running 10 inert agents.
+ *
+ * Optional vars (e.g. `PRIZE_WEEKLY_AMOUNT` = 0 disables the prize
+ * distributor on purpose) are reported as warnings, not failures.
+ */
+function validateBootConfig(): void {
+  type VarCheck = {
+    name: string;
+    envVar: string;
+    agent: string;
+    required: boolean;
+  };
+  const checks: VarCheck[] = [
+    { name: "Package",            envVar: "AGENT_POLICY_PACKAGE_ID",       agent: "all",            required: true },
+    { name: "MarketRegistry",     envVar: "MARKET_REGISTRY_ID",            agent: "MarketCreator",  required: true },
+    { name: "FeeVault",           envVar: "FEE_VAULT_ID",                  agent: "MarketCreator",  required: true },
+    { name: "AgentPolicy",        envVar: "AGENT_POLICY_ID",               agent: "RiskMonitor",    required: true },
+    { name: "AgentManager",       envVar: "AGENT_MANAGER_ID",              agent: "RiskMonitor",    required: false },
+    { name: "Vault",              envVar: "VAULT_OBJECT_ID",               agent: "RiskMonitor",    required: false },
+    { name: "StreakRegistry",     envVar: "STREAK_REGISTRY_ID",            agent: "StreakSweeper",  required: false },
+    { name: "StreakAdmin",        envVar: "STREAK_ADMIN_ID",               agent: "StreakSweeper",  required: false },
+    { name: "PrizePool",          envVar: "PRIZE_POOL_ID",                 agent: "PrizeDistributor", required: false },
+    { name: "PrizeAdmin",         envVar: "PRIZE_ADMIN_ID",                agent: "PrizeDistributor", required: false },
+    { name: "PrizeAdmin Key",     envVar: "PRIZE_ADMIN_PRIVATE_KEY",       agent: "PrizeDistributor", required: false },
+    { name: "Prize Weekly Amt",   envVar: "PRIZE_WEEKLY_AMOUNT",           agent: "PrizeDistributor", required: false },
+  ];
+
+  const missing: VarCheck[] = [];
+  const present: VarCheck[] = [];
+  for (const c of checks) {
+    const v = process.env[c.envVar] ?? "";
+    if (v) present.push(c);
+    else missing.push(c);
+  }
+
+  console.log(`[agents] Boot config: ${present.length} present, ${missing.length} missing`);
+  if (present.length > 0) {
+    for (const c of present) {
+      const v = process.env[c.envVar] ?? "";
+      const short = v.length > 18 ? v.slice(0, 16) + "…" : v;
+      console.log(`  [ok    ] ${c.envVar.padEnd(28)} (${c.agent})  = ${short}`);
+    }
+  }
+  if (missing.length > 0) {
+    for (const c of missing) {
+      const level = c.required ? "FAIL  " : "warn  ";
+      console.log(`  [${level}] ${c.envVar.padEnd(28)} (${c.agent})  = <unset>`);
+    }
+  }
+
+  const hardFails = missing.filter((c) => c.required);
+  if (hardFails.length > 0) {
+    console.error(
+      `[agents] Refusing to boot: ${hardFails.length} required env var(s) missing. ` +
+        "Run `pnpm --filter @suipredict/agents tsx scripts/bootstrap-gamification.ts` " +
+        "to populate them, or set them in your .env.",
+    );
+    process.exit(1);
+  }
+  if (missing.length > 0) {
+    console.warn(
+      `[agents] ${missing.length} optional var(s) missing — the matching agents will be inert. ` +
+        "This is expected on a fresh deploy before bootstrap; otherwise re-run bootstrap-gamification.",
+    );
+  }
+}
+
+/**
  * Per-agent cron schedule (UTC). Replaces the prior "run all every 15s"
  * loop with a self-rescheduling setTimeout per agent.
  *
@@ -155,6 +231,7 @@ function startHealthServer() {
 
 async function main() {
   startHealthServer();
+  validateBootConfig();
   const ctx = loadContext();
   if (!ctx) {
     console.log("[agents] Running in API-only mode (no wallet configured)");

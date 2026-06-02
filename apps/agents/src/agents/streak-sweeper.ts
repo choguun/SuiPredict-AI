@@ -34,10 +34,39 @@ import {
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
-import { recordDailyScore, dayIndexFor } from "../gamification/store.js";
+import {
+  acquireSweepLock,
+  completeSweepRun,
+  dayIndexFor,
+  getSweepRun,
+  recordDailyScore,
+  recordDailyScoreIfAbsent,
+  releaseSweepLock,
+} from "../gamification/store.js";
 import { getPosition } from "../markets/store.js";
+import { runPositionIndexer } from "./position-indexer.js";
 
 const PTB_BATCH = 20;
+
+// Per-user retry cap for transient errors. Anything that isn't an
+// on-chain Move abort (e.g. RPC timeouts, 429, network blips) is
+// retried at most this many times before we count the user as
+// failed. Permanent errors (Move aborts, EStreakBroken, etc.) skip
+// the retry and count as failed on the first attempt.
+const PER_USER_MAX_RETRY = 2;
+
+// Max time the per-user fallback can run before the sweep gives up.
+// At ~10s per attempt and 20 users per batch, a normal fallback
+// finishes in seconds; a stuck RPC would loop forever otherwise.
+// When this fires, we release the lock and let the next cron tick
+// (or the next-day sweep) retry.
+const PER_USER_BATCH_TIMEOUT_MS = 10 * 60 * 1000;
+
+// Abort the entire sweep if this many consecutive per-user attempts
+// fail with similar errors — almost always a global RPC outage,
+// not a per-user issue. Saves gas on doomed txs and frees the
+// sweep lock so the next-day sweep can take over.
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
 const STREAK_ADMIN_ID = process.env.STREAK_ADMIN_ID ?? "";
@@ -63,6 +92,25 @@ const E_ALREADY_RECORDED_ABORT_CODE = 3;
 function isAlreadyRecordedError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /MoveAbort[^)]*\)\s*,\s*3\b/.test(msg);
+}
+
+/**
+ * Classify an error as transient (retryable) or permanent. Transient
+ * errors are network/RPC issues that may succeed on a retry; permanent
+ * errors are on-chain aborts or invalid transactions that will always
+ * fail the same way.
+ */
+function isTransientError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Move aborts are always permanent — retrying just wastes gas.
+  if (/MoveAbort/.test(msg)) return false;
+  if (/EWrongStreakOwner|ENotAdmin|EInvalidOutcome|EStreakBroken/.test(msg)) return false;
+  // RPC / network signatures worth retrying.
+  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 interface ResolvedUser {
@@ -100,40 +148,85 @@ async function queryAllEvents(
 }
 
 /**
- * Enumerate all addresses that have a `UserStreak` registered.
+ * Enumerate all (owner, streakId) pairs in the `StreakRegistry`.
  *
  * `StreakRegistry.streaks: Table<address, ID>` is a Sui `Table`, whose
  * entries appear as dynamic fields on the registry object. The gRPC
- * client returns each entry as `{ name: { type, bcs: Uint8Array }, ... }`
- * where `bcs` is the BCS-encoded 32-byte address. We decode it back to
- * a `0x`-prefixed hex string. The `value` (the `UserStreak` object id)
- * is fetched separately by `streakIdForUser`.
+ * client returns each entry as `{ name: { type, bcs }, value, ... }`
+ * where:
+ *   - `name.bcs` is the BCS-encoded 32-byte address of the owner
+ *   - `value` is the `UserStreak` object id (decoded by the SDK to a
+ *     hex string or `{ id: "0x..." }` object)
+ *
+ * We extract both in one pass to avoid the O(n) `streakIdForUser`
+ * round-trips that the previous impl made per owner — at ~5k users
+ * that was 5k sequential gRPC calls, which exceeded the cron window
+ * and the indexer died silently partway through.
+ *
+ * Falls back to per-owner `streakIdForUser` for any entry whose value
+ * is missing or malformed (e.g. older SDK versions that strip `value`
+ * from `listDynamicFields` responses). The fallback path is rare and
+ * self-corrects on the next sweep.
  */
 async function listAllStreakOwners(
   client: SuiClient,
   registryId: string,
-): Promise<string[]> {
-  if (!registryId) return [];
-  const out: string[] = [];
+): Promise<Map<string, string>> {
+  if (!registryId) return new Map();
+  const out = new Map<string, string>();
+  const missingValue: string[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
   while (hasNextPage) {
-    const page: { hasNextPage: boolean; cursor: string | null; dynamicFields: { name?: { type?: string; bcs?: Uint8Array } }[] } =
-      await client.listDynamicFields({
-        parentId: registryId,
-        cursor,
-        limit: 1000,
-      });
+    const page: {
+      hasNextPage: boolean;
+      cursor: string | null;
+      dynamicFields: {
+        name?: { type?: string; bcs?: Uint8Array };
+        value?: unknown;
+      }[];
+    } = await client.listDynamicFields({
+      parentId: registryId,
+      cursor,
+      limit: 1000,
+    });
     for (const f of page.dynamicFields) {
       const name = f.name;
-      if (name?.type === "address" && name.bcs instanceof Uint8Array) {
-        out.push("0x" + bytesToHex(name.bcs));
+      if (name?.type !== "address" || !(name.bcs instanceof Uint8Array)) {
+        continue;
+      }
+      const owner = "0x" + bytesToHex(name.bcs);
+      const streakId = decodeStreakIdValue(f.value);
+      if (streakId) {
+        out.set(owner, streakId);
+      } else {
+        missingValue.push(owner);
       }
     }
     hasNextPage = page.hasNextPage;
     cursor = page.cursor;
   }
+  // Backfill any owners whose `value` was stripped from the listing
+  // response. Bounded by 5k in practice; the per-call latency is
+  // ~10ms so the total stays under 60s for the worst case.
+  for (const owner of missingValue) {
+    try {
+      const id = await streakIdForUser(client, registryId, owner);
+      if (id) out.set(owner, id);
+    } catch {
+      /* user removed between list and lookup */
+    }
+  }
   return out;
+}
+
+function decodeStreakIdValue(value: unknown): string | null {
+  if (typeof value === "string" && value.startsWith("0x")) return value;
+  if (typeof value === "object" && value !== null && "id" in value) {
+    const id = (value as { id: unknown }).id;
+    if (typeof id === "string" && id.startsWith("0x")) return id;
+  }
+  return null;
 }
 
 function bytesToHex(b: Uint8Array): string {
@@ -385,6 +478,49 @@ export async function runStreakSweeper(
   }
 
   const dayIndex = dayIndexFor(Date.now() - DAY_MS); // sweep yesterday
+
+  // Per-day sweep lock. If a prior sweep for the same day is still
+  // running (e.g. a slow per-user fallback), bail out so we don't
+  // race the next day's sweep with the previous day's leftovers.
+  // A 24h-stale lock is recovered to the new caller in case the
+  // previous process died mid-sweep.
+  if (!acquireSweepLock(dayIndex)) {
+    const existing = getSweepRun(dayIndex);
+    return recordResult("StreakSweeper", {
+      action: "skip",
+      reasoning:
+        `Sweep for day ${dayIndex} already running ` +
+        `(started ${existing?.started_at_ms ?? "?"}); the in-flight ` +
+        `per-user fallback will finish it.`,
+    });
+  }
+  // The lock is released in `finally` no matter how the body exits
+  // (early `noop` returns, thrown RPC error, normal completion). This
+  // keeps the next-day sweep from seeing a stale `running` row and
+  // skipping a fresh run.
+  try {
+  // Catch up the position indexer before we read `positions` below.
+  // The AllCorrect proxy (step 4 of `resolveDayOutcomes`) checks
+  // `getPosition(m, user).yes/no` to verify the user still holds the
+  // winning side at sweep time. If a user redeemed at 23:59 UTC and
+  // the position indexer hasn't polled the RedeemedEvent by 00:02 UTC
+  // (e.g. it was lagging, or just ran at 00:00 UTC), the `positions`
+  // table would still show the pre-redeem balance — a user who sold
+  // everything would get `AllCorrect` instead of `SomeWrong`. Forcing
+  // an indexer pass here brings `positions` in line with the chain
+  // before the proxy reads it. Worst case it adds one round of gRPC
+  // polling (~1s) to the sweep.
+  try {
+    await runPositionIndexer(ctx);
+  } catch (err) {
+    // Indexer failure shouldn't kill the sweep — log and proceed
+    // with whatever positions the table already has. The result
+    // will be conservative (more `SomeWrong`) rather than wrong.
+    console.warn(
+      "[streak-sweeper] pre-poll position indexer failed, continuing with possibly-stale positions:",
+      err instanceof Error ? err.message : err,
+    );
+  }
   const users = await resolveDayOutcomes(dayIndex);
   if (users.length === 0) {
     return recordResult("StreakSweeper", {
@@ -419,23 +555,17 @@ export async function runStreakSweeper(
   // call because the contract requires consecutive days; the leaderboard
   // still records the NOT_SUBMITTED row.
   const mintedSet = new Set(users.map((u) => u.user));
-  const allOwners = await listAllStreakOwners(client, STREAK_REGISTRY_ID);
-
-  // Pull each owner's streakId + last_participation_day in one batch.
-  const ownerToStreakId = new Map<string, string>();
-  for (const owner of allOwners) {
-    try {
-      const id = await streakIdForUser(client, STREAK_REGISTRY_ID, owner);
-      if (id) ownerToStreakId.set(owner, id);
-    } catch {
-      /* skip — user was removed between list and lookup */
-    }
-  }
+  // listAllStreakOwners already returns the owner→streakId map, so
+  // we skip the per-owner `streakIdForUser` round-trip that would
+  // otherwise dominate the cron window at scale (5k users → 5k gRPC
+  // calls). The fallback path inside listAllStreakOwners backfills
+  // any rows whose `value` was missing from the listing response.
+  const ownerToStreakId = await listAllStreakOwners(client, STREAK_REGISTRY_ID);
   const lastDays = await readLastParticipationDays(client, ownerToStreakId);
 
   const notSubmittedUsers: ResolvedUser[] = [];
   const multiDayGaps: string[] = [];
-  for (const owner of allOwners) {
+  for (const [owner, streakId] of ownerToStreakId) {
     if (mintedSet.has(owner)) continue;
     const last = lastDays.get(owner) ?? 0;
     const expectedLast = dayIndex - 1; // dayIndex = yesterday; last = yesterday
@@ -445,7 +575,7 @@ export async function runStreakSweeper(
         user: owner,
         outcome: OUTCOME_NOT_SUBMITTED,
         category: 0,
-        streakId: ownerToStreakId.get(owner),
+        streakId,
       });
     } else if (last > 0 && last < expectedLast) {
       // Multi-day gap — leaderboard still gets a row, on-chain skipped.
@@ -474,8 +604,12 @@ export async function runStreakSweeper(
 
   let sent = 0;
   let failed = 0;
+  let consecutiveFailures = 0;
+  let lastFailureMsg = "";
+  let aborted = false;
+  const sweepStartMs = Date.now();
 
-  for (let i = 0; i < combined.length; i += PTB_BATCH) {
+  for (let i = 0; i < combined.length && !aborted; i += PTB_BATCH) {
     const batch = combined.slice(i, i + PTB_BATCH);
     const tx = buildSweepTx(
       STREAK_REGISTRY_ID,
@@ -496,6 +630,7 @@ export async function runStreakSweeper(
         });
         sent++;
       }
+      consecutiveFailures = 0;
       console.log(
         `[streak-sweeper] batch ${i / PTB_BATCH + 1} → ${res.digest}`,
       );
@@ -504,21 +639,66 @@ export async function runStreakSweeper(
       // from a prior successful sweep, or a multi-day-gap violation) kills
       // the whole batch. Fall back to per-user submission so the other 19
       // still get recorded. EAlreadyRecordedToday is treated as success
-      // (the on-chain state is already what we want); anything else counts
+      // (the on-chain state is already what we want); transient errors
+      // are retried up to PER_USER_MAX_RETRY times; anything else counts
       // as failed.
       console.warn(
         `[streak-sweeper] batch ${i / PTB_BATCH + 1} failed, falling back to per-user:`,
         err instanceof Error ? err.message : err,
       );
       for (const u of batch) {
+        if (aborted) break;
+        // Total-budget guard: if the per-user fallback has run for
+        // too long, abort the entire sweep. The next cron tick (or
+        // the next-day sweep) will retry. Without this, a stuck RPC
+        // could keep the per-user loop alive past the daily window
+        // and race the next-day sweep.
+        if (Date.now() - sweepStartMs > PER_USER_BATCH_TIMEOUT_MS) {
+          console.warn(
+            `[streak-sweeper] per-user fallback exceeded ${PER_USER_BATCH_TIMEOUT_MS}ms; aborting sweep.`,
+          );
+          aborted = true;
+          break;
+        }
         const singleTx = buildSweepTx(
           STREAK_REGISTRY_ID,
           STREAK_ADMIN_ID,
           [u],
           BigInt(dayIndex),
         );
-        try {
-          await executeTransaction(client, singleTx, ctx.signer);
+        type Outcome =
+          | { kind: "ok" }
+          | { kind: "already_recorded" }
+          | { kind: "failed"; err: unknown };
+        let outcome: Outcome = { kind: "failed", err: null };
+        for (let attempt = 0; attempt <= PER_USER_MAX_RETRY; attempt++) {
+          try {
+            await executeTransaction(client, singleTx, ctx.signer);
+            outcome = { kind: "ok" };
+            break;
+          } catch (e) {
+            if (isAlreadyRecordedError(e)) {
+              // Idempotent: the on-chain state was already written by a
+              // prior sweep (with whatever outcome the indexer had at
+              // that time). The on-chain state is the source of truth;
+              // we use `IfAbsent` so a fresh-but-different locally
+              // computed outcome doesn't clobber the leaderboard row
+              // that the prior sweep wrote. The leaderboard reflects
+              // the on-chain state, not the latest local view.
+              outcome = { kind: "already_recorded" };
+              break;
+            }
+            if (!isTransientError(e) || attempt === PER_USER_MAX_RETRY) {
+              // Permanent error, or we've exhausted retries on a
+              // transient one. Either way, give up on this user.
+              outcome = { kind: "failed", err: e };
+              break;
+            }
+            // Backoff before retry: 1s, 2s, 4s …
+            await sleep(1_000 * 2 ** attempt);
+          }
+        }
+        if (outcome.kind === "ok") {
           recordDailyScore({
             user: u.user,
             day_index: dayIndex,
@@ -528,24 +708,41 @@ export async function runStreakSweeper(
             category: u.category,
           });
           sent++;
-        } catch (perErr) {
-          if (isAlreadyRecordedError(perErr)) {
-            // Idempotent: a prior sweep already wrote today's row.
-            recordDailyScore({
-              user: u.user,
-              day_index: dayIndex,
-              participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
-              all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
-              streak_after: 0,
-              category: u.category,
-            });
-            sent++;
+          consecutiveFailures = 0;
+        } else if (outcome.kind === "already_recorded") {
+          recordDailyScoreIfAbsent({
+            user: u.user,
+            day_index: dayIndex,
+            participated: u.outcome === OUTCOME_NOT_SUBMITTED ? 0 : 1,
+            all_correct: u.outcome === OUTCOME_ALL_CORRECT ? 1 : 0,
+            streak_after: 0,
+            category: u.category,
+          });
+          sent++;
+          consecutiveFailures = 0;
+        } else {
+          const msg =
+            outcome.err instanceof Error
+              ? outcome.err.message
+              : String(outcome.err);
+          failed++;
+          console.error(`[streak-sweeper] per-user ${u.user} failed:`, msg);
+          // If the same error keeps repeating, the RPC is almost
+          // certainly broken — stop wasting gas on doomed txs and
+          // let the next-day sweep retry from a fresh state.
+          if (msg === lastFailureMsg) {
+            consecutiveFailures++;
           } else {
-            failed++;
+            lastFailureMsg = msg;
+            consecutiveFailures = 1;
+          }
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             console.error(
-              `[streak-sweeper] per-user ${u.user} failed:`,
-              perErr instanceof Error ? perErr.message : perErr,
+              `[streak-sweeper] ${consecutiveFailures} consecutive identical failures — aborting sweep. ` +
+                `Last error: ${msg}`,
             );
+            aborted = true;
+            break;
           }
         }
       }
@@ -568,4 +765,7 @@ export async function runStreakSweeper(
       `${multiDayGaps.length} multi-day gaps, PTB size ${PTB_BATCH}).`,
     confidence: 100,
   });
+  } finally {
+    releaseSweepLock(dayIndex);
+  }
 }

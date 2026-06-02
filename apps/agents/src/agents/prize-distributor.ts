@@ -69,6 +69,40 @@ export async function runPrizeDistributor(
     });
   }
 
+  // Sanity-check that the on-chain PrizePool actually holds funds
+  // before we sign any claim payloads. If `fund_pool` silently failed
+  // during bootstrap (e.g. no DBUSDC coin >= PRIZE_WEEKLY_AMOUNT),
+  // every signature we issue would land as `EInsufficientPoolBalance`
+  // on the user's claim tx. Reading the balance first lets us skip
+  // the whole week with a clear message instead of paying gas for N
+  // doomed PTBs.
+  const client = createClient();
+  let poolBalance = 0n;
+  try {
+    const { objects } = await client.getObjects({
+      objectIds: [PRIZE_POOL_ID],
+      include: { json: true },
+    });
+    const obj = objects[0];
+    if (obj && !(obj instanceof Error)) {
+      const json = obj.json as { balance?: string | number } | null;
+      if (json) poolBalance = BigInt(json.balance ?? 0);
+    }
+  } catch (e) {
+    return recordResult("PrizeDistributor", {
+      action: "skip",
+      reasoning: `Could not read PrizePool ${PRIZE_POOL_ID}: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    });
+  }
+  if (poolBalance === 0n) {
+    return recordResult("PrizeDistributor", {
+      action: "skip",
+      reasoning: `PrizePool ${PRIZE_POOL_ID} has 0 balance; bootstrap fund_pool likely failed. Refusing to sign claims that would abort on-chain.`,
+    });
+  }
+
   const priorWeek = weekIndexFor(Date.now()) - 1;
   const top = listWeeklyLeaderboard(priorWeek, 10);
   if (top.length === 0) {
@@ -78,7 +112,7 @@ export async function runPrizeDistributor(
     });
   }
 
-  const client = PRIZE_AUTO_CLAIM ? createClient() : null;
+  const autoClaimClient = PRIZE_AUTO_CLAIM ? createClient() : null;
   let signed = 0;
   let autoClaimed = 0;
   let failed = 0;
@@ -111,9 +145,9 @@ export async function runPrizeDistributor(
       });
       signed++;
 
-      if (PRIZE_AUTO_CLAIM && client) {
+      if (PRIZE_AUTO_CLAIM && autoClaimClient) {
         const userStreakId = await streakIdForUser(
-          client,
+          autoClaimClient,
           STREAK_REGISTRY_ID,
           row.user,
         );
@@ -135,7 +169,7 @@ export async function runPrizeDistributor(
           poolIdForSig: PRIZE_POOL_ID,
         });
         try {
-          const res = await executeTransaction(client, tx, _ctx.signer);
+          const res = await executeTransaction(autoClaimClient, tx, _ctx.signer);
           recordPrizeClaim({
             user: row.user,
             week_index: priorWeek,

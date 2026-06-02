@@ -11,10 +11,10 @@
 import { Transaction } from "@mysten/sui/transactions";
 import {
   CLOCK_OBJECT_ID,
+  DUSDC_TYPE,
 } from "./constants.js";
 import { encodeUtf8 } from "./markets/constants.js";
 import {
-  DBUSDC_TYPE,
   DEEP_TYPE,
   DEEPBOOK_REGISTRY_ID,
   POOL_CREATION_FEE_DEEP,
@@ -95,7 +95,7 @@ export function buildCreateMarketTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::create_market`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(DEEPBOOK_REGISTRY_ID),
       tx.pure.vector("u8", encodeUtf8(params.title)),
@@ -128,7 +128,7 @@ export function buildMintSharesTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(marketId), tx.object(vaultId), tx.object(quoteIn)],
   });
   return tx;
@@ -162,7 +162,7 @@ export function buildMintSharesBatchTx(params: {
     if (!coinArg) return;
     tx.moveCall({
       target: `${PKG()}::prediction_market::mint_shares`,
-      typeArguments: [DBUSDC_TYPE],
+      typeArguments: [DUSDC_TYPE],
       arguments: [tx.object(marketId), tx.object(params.vaultId), coinArg],
     });
   });
@@ -182,7 +182,7 @@ export function buildResolveMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_market`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
       tx.pure.u8(outcome),
@@ -207,7 +207,7 @@ export function buildRedeemTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
   });
   return tx;
@@ -232,7 +232,7 @@ export function buildDisputeMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::dispute_market`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
       tx.pure.vector("u8", Array.from(evidence)),
@@ -253,7 +253,7 @@ export function buildResolveDisputeTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_dispute`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(marketId), tx.pure.u8(finalOutcome)],
   });
   return tx;
@@ -274,7 +274,7 @@ export function buildRedeemNoTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_no`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
   });
   return tx;
@@ -298,7 +298,7 @@ export function buildSetupReferralTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::setup_referral`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(marketId),
       tx.object(poolId),
@@ -324,7 +324,7 @@ export function buildClaimReferralRewardsTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(poolId), tx.object(referralId)],
   });
   return tx;
@@ -343,7 +343,7 @@ export function buildWithdrawFeesTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::withdraw_fees`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(vaultId), tx.pure.u64(amount)],
   });
   return tx;
@@ -365,7 +365,7 @@ export function buildInitFeeVaultTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::init_fee_vault`,
-    typeArguments: [DBUSDC_TYPE],
+    typeArguments: [DUSDC_TYPE],
     arguments: [tx.object(adminCapId), tx.pure.address(vaultAdmin)],
   });
   return tx;
@@ -451,13 +451,13 @@ export function buildDepositIntoBalanceManagerTx(
 export function yesCoinType(
   packageId: string = PKG(),
 ): string {
-  return `${packageId}::prediction_market::YES<${DBUSDC_TYPE}>`;
+  return `${packageId}::prediction_market::YES<${DUSDC_TYPE}>`;
 }
 
 export function noCoinType(
   packageId: string = PKG(),
 ): string {
-  return `${packageId}::prediction_market::NO<${DBUSDC_TYPE}>`;
+  return `${packageId}::prediction_market::NO<${DUSDC_TYPE}>`;
 }
 
 /**
@@ -517,7 +517,7 @@ export function createMarketDeepBookClient(
     poolKey,
     poolId,
     baseCoinType: yesCoinType(),
-    quoteCoinType: DBUSDC_TYPE,
+    quoteCoinType: DUSDC_TYPE,
     baseScalar: 1_000_000,
     quoteScalar: 1_000_000,
   };
@@ -539,13 +539,13 @@ export function createMarketDeepBookClient(
  *
  * @param vaultId     - ProtocolVault<QuoteCoin> object ID
  * @param coinId      - Object ID of a Coin<QuoteCoin> with amount > 0
- * @param quoteType   - The quote coin type (e.g. DBUSDC_TYPE or DUSDC_TYPE)
+ * @param quoteType   - The quote coin type (e.g. DUSDC_TYPE or DUSDC_TYPE)
  * @param recipient   - Address to receive the VLP coin (defaults to tx sender)
  */
 export function buildVaultDepositTx(
   vaultId: string,
   coinId: string,
-  quoteType: string = DBUSDC_TYPE,
+  quoteType: string = DUSDC_TYPE,
   recipient?: string,
 ): Transaction {
   const tx = new Transaction();
@@ -566,7 +566,7 @@ export function buildVaultDepositTx(
 export function buildVaultWithdrawTx(
   vaultId: string,
   vlpCoinId: string,
-  quoteType: string = DBUSDC_TYPE,
+  quoteType: string = DUSDC_TYPE,
 ): Transaction {
   const tx = new Transaction();
   const out = tx.moveCall({

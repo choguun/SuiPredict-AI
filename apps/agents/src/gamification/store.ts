@@ -88,6 +88,18 @@ function getDb(): Database.Database {
         claimed_at_ms INTEGER NOT NULL,
         PRIMARY KEY (user, week_index)
       );
+
+      -- Per-day sweep lock. The streak-sweeper inserts a row when it
+      -- starts and updates status='complete' on success. If a prior
+      -- sweep is still 'running' (started within the last 24h) the
+      -- next cron tick aborts so a slow per-user fallback doesn't
+      -- race the next day's sweep.
+      CREATE TABLE IF NOT EXISTS sweep_runs (
+        day_index INTEGER PRIMARY KEY,
+        status TEXT NOT NULL,
+        started_at_ms INTEGER NOT NULL,
+        finished_at_ms INTEGER
+      );
     `);
   }
   return db;
@@ -113,6 +125,33 @@ export function recordDailyScore(score: DailyScore): void {
       streak_after: score.streak_after,
       category: score.category,
     });
+}
+
+/**
+ * Insert a `daily_scores` row only if the (user, day_index) key does
+ * NOT already exist. Used by the streak-sweeper's idempotent path:
+ * when a per-user `record_participation` returns `EAlreadyRecordedToday`,
+ * the on-chain state was already written by a prior sweep (which used
+ * a possibly-different outcome if the position indexer was lagging).
+ * The on-chain state is the source of truth, so we must not clobber
+ * the existing off-chain row with a fresher-but-disagreeing value.
+ */
+export function recordDailyScoreIfAbsent(score: DailyScore): boolean {
+  const res = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO daily_scores
+       (user, day_index, participated, all_correct, streak_after, category)
+       VALUES (@user, @day_index, @participated, @all_correct, @streak_after, @category)`,
+    )
+    .run({
+      user: score.user,
+      day_index: score.day_index,
+      participated: score.participated,
+      all_correct: score.all_correct,
+      streak_after: score.streak_after,
+      category: score.category,
+    });
+  return res.changes > 0;
 }
 
 export function listDailyScoresForDay(dayIndex: number): DailyScore[] {
@@ -259,4 +298,74 @@ export function knownDayIndices(): number[] {
       )
       .all() as { day_index: number }[]
   ).map((r) => r.day_index);
+}
+
+export interface SweepRun {
+  day_index: number;
+  status: "running" | "complete";
+  started_at_ms: number;
+  finished_at_ms: number | null;
+}
+
+export function getSweepRun(dayIndex: number): SweepRun | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM sweep_runs WHERE day_index = ?`)
+    .get(dayIndex) as SweepRun | undefined;
+  return row ?? null;
+}
+
+/**
+ * Try to claim the per-day sweep slot. Returns true if the caller now
+ * holds the lock. A `running` row whose `started_at_ms` is within the
+ * last `staleMs` window blocks a re-acquire; older `running` rows are
+ * treated as crashed sweeps and the new caller takes over (UPDATE).
+ *
+ * `running` rows older than `staleMs` are recovered to the new caller
+ * so a process that died mid-sweep doesn't permanently block the day.
+ */
+export function acquireSweepLock(
+  dayIndex: number,
+  staleMs = 24 * 60 * 60 * 1000,
+): boolean {
+  const now = Date.now();
+  const existing = getSweepRun(dayIndex);
+  if (existing?.status === "running" && now - existing.started_at_ms < staleMs) {
+    return false;
+  }
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE sweep_runs
+         SET status='running', started_at_ms=?, finished_at_ms=NULL
+         WHERE day_index=?`,
+      )
+      .run(now, dayIndex);
+  } else {
+    getDb()
+      .prepare(
+        `INSERT INTO sweep_runs (day_index, status, started_at_ms, finished_at_ms)
+         VALUES (?, 'running', ?, NULL)`,
+      )
+      .run(dayIndex, now);
+  }
+  return true;
+}
+
+export function completeSweepRun(dayIndex: number): void {
+  getDb()
+    .prepare(
+      `UPDATE sweep_runs
+       SET status='complete', finished_at_ms=?
+       WHERE day_index=?`,
+    )
+    .run(Date.now(), dayIndex);
+}
+
+export function releaseSweepLock(dayIndex: number): void {
+  // Mark the in-flight sweep as complete (or remove it entirely if it
+  // produced no rows — a noop sweep shouldn't lock the day). Using
+  // DELETE keeps the table small.
+  getDb()
+    .prepare(`DELETE FROM sweep_runs WHERE day_index=? AND status='running'`)
+    .run(dayIndex);
 }

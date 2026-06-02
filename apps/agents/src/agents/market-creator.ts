@@ -45,29 +45,56 @@ interface MarketSpec {
   resolution_source: string;
 }
 
-async function proposeMarket(): Promise<MarketSpec> {
+async function proposeMarket(): Promise<{
+  spec: MarketSpec;
+  source: "llm" | "fallback";
+  fallbackReason?: string;
+}> {
   const prompt = `Propose one binary prediction market for a Polymarket-style exchange on Sui/DeepBook.
 Respond ONLY with JSON: {"title":"...","description":"...","category":"crypto|politics|sports|defi","expiry_days":7-30,"resolution_source":"..."}`;
 
-  const raw = await callLlm(prompt);
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim()) as MarketSpec;
-      if (parsed.title && parsed.expiry_days >= 1 && parsed.expiry_days <= 30) {
-        return parsed;
-      }
-    } catch {
-      /* fallback */
-    }
+  // Reason the LLM path was skipped — recorded in the agent decision
+  // and the boot health endpoint so an operator can tell at a glance
+  // whether the agent is brainstorming or running on autopilot.
+  if (!process.env.OPENAI_API_KEY) {
+    return pickFallback("OPENAI_API_KEY not set");
   }
+  const raw = await callLlm(prompt);
+  if (!raw) {
+    return pickFallback("LLM call returned null (network error, 4xx/5xx, or empty response)");
+  }
+  try {
+    const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim()) as MarketSpec;
+    if (parsed.title && parsed.expiry_days >= 1 && parsed.expiry_days <= 30) {
+      return { spec: parsed, source: "llm" };
+    }
+    return pickFallback(`LLM JSON missing required fields: ${JSON.stringify(parsed).slice(0, 80)}`);
+  } catch (e) {
+    return pickFallback(`LLM JSON parse error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 
+function pickFallback(reason: string): {
+  spec: MarketSpec;
+  source: "fallback";
+  fallbackReason: string;
+} {
   const fb = FALLBACK_MARKETS[Math.floor(Math.random() * FALLBACK_MARKETS.length)]!;
+  // Loud console warning so the operator sees the fallback in their
+  // log stream even before checking the decision store.
+  console.warn(
+    `[market-creator] LLM unavailable — using FALLBACK_MARKETS. Reason: ${reason}`,
+  );
   return {
-    title: fb.title,
-    description: fb.description,
-    category: fb.category,
-    expiry_days: fb.days,
-    resolution_source: fb.resolution_source,
+    spec: {
+      title: fb.title,
+      description: fb.description,
+      category: fb.category,
+      expiry_days: fb.days,
+      resolution_source: fb.resolution_source,
+    },
+    source: "fallback",
+    fallbackReason: reason,
   };
 }
 
@@ -81,8 +108,12 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
   }
 
-  const spec = await proposeMarket();
+  const { spec, source, fallbackReason } = await proposeMarket();
   const expiryMs = BigInt(Date.now() + spec.expiry_days * 86_400_000);
+  const sourceTag =
+    source === "fallback"
+      ? ` [FALLBACK: ${fallbackReason ?? "unknown reason"}]`
+      : " [llm]";
 
   if (!DEEPBOOK_REGISTRY_ID) {
     // Demo mode — no on-chain
@@ -99,7 +130,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
     return recordResult("MarketCreator", {
       action: "demo_market",
-      reasoning: `Created demo market: ${spec.title}`,
+      reasoning: `Created demo market${sourceTag}: ${spec.title}`,
       confidence: 75,
     });
   }
@@ -221,7 +252,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
 
     return recordResult("MarketCreator", {
       action: "create_market",
-      reasoning: `On-chain market: ${spec.title} (pool: ${poolId ? poolId.slice(0, 10) + "..." : "N/A"}${initialMintDigest ? ", seeded" : ", unseeded"})`,
+      reasoning: `On-chain market${sourceTag}: ${spec.title} (pool: ${poolId ? poolId.slice(0, 10) + "..." : "N/A"}${initialMintDigest ? ", seeded" : ", unseeded"})`,
       confidence: 85,
       txDigest: createResult.digest,
     });

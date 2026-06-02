@@ -5,6 +5,19 @@
  * Run on a schedule (e.g. every 15 min). Rewards accumulate in the
  * DeepBook pool's referral ledger and are paid to the agent's
  * signer; the agent then forwards them to the treasury.
+ *
+ * KNOWN GAP: the on-chain `setup_referral` (prediction_market.move)
+ * is never invoked anywhere in the repo — not by the MarketCreator
+ * agent, not by the bootstrap script, not by the web app. As a
+ * result, every market has `referral_id = None` at creation time,
+ * and this agent is always a no-op. The fix requires:
+ *   1. A "Setup DeepBook referral" button in the market-creation
+ *      form (apps/web) that calls `setup_referral` after the
+ *      market is created.
+ *   2. A read-only view of accumulated referral rewards per
+ *      market so operators can see what's accruing.
+ * Filed for plan-5; this agent's "no referrals configured" message
+ * is the current observable symptom.
  */
 import { buildClaimReferralRewardsTx, createClient, executeTransaction, REFERRAL_TREASURY_ADDRESS } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";

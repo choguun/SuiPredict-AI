@@ -208,7 +208,7 @@ export default function MarketDetailPage() {
   const deepBookPoolKey =
     market?.deepbook_pool_key ??
     process.env.NEXT_PUBLIC_DEEPBOOK_POOL_KEY ??
-    PREDICT_DEEPBOOK_POOL_KEY;
+    "";
   const deepBookPoolId =
     market?.deepbook_pool_id ?? process.env.NEXT_PUBLIC_DEEPBOOK_POOL_ID ?? "";
   const deepBookBaseCoinType =
@@ -582,6 +582,18 @@ export default function MarketDetailPage() {
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card title="YES order book" className="order-2 lg:order-1">
+          {!deepBookMarket && !market.id.startsWith("demo-") && (
+            <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200/90">
+              <p className="font-semibold text-amber-200">No DeepBook pool for this market.</p>
+              <p className="mt-1 text-amber-200/70">
+                Limit orders aren't routed on-chain. The order book below only
+                reflects off-chain <code>chain_orders</code> rows. Use
+                <span className="mx-1 rounded bg-black/30 px-1.5 py-0.5 font-mono text-[10px]">Mint YES+NO</span>
+                above to take a position directly, or ask the market creator to
+                deploy a DeepBook pool for live order routing.
+              </p>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {(() => {
               const bids = (book?.bids ?? []).slice(0, 8);

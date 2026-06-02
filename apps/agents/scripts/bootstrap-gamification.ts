@@ -75,6 +75,21 @@ function err(msg: string): never {
   process.exit(1);
 }
 
+/**
+ * Read `Published.toml` and return the `published-at` package id, or
+ * `""` if the file is missing or has no published entry. Used to make
+ * the bootstrap idempotent — if the package is already published we
+ * skip `sui client publish` and reuse the existing object IDs that
+ * step-1a..7 re-discover from the chain.
+ */
+function readPublishedAt(): string {
+  const publishedToml = join(PKG_DIR, "Published.toml");
+  if (!existsSync(publishedToml)) return "";
+  const text = readFileSync(publishedToml, "utf-8");
+  const m = text.match(/^\s*published-at\s*=\s*"([^"]+)"/m);
+  return m?.[1] ?? "";
+}
+
 function runPublish(): PublishResult {
   log(`Publishing ${PKG_DIR} to ${NETWORK}...`);
   const publishedToml = join(PKG_DIR, "Published.toml");
@@ -298,9 +313,26 @@ async function main() {
   const signerAddr = signer.getPublicKey().toSuiAddress();
   log(`Deployer: ${signerAddr}`);
 
-  // 1) Publish
-  const { packageId, objects } = runPublish();
-  log(`Package ID: ${packageId}`);
+  // 1) Publish — but only if the package hasn't been published yet. If
+  // `Published.toml` already has a `published-at`, reuse it and skip
+  // the publish step. Otherwise we'd silently create a second package
+  // on every re-run, with duplicate StreakAdmin / PrizePool / FeeVault
+  // shared objects that nothing on the client knows which to trust.
+  const existingPkgId = readPublishedAt();
+  let packageId: string;
+  let objects: CreatedObject[];
+  if (existingPkgId) {
+    log(`Reusing existing package at ${existingPkgId} (Published.toml).`);
+    packageId = existingPkgId;
+    // No fresh object list from a publish; the step-1a..7 code paths
+    // re-discover shared objects by querying the chain.
+    objects = [];
+  } else {
+    const out = runPublish();
+    packageId = out.packageId;
+    objects = out.objects;
+    log(`Package ID: ${packageId}`);
+  }
 
   // Initialize gRPC + tx clients up front (used by step 1a + 4 + 5...).
   const grpc = new SuiGrpcClient({ network: NETWORK as "testnet", baseUrl: RPC_URL });
