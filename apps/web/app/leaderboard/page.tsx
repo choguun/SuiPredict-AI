@@ -110,8 +110,9 @@ export default async function LeaderboardPage({
   // not inlined into the client bundle — Next.js only inlines
   // `NEXT_PUBLIC_*` at build time, so reading the unprefixed var
   // here always returned `undefined` in the browser. The on-chain
-  // PrizePool `current_pot` is the source of truth on the API side
-  // (returned by /prize/manifest); this value is only the static
+  // PrizePool `weekly_prize` is the source of truth on the API
+  // side (resolved by the agents `resolvePrizeAmount` helper in
+  // gamification/routes.ts); this value is only the static
   // fallback for first render.
   const weeklyPrize = BigInt(
     process.env.NEXT_PUBLIC_PRIZE_WEEKLY_AMOUNT ?? "0",

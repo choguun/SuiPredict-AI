@@ -1112,11 +1112,16 @@ export async function runPositionIndexer(
       };
       if (!j?.parlay_id || !j?.user) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      // R37 audit fix: `collateral` is a u64. Coerce through BigInt
+      // so a future high-value parlay (above 2^53-1 atoms of DUSDC)
+      // doesn't silently lose precision at the storage boundary.
+      // `leg_count` and `payout_bps` are u64 but in practice tiny
+      // (≤ 5 legs, ≤ 50_000 bps), so a plain Number() is safe.
       upsertParlayCreated({
         parlay_id: j.parlay_id,
         pool_id: j.pool_id ?? "",
         user: j.user,
-        collateral_amount: Number(j.collateral ?? 0),
+        collateral_amount: Number(BigInt(j.collateral ?? 0)),
         leg_count: Number(j.leg_count ?? 0),
         payout_bps: Number(j.payout_bps ?? 0),
         created_at_ms: ts,
@@ -1129,9 +1134,20 @@ export async function runPositionIndexer(
     parlayType("ParlayLegRecorded"),
     "position_indexer.parlay_leg_recorded",
     (ev) => {
+      // R37 audit fix: the on-chain `ParlayLegRecorded` event carries
+      // `market_id`, `predicted`, and `outcome` in addition to
+      // `parlay_id`/`leg_index`/`won`. The previous indexer captured
+      // only the first two and the last, dropping `market_id` —
+      // which forced the parlay-worker to do a per-parlay
+      // `getObject` RPC call (`readParlayLegMarketIds`) for every
+      // unfinalized parlay on the `*/1` cron. Persist `market_id`
+      // here so the worker can read it from the mirror instead.
+      // `predicted`/`outcome` are still dropped — they're only
+      // useful for replay/audit tooling that doesn't exist yet.
       const j = ev.parsedJson as {
         parlay_id?: string;
         leg_index?: string | number;
+        market_id?: string;
         won?: boolean;
       };
       if (!j?.parlay_id) return;
@@ -1139,6 +1155,7 @@ export async function runPositionIndexer(
       recordParlayLeg({
         parlay_id: j.parlay_id,
         leg_index: Number(j.leg_index ?? 0),
+        market_id: j.market_id ?? "",
         won: j.won === true,
         ts_ms: ts,
       });

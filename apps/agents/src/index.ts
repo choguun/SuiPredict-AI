@@ -19,7 +19,12 @@ import { handleGamificationRoute } from "./gamification/routes.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
 import { corsFor } from "./http-cors.js";
 
-const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
+// R37 audit fix: the previous `POLL_MS` here defaulted to 15 s
+// but the only consumer was a misleading boot log line — the
+// real scheduler (`scheduler.ts`) uses 60 s as its safety-net
+// fallback. Operators reading the boot log thought the
+// scheduler polled at 15 s, not 60 s. Read the value through
+// the scheduler's exported helper so the log matches reality.
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
 const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
 
@@ -69,6 +74,15 @@ function validateBootConfig(): void {
     { name: "PrizeAdmin",         envVar: "PRIZE_ADMIN_ID",                agent: "PrizeDistributor", required: false },
     { name: "PrizeAdmin Key",     envVar: "PRIZE_ADMIN_PRIVATE_KEY",       agent: "PrizeDistributor", required: false },
     { name: "Prize Weekly Amt",   envVar: "PRIZE_WEEKLY_AMOUNT",           agent: "PrizeDistributor", required: false },
+    // R37 audit fix: the admin agent reads PRIZE_FUND_AMOUNT and
+    // falls back to PRIZE_WEEKLY_AMOUNT when unset. Operators had
+    // no visibility into this fallback — the boot-config table
+    // listed the weekly amount but not the per-cycle fund amount,
+    // so a misconfig'd PRIZE_FUND_AMOUNT was silently treated as
+    // the weekly prize. Surface both, marked optional (the
+    // fallback is intentional).
+    { name: "Prize Fund Amt",     envVar: "PRIZE_FUND_AMOUNT",             agent: "PrizeAdmin",     required: false },
+    { name: "Prize Min Bal",      envVar: "PRIZE_POOL_MIN_BALANCE",        agent: "PrizeAdmin",     required: false },
     { name: "ParlayPool",         envVar: "PARLAY_POOL_ID",                agent: "ParlayWorker",   required: true },
     { name: "ProfileRegistry",    envVar: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", agent: "ProfileRoute", required: false },
     // DeepBook wiring. The market-maker bot needs a BalanceManager
@@ -355,7 +369,12 @@ async function main() {
   // Per-agent UTC scheduling — see scheduler.ts and buildSchedule() above.
   // Override any entry with AGENT_CRON_<NAME>=<expr> for tests.
   startScheduler(ctx, buildSchedule());
-  console.log(`[agents] Scheduler online (POLL_MS=${POLL_MS})`);
+  // R37 audit fix: read the real poll interval from the scheduler
+  // (the previous boot log used a separate `POLL_MS` constant
+  // with a different default of 15s, which misled operators).
+  console.log(
+    `[agents] Scheduler online (POLL_MS=${Number(process.env.AGENT_POLL_INTERVAL_MS ?? 60_000)})`,
+  );
 
   // R36 audit fix: register SIGTERM/SIGINT handlers so Railway
   // redeploys and `kill <pid>` drain in-flight agents gracefully.

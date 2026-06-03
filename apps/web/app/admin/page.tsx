@@ -343,7 +343,7 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
         if (PARLAY_POOL_ID) {
           const [balance, totalVolume, totalPaidOut, maxPayoutBps, admin] =
             await Promise.all([
-              readParlayPoolBalance(client, PARLAY_POOL_ID, "0x2::sui::SUI"),
+              readParlayPoolBalance(client, PARLAY_POOL_ID),
               readParlayTotalVolume(client, PARLAY_POOL_ID),
               readParlayTotalPaidOut(client, PARLAY_POOL_ID),
               readParlayMaxPayoutBps(client, PARLAY_POOL_ID),
@@ -583,7 +583,18 @@ function WithdrawFeesCard(props: {
             min="0"
             placeholder="0.0"
             value={amountDusdc}
-            onChange={(e) => setAmountDusdc(e.target.value)}
+            // R37 audit fix: allow empty or a non-negative
+            // decimal (`0`, `0.5`, `1.234567`). Reject scientific
+            // notation (`1e10`) and junk so the user gets
+            // feedback here instead of a `BigInt(NaN)` throw at
+            // submit. Fractions with up to 6 decimals match the
+            // DUSDC scale (1_000_000 atoms = 1 DUSDC).
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "" || /^\d+(\.\d{0,6})?$/.test(v)) {
+                setAmountDusdc(v);
+              }
+            }}
             className={`w-40 rounded-md border bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none ${
               overBalance
                 ? "border-rose-500/60 focus:border-rose-400"
@@ -1045,7 +1056,20 @@ function SetMaxPayoutBpsCard(props: {
             min="10000"
             step="1000"
             value={bps}
-            onChange={(e) => setBps(e.target.value)}
+            // R37 audit fix: keep the user's literal input on
+            // the field (so the dev-tools numeric caret behaves
+            // naturally) but skip any value that would break the
+            // `tx.pure.u64` builder — `Number("")` is 0, `Number("1e10")`
+            // is 10000000000, `Number("abc")` is NaN. The submit
+            // button is already disabled on `!isValid`, so this
+            // just surfaces the failure as a typed-but-not-accepted
+            // number instead of a silent on-chain abort.
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "" || /^\d+$/.test(v)) {
+                setBps(v);
+              }
+            }}
             className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white focus:outline-none ${
               isValid ? "border-white/10 focus:border-rose-400" : "border-rose-500/40"
             }`}
@@ -1238,7 +1262,17 @@ function ParlayAdminCard(props: {
               min="1"
               step="1"
               value={withdrawAmount}
-              onChange={(e) => setWithdrawAmount(e.target.value)}
+              // R37 audit fix: same numeric filter as the bps
+              // input above. Accept only empty or a non-negative
+              // integer string; reject scientific notation and
+              // junk so the user gets feedback in the field
+              // instead of a `BigInt(NaN)` throw at submit time.
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "" || /^\d+$/.test(v)) {
+                  setWithdrawAmount(v);
+                }
+              }}
               placeholder="1000000 (= 1 DUSDC)"
               className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
                 overBalance

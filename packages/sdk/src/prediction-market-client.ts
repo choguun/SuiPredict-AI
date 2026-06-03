@@ -17,6 +17,7 @@ import {
 import { encodeUtf8 } from "./markets/constants.js";
 import {
   DEEP_TYPE,
+  DEEPBOOK_PACKAGE_ID,
   DEEPBOOK_REGISTRY_ID,
   POOL_CREATION_FEE_DEEP,
 } from "./deepbook/constants.js";
@@ -528,9 +529,16 @@ export async function getMarketMidPrice(
  * The BalanceManager holds DEEP for pool creation fees and trading.
  */
 export function buildCreateBalanceManagerTx(owner?: string): Transaction {
+  // R37 audit fix: the previous hardcoded `0xdee9` is the
+  // historical Mysten testnet DeepBook address. If a redeploy
+  // ever points `DEEPBOOK_PACKAGE_ID` at a different package
+  // (the constant already supports that), this builder would
+  // silently keep calling the old one. The function isn't
+  // exported from the SDK barrel today, but the constant is
+  // the source of truth.
   const tx = new Transaction();
   tx.moveCall({
-    target: "0xdee9::balance_manager::create_balance_manager",
+    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::create_balance_manager`,
     arguments: owner ? [tx.pure.address(owner)] : [],
   });
   return tx;
@@ -546,15 +554,21 @@ export function buildCreateBalanceManagerTx(owner?: string): Transaction {
 export function buildDepositIntoBalanceManagerTx(
   managerId: string,
   coinKey: "DEEP" | "DBUSDC",
-  amount: number,
+  amount: number | bigint,
 ): Transaction {
+  // R37 audit fix: switch `amount` to `number | bigint` and coerce
+  // via BigInt at the boundary. The previous `number` type silently
+  // truncated above Number.MAX_SAFE_INTEGER; a self-hosted DEEP
+  // treasury with >9e15 atoms would have hit the ceiling.
+  // R37 also: same package-id fix as buildCreateBalanceManagerTx
+  // above (use the env-driven constant, not the hardcoded `0xdee9`).
   const tx = new Transaction();
   tx.moveCall({
-    target: "0xdee9::balance_manager::deposit_into_manager",
+    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::deposit_into_manager`,
     arguments: [
       tx.object(managerId),
       tx.pure.string(coinKey),
-      tx.pure.u64(amount),
+      tx.pure.u64(BigInt(amount)),
     ],
   });
   return tx;

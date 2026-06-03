@@ -134,9 +134,16 @@ export default function DisputeMarketPage() {
     try {
       const tx = buildDisputeMarketTx(marketId, evidenceUri.trim());
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      setDigest(
-        r.$kind === "Transaction" ? r.Transaction.digest : "submitted",
-      );
+      // R37 audit fix: bail with an explicit error rather than
+      // rendering the "Digest: submitted..." card on a Failed /
+      // EffectsCert variant. The old code displayed "submitted" as
+      // if it were a real digest, so a failed dispute looked
+      // identical to a successful one minus the txblock link.
+      if (r.$kind !== "Transaction") {
+        setError("Dispute failed on-chain");
+        return;
+      }
+      setDigest(r.Transaction.digest);
     } catch (err) {
       setError(friendlyDisputeError(err));
     } finally {

@@ -278,9 +278,21 @@ export default function SettingsPage() {
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Max Budget (dUSDC)</label>
               <input
                 type="number"
+                min="0"
+                step="1"
                 className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={budget}
-                onChange={(e) => setBudget(Number(e.target.value))}
+                // R37 audit fix: clamp to a non-negative integer.
+                // `Number("")` is 0, `Number("1e10")` is 10000000000
+                // (valid but absurdly large), and `Number("abc")` is
+                // NaN — all of which would either silently inflate
+                // the on-chain u64 budget or make `tx.pure.u64(budget)`
+                // throw at build time. `Math.floor` rejects fractions
+                // and `Number.isFinite` rejects NaN/Infinity.
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setBudget(Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
+                }}
               />
             </div>
             <button

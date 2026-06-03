@@ -91,6 +91,35 @@ export function buildRecordParticipationTx(params: {
 }
 
 /**
+ * Build `rotate_admin` transaction for the `StreakAdmin` capability.
+ * The on-chain check is `ctx.sender() == admin_cap.admin`; passing
+ * `@0x0` is rejected (EInvalidNewAdmin).
+ *
+ * `adminCapId` is the shared `StreakAdmin` object id (not the
+ * registry — `StreakAdmin` is a separate capability that gates
+ * `record_participation` and `rotate_admin`).
+ */
+export function buildRotateStreakAdminTx(
+  adminCapId: string,
+  newAdmin: string,
+): Transaction {
+  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+    // R37 audit fix: pre-validate the new-admin address here so
+    // a typo (`""`, `"0x0"`) surfaces as a build-time error
+    // instead of a Move abort at execute time.
+    throw new Error(
+      `buildRotateStreakAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
+    );
+  }
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::streak_system::rotate_admin`,
+    arguments: [tx.object(adminCapId), tx.pure.address(newAdmin)],
+  });
+  return tx;
+}
+
+/**
  * Build `redeem_with_streak` transaction. **Moved to
  * `prediction-market-client.ts` in r16** — the on-chain function lives
  * in `prediction_market.move` (same package as the rest of the

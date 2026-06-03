@@ -279,7 +279,6 @@ async function readParlayObject(
 export async function readParlayPoolBalance(
   client: SuiClient,
   poolId: string,
-  coinType: string,
 ): Promise<bigint> {
   const fields = await readParlayObject(client, poolId);
   if (!fields) return 0n;
@@ -296,10 +295,6 @@ export async function readParlayPoolBalance(
     if (v != null) return BigInt(v);
   }
   return 0n;
-  // coinType is reserved for the call site that needs to disambiguate
-  // phantom types — kept in the signature so a typed client can pass
-  // it through without changes.
-  void coinType;
 }
 
 /** Fetch the `admin` (address) for a `ParlayPool<Q>`. */

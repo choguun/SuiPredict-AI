@@ -235,10 +235,24 @@ function getDb(): Database.Database {
       CREATE TABLE IF NOT EXISTS parlay_legs (
         parlay_id TEXT NOT NULL,
         leg_index INTEGER NOT NULL,
+        market_id TEXT NOT NULL DEFAULT "",
         won INTEGER NOT NULL,
         ts_ms INTEGER NOT NULL,
         PRIMARY KEY (parlay_id, leg_index)
       );
+    `);
+    // R37 migration: pre-R37 parlay_legs rows don't have a
+    // market_id column. SQLite errors with "duplicate column"
+    // when it's already present, so swallow that. Fresh databases
+    // get the column from the CREATE TABLE above.
+    try {
+      getDb().exec(
+        `ALTER TABLE parlay_legs ADD COLUMN market_id TEXT NOT NULL DEFAULT ''`,
+      );
+    } catch {
+      // Column already present; ignore.
+    }
+    db.exec(`
 
       -- StreakBadge mints - mirrored from badge_nft::BadgeMinted
       -- events. Powers the badge collection view on the streak
@@ -796,19 +810,31 @@ export function upsertParlayCreated(p: {
 export function recordParlayLeg(p: {
   parlay_id: string;
   leg_index: number;
+  market_id?: string;
   won: boolean;
   ts_ms: number;
 }): void {
   const won = p.won ? 1 : 0;
+  // R37 audit fix: the on-chain `ParlayLegRecorded` event carries
+  // `market_id`; persist it on the leg row. The parlay-worker no
+  // longer needs a per-parlay `getObject` RPC call to recover the
+  // leg→market mapping — it can read the mirror instead.
+  const market_id = p.market_id ?? "";
   const db = getDb();
   const insert = db
     .prepare(
       `INSERT OR IGNORE INTO parlay_legs
-         (parlay_id, leg_index, won, ts_ms)
+         (parlay_id, leg_index, market_id, won, ts_ms)
        VALUES
-         (@parlay_id, @leg_index, @won, @ts_ms)`,
+         (@parlay_id, @leg_index, @market_id, @won, @ts_ms)`,
     )
-    .run({ parlay_id: p.parlay_id, leg_index: p.leg_index, won, ts_ms: p.ts_ms });
+    .run({
+      parlay_id: p.parlay_id,
+      leg_index: p.leg_index,
+      market_id,
+      won,
+      ts_ms: p.ts_ms,
+    });
   if (insert.changes === 0) return; // re-poll, already recorded
   db.prepare(
     `UPDATE parlays
@@ -907,6 +933,40 @@ export function listUnfinalizedParlays(): ParlayRow[] {
         ORDER BY updated_at_ms ASC`,
     )
     .all() as ParlayRow[];
+}
+
+/**
+ * Read the per-leg `market_id` mapping for a parlay from the
+ * off-chain `parlay_legs` mirror. The on-chain `ParlayLegRecorded`
+ * event carries the market id; the position-indexer (R37) persists
+ * it on insert so the parlay-worker doesn't need a per-parlay
+ * `getObject` RPC call.
+ *
+ * Returns `null` if the mirror has no rows for this parlay yet
+ * (ParlayCreated was indexed but no legs have been recorded —
+ * typical for a freshly-created parlay that hasn't been seen by
+ * the resolver). Returns an array of length `leg_count` once the
+ * indexer has caught up.
+ */
+export function getParlayLegMarketIds(
+  parlayId: string,
+  legCount: number,
+): string[] | null {
+  const rows = getDb()
+    .prepare(
+      `SELECT leg_index, market_id FROM parlay_legs
+        WHERE parlay_id = ?
+        ORDER BY leg_index ASC`,
+    )
+    .all(parlayId) as Array<{ leg_index: number; market_id: string }>;
+  if (rows.length === 0) return null;
+  const out: string[] = new Array(legCount).fill("");
+  for (const r of rows) {
+    if (r.leg_index >= 0 && r.leg_index < legCount) {
+      out[r.leg_index] = r.market_id;
+    }
+  }
+  return out;
 }
 
 /**

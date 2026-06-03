@@ -191,10 +191,16 @@ export default function TradePage() {
         permissionless: settledOracleIds.has(pos.oracle_id),
       });
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R37 audit fix: mirror the R34 mintPosition guard. The
+      // previous code fell through to the literal "unknown" and
+      // toasted it as a success when the result was a Failed /
+      // EffectsCert variant, lying to the user that a position was
+      // redeemed when the tx had failed on-chain.
+      if (result.$kind !== "Transaction") {
+        toast.error("Redeem failed on-chain", { id: toastId });
+        return;
+      }
+      const digest = result.Transaction.digest;
       toast.success(`Redeemed! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {

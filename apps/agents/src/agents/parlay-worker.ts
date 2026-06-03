@@ -60,12 +60,21 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { getMarket } from "../markets/store.js";
 import {
+  getParlayLegMarketIds,
   listReadyToFinalizeParlays,
   listUnfinalizedParlays,
   type ParlayRow,
 } from "../gamification/store.js";
 
 const PKG = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+// R37 audit fix: this worker is the deployer-keypair admin for the
+// `PARLAY_POOL_ID` pool. On a multi-pool deploy it must NOT
+// `record_leg` / `finalize_parlay` parlays that belong to a
+// different pool — the on-chain check would abort and we'd burn
+// gas on a doomed tx. Default to the env value; an empty string
+// means "cross-pool" (the previous behaviour, kept for backward
+// compat but documented as unsupported on a multi-pool deploy).
+const WORKER_POOL_ID = process.env.PARLAY_POOL_ID ?? "";
 
 /**
  * Per-leg retry cap for transient RPC errors. Permanent errors
@@ -185,12 +194,22 @@ export async function runParlayWorker(
   // ---- 1. Record pending legs for unfinalized parlays --------------
   // Pull the full list once (not per-user) so a user with 5 parlays
   // doesn't trigger 5 separate full-table scans. The index on
-  // `finalized` keeps the query bounded.
+  // `finalized` keeps the query bounded. R37 audit fix: when
+  // `PARLAY_POOL_ID` is set, filter to just the worker-owned pool
+  // — otherwise a multi-pool deploy would have this worker try
+  // to call `record_leg` on parlays it doesn't admin, which the
+  // on-chain `pool_id == object::id(pool)` check would reject.
   const allUnfinalized = listUnfinalizedParlays();
-  if (allUnfinalized.length === 0) {
+  const scoped = WORKER_POOL_ID
+    ? allUnfinalized.filter((p) => p.pool_id === WORKER_POOL_ID)
+    : allUnfinalized;
+  if (scoped.length === 0) {
     return recordResult("ParlayWorker", {
       action: "noop",
-      reasoning: "No unfinalized parlays.",
+      reasoning:
+        allUnfinalized.length === 0
+          ? "No unfinalized parlays."
+          : `No unfinalized parlays for pool ${WORKER_POOL_ID}.`,
       confidence: 100,
     });
   }
@@ -201,18 +220,24 @@ export async function runParlayWorker(
   let legsTransientFailures = 0;
   const sampleFailures: string[] = [];
 
-  for (const parlay of allUnfinalized) {
+  for (const parlay of scoped) {
     if (parlay.legs_recorded >= parlay.leg_count) continue;
+    // R37 audit fix: read per-leg market_ids from the off-chain
+    // mirror first. The position-indexer now persists `market_id`
+    // on each `ParlayLegRecorded` event, so we get the mapping
+    // without an RPC round-trip. Fall back to a `getObject` RPC
+    // call only if the mirror is empty (the parlay was just
+    // created and no leg has been recorded yet — the R37 schema
+    // migration also added the column to the legs table so
+    // pre-existing rows have `market_id = ''`).
+    const mirrorLegs = getParlayLegMarketIds(parlay.parlay_id, parlay.leg_count);
+    let legMarketIds: string[] | null = null;
+    if (mirrorLegs && mirrorLegs.every((m) => m !== "")) {
+      legMarketIds = mirrorLegs;
+    } else {
+      legMarketIds = await readParlayLegMarketIds(client, parlay.parlay_id);
+    }
     for (let i = parlay.legs_recorded; i < parlay.leg_count; i++) {
-      // We don't store per-leg market_ids in the off-chain mirror
-      // (the ParlayCreated event only carries count). The on-chain
-      // leg struct holds them, but reading it requires a per-leg
-      // getObject call which is what the position-indexer is for.
-      //
-      // For now we read the underlying parlay object to enumerate
-      // its leg.market_ids. This is one round-trip per parlay (not
-      // per leg) so it stays cheap.
-      const legMarketIds = await readParlayLegMarketIds(client, parlay.parlay_id);
       if (!legMarketIds) {
         // Parlay object not found (deleted?) or RPC outage — skip
         // and let the next tick retry. We don't mark anything
@@ -304,8 +329,12 @@ export async function runParlayWorker(
   // ParlayLegRecorded event on its every-minute poll, so by the
   // time this worker runs the `legs_recorded` count is fresh. Any
   // parlay where `legs_recorded == leg_count` and `finalized == 0`
-  // is ready to settle.
-  const ready = listReadyToFinalizeParlays();
+  // is ready to settle. R37 audit fix: scope to the worker-owned
+  // pool, matching the leg-recording loop above.
+  const allReady = listReadyToFinalizeParlays();
+  const ready = WORKER_POOL_ID
+    ? allReady.filter((p) => p.pool_id === WORKER_POOL_ID)
+    : allReady;
   let finalized = 0;
   let finalizeFailures = 0;
   const finalizeSample: string[] = [];
@@ -340,7 +369,7 @@ export async function runParlayWorker(
   ) {
     return recordResult("ParlayWorker", {
       action: "noop",
-      reasoning: `${allUnfinalized.length} unfinalized parlays, none ready to advance.`,
+      reasoning: `${scoped.length} unfinalized parlays (pool ${WORKER_POOL_ID || "*"}), none ready to advance.`,
       confidence: 100,
     });
   }
