@@ -25,6 +25,7 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { keccak_256 } from "@noble/hashes/sha3";
 import {
   createClient,
+  DUSDC_TYPE,
   expectedAmountForRank,
   DEFAULT_DISTRIBUTION_BPS,
   signClaimPayload,
@@ -43,6 +44,51 @@ import {
 } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { getUserWeekRank, listPrizeClaims } from "./store.js";
+
+/**
+ * Wire shape for a single parlay as returned by /parlay/user/:addr.
+ * Mirrors apps/web/components/ParlayHistory.tsx's `ParlayRow`
+ * interface exactly. The DB row uses `user` and `collateral_amount`;
+ * the web's parlay history uses `owner` and `collateral` (matching
+ * the on-chain `Parlay<Q>.owner` and `.collateral_amount` field
+ * names but already pre-normalized). `coin_type` is the parlay's
+ * generic Q — the Move struct doesn't carry it, so we surface the
+ * runtime DUSDC_TYPE which is the only collateral type the
+ * production pool is parameterized over.
+ */
+function serializeParlay(p: ParlayRow): {
+  parlay_id: string;
+  owner: string;
+  pool_id: string;
+  coin_type: string;
+  leg_count: number;
+  legs_recorded: number;
+  legs_lost: number;
+  payout_bps: number;
+  collateral: number;
+  finalized: number;
+  won: number | null;
+  payout: number | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+} {
+  return {
+    parlay_id: p.parlay_id,
+    owner: p.user,
+    pool_id: p.pool_id,
+    coin_type: DUSDC_TYPE,
+    leg_count: p.leg_count,
+    legs_recorded: p.legs_recorded,
+    legs_lost: p.legs_lost,
+    payout_bps: p.payout_bps,
+    collateral: p.collateral_amount,
+    finalized: p.finalized,
+    won: p.won,
+    payout: p.payout,
+    created_at_ms: p.created_at_ms,
+    updated_at_ms: p.updated_at_ms,
+  };
+}
 
 function json(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {
@@ -492,10 +538,19 @@ export async function handleGamificationRoute(
       ? listAllParlaysForUser(addr)
       : listUnfinalizedParlays().filter((p) => p.user === addr);
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
+    // Map the SQL row shape to the wire shape the web's ParlayHistory
+    // component expects. The on-chain / DB column names diverge from
+    // the web's ParlayRow interface (e.g. `user` vs `owner`,
+    // `collateral_amount` vs `collateral`); the round-21 audit caught
+    // this drift. `coin_type` is the parlay's generic Q — it isn't
+    // stored on the row (the Move struct doesn't carry it), so we
+    // surface the runtime DUSDC_TYPE which is the only collateral
+    // type the production pool uses.
+    const parlays = allRows.slice(0, limit).map(serializeParlay);
     json(res, 200, {
       user: addr,
       count: allRows.length,
-      rows: allRows.slice(0, limit),
+      parlays,
     });
     return true;
   }

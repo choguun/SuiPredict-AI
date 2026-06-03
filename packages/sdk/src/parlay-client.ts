@@ -345,14 +345,9 @@ export async function readParlayLegsRecorded(
 
 /** Fetch the `legs_lost` (u64) for a `Parlay<Q>`. */
 export async function readParlayLegsLost(
-  client: { getObject: Function },
+  client: SuiClient,
   parlayId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: parlayId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { legs_lost?: string | number } | undefined;
-  return BigInt(fields?.legs_lost ?? 0);
+  const fields = await readParlayObject(client, parlayId);
+  return BigInt((fields?.legs_lost as string | number | undefined) ?? 0);
 }

@@ -332,7 +332,7 @@ function seedDemoMarkets() {
   for (const m of demos) insert.run(m);
 
   const orderInsert = getDb().prepare(`
-    INSERT OR IGNORE INTO orders
+    INSERT OR IGNORE INTO demo_orders
     (market_id, order_id, owner, is_bid, price_bps, quantity, filled, timestamp_ms)
     VALUES (@market_id, @order_id, @owner, @is_bid, @price_bps, @quantity, @filled, @timestamp_ms)
   `);

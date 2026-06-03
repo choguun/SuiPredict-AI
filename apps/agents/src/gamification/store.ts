@@ -201,6 +201,23 @@ function getDb(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_parlays_unfinalized
         ON parlays(finalized) WHERE finalized = 0;
 
+      -- Per-leg idempotency log. Populated by recordParlayLeg as
+      -- the FIRST step; the UPDATE on the parent 'parlays' row only
+      -- runs if this insert actually wrote a row. This makes the
+      -- parlay-worker safe against cursor re-polls (e.g. after a
+      -- restart) and against overlapping polls from multiple agent
+      -- instances. The round-21 audit caught that the old code
+      -- used 'legs_lost = legs_lost + ...', which inflated
+      -- 'legs_lost' and would have made the web's ParlayHistory
+      -- show the wrong 'won'/'lost' verdict.
+      CREATE TABLE IF NOT EXISTS parlay_legs (
+        parlay_id TEXT NOT NULL,
+        leg_index INTEGER NOT NULL,
+        won INTEGER NOT NULL,
+        ts_ms INTEGER NOT NULL,
+        PRIMARY KEY (parlay_id, leg_index)
+      );
+
       -- StreakBadge mints - mirrored from badge_nft::BadgeMinted
       -- events. Powers the badge collection view on the streak
       -- page (showing the user which tiers they own) and the
@@ -743,10 +760,11 @@ export function upsertParlayCreated(p: {
 
 /**
  * Advance `legs_recorded` / `legs_lost` from a `ParlayLegRecorded`
- * event. We over-write both fields (not delta-add) because the event
- * itself carries the authoritative count from the on-chain
- * `record_leg` call — additive indexing would risk drift if an event
- * was missed and re-polled.
+ * event. Idempotent on `(parlay_id, leg_index)` via the `parlay_legs`
+ * sidecar table — the `INSERT OR IGNORE` returns 0 changes on a
+ * re-poll, and we only then skip the `legs_lost` increment. The
+ * `legs_recorded` field is set, not added, so out-of-order delivery
+ * can never push the count above the actual recorded count.
  */
 export function recordParlayLeg(p: {
   parlay_id: string;
@@ -754,20 +772,38 @@ export function recordParlayLeg(p: {
   won: boolean;
   ts_ms: number;
 }): void {
-  getDb()
+  const won = p.won ? 1 : 0;
+  const db = getDb();
+  const insert = db
     .prepare(
-      `UPDATE parlays
-         SET legs_recorded = MAX(legs_recorded, @leg_index + 1),
-             legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
-             updated_at_ms = @ts_ms
-       WHERE parlay_id = @parlay_id`,
+      `INSERT OR IGNORE INTO parlay_legs
+         (parlay_id, leg_index, won, ts_ms)
+       VALUES
+         (@parlay_id, @leg_index, @won, @ts_ms)`,
     )
-    .run(p);
+    .run({ parlay_id: p.parlay_id, leg_index: p.leg_index, won, ts_ms: p.ts_ms });
+  if (insert.changes === 0) return; // re-poll, already recorded
+  db.prepare(
+    `UPDATE parlays
+       SET legs_recorded = @leg_index + 1,
+           legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
+           updated_at_ms = @ts_ms
+     WHERE parlay_id = @parlay_id`,
+  ).run({
+    parlay_id: p.parlay_id,
+    leg_index: p.leg_index,
+    won,
+    ts_ms: p.ts_ms,
+  });
 }
 
 /**
  * Mark a parlay as finalized. `won` and `payout` come straight from
- * the `ParlayFinalized` event.
+ * the `ParlayFinalized` event. `won` is normalized to 0|1 at the
+ * entry boundary so a future caller that forgets the boolean→int
+ * coercion can't accidentally store a truthy non-1 value (e.g.
+ * `won: true` if the SQL were ever changed to bind booleans
+ * directly).
  */
 export function recordParlayFinalized(p: {
   parlay_id: string;
@@ -775,6 +811,7 @@ export function recordParlayFinalized(p: {
   payout: number;
   ts_ms: number;
 }): void {
+  const won = p.won ? 1 : 0;
   getDb()
     .prepare(
       `UPDATE parlays
@@ -784,7 +821,12 @@ export function recordParlayFinalized(p: {
              updated_at_ms = @ts_ms
        WHERE parlay_id = @parlay_id`,
     )
-    .run({ ...p, won: p.won ? 1 : 0 });
+    .run({
+      parlay_id: p.parlay_id,
+      won,
+      payout: p.payout,
+      ts_ms: p.ts_ms,
+    });
 }
 
 /**

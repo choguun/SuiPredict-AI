@@ -394,6 +394,11 @@ export async function runPositionIndexer(
       // would silently drop the on-chain value to "general".
       const existing = getMarket(j.market_id);
       const onChainCategory = j.category != null ? categoryLabel(Number(j.category)) : null;
+      // Prefer the on-chain emission timestamp (always present on
+      // Sui events) over the host clock. Host-clock skew would
+      // mis-order the leaderboard after the local MarketCreator
+      // writes a row first and the indexer races with it.
+      const onChainTs = ev.timestampMs ? Number(ev.timestampMs) : 0;
       upsertMarket({
         id: j.market_id,
         title: existing?.title ?? j.title ?? "",
@@ -412,7 +417,8 @@ export async function runPositionIndexer(
         deepbook_base_scalar: existing?.deepbook_base_scalar ?? 1_000_000,
         deepbook_quote_scalar: existing?.deepbook_quote_scalar ?? 1_000_000,
         referral_id: existing?.referral_id ?? null,
-        created_at_ms: existing?.created_at_ms ?? Date.now(),
+        created_at_ms:
+          existing?.created_at_ms ?? (onChainTs || Date.now()),
       });
     },
   );

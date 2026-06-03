@@ -14,6 +14,7 @@ import {
   listMarkets,
   readParlayLegsLost,
   readParlayLegsRecorded,
+  readParlayMaxPayoutBps,
   readParlayOwner,
   readParlayPayoutBps,
   readParlayCollateral,
@@ -51,6 +52,17 @@ export default function ParlayPage() {
   const [loadingMarkets, setLoadingMarkets] = useState(true);
   const [legs, setLegs] = useState<Leg[]>([]);
   const [multiplier, setMultiplier] = useState(3); // e.g. 3x
+  // Pool's on-chain max_payout_bps. Fetched once on mount; the
+  // slider's `max` is clamped to this value (in bps / 10_000) so the
+  // user can't pick a multiplier the chain would reject with
+  // EPayoutTooLarge. Fallback to NEXT_PUBLIC_PARLAY_MAX_PAYOUT_BPS
+  // while the read is in flight.
+  const [maxPayoutBps, setMaxPayoutBps] = useState<number>(() => {
+    const envCap = Number(
+      process.env.NEXT_PUBLIC_PARLAY_MAX_PAYOUT_BPS ?? 50_000,
+    );
+    return Number.isFinite(envCap) && envCap > 0 ? envCap : 50_000;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<CreatedParlay | null>(null);
 
@@ -75,6 +87,27 @@ export default function ParlayPage() {
       cancelled = true;
     };
   }, []);
+
+  // Probe the pool's on-chain max_payout_bps once. If the chain
+  // reports a tighter cap than the env-var fallback (or vice versa),
+  // the tighter value wins — the chain is the safety net.
+  useEffect(() => {
+    if (!client || !PARLAY_POOL_ID) return;
+    let cancelled = false;
+    readParlayMaxPayoutBps(client, PARLAY_POOL_ID)
+      .then((cap) => {
+        if (cancelled) return;
+        if (cap > BigInt(0)) {
+          setMaxPayoutBps((prev) => Math.min(prev, Number(cap)));
+        }
+      })
+      .catch(() => {
+        // ignore — keep env-var fallback
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   // Poll the created parlay's on-chain state every 5s so the user can
   // see `legs_recorded` / `legs_lost` advance after the agents
@@ -304,7 +337,10 @@ export default function ParlayPage() {
             <input
               type="range"
               min={1}
-              max={10}
+              // Clamp to the pool's on-chain max_payout_bps (read
+              // above) so the user can never pick a multiplier the
+              // chain would reject with EPayoutTooLarge.
+              max={maxPayoutBps / 10_000}
               step={0.5}
               value={multiplier}
               onChange={(e) => setMultiplier(Number(e.target.value))}
@@ -316,6 +352,7 @@ export default function ParlayPage() {
           </div>
           <p className="text-xs text-zinc-500">
             Payout if every leg wins: 1 DUSDC × {multiplier.toFixed(2)} = {(multiplier).toFixed(2)} DUSDC.
+            Pool cap: {(maxPayoutBps / 10_000).toFixed(1)}x.
             Pool must hold enough to cover worst-case payout.
           </p>
         </div>
