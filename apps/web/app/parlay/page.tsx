@@ -258,6 +258,7 @@ export default function ParlayPage() {
       const tx = buildCreateParlayTx({
         poolId: PARLAY_POOL_ID,
         coinId: coin.objectId,
+        collateralAtoms: COLLATERAL_ATOMS,
         marketIds: legs.map((l) => l.marketId),
         predictions: legs.map((l) => l.prediction),
         payoutBps,

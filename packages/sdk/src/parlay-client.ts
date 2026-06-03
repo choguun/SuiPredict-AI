@@ -154,23 +154,54 @@ export function buildSetMaxPayoutBpsTx(
  * `payoutBps` is the multiplier in bps (e.g. 30_000 = 3x). It must
  * be > BPS and <= pool.max_payout_bps.
  *
- * The created `Parlay<Q>` is transferred to the sender.
+ * `collateralAtoms` is the amount of Q (in base units) to lock as
+ * the parlay's collateral. The on-chain `parlay::create_parlay` takes
+ * a `Coin<Q>` BY VALUE and locks the entire balance via
+ * `coin::value(&coin)` — so we MUST split the requested amount off
+ * `coinId` in-PTB and pass the split result. Passing the source
+ * coin object directly would drain the user's full DUSDC balance
+ * and leave them with no coin for the next parlay or withdrawal.
+ *
+ * The created `Parlay<Q>` is transferred to the sender; the
+ * remainder of the source coin (if any) is returned to the sender
+ * unchanged.
  */
 export function buildCreateParlayTx(args: {
   poolId: string;
   coinId: string;
+  collateralAtoms: number | bigint;
   marketIds: string[];
   predictions: Array<1 | 2>; // 1 = YES, 2 = NO
   payoutBps: number | bigint;
   coinType: string;
 }): Transaction {
+  if (args.marketIds.length !== args.predictions.length) {
+    throw new Error(
+      `buildCreateParlayTx: marketIds (${args.marketIds.length}) and ` +
+        `predictions (${args.predictions.length}) must have the same length`,
+    );
+  }
+  const collateral = BigInt(args.collateralAtoms);
+  if (collateral <= 0n) {
+    throw new Error(
+      `buildCreateParlayTx: collateralAtoms must be > 0 (got ${args.collateralAtoms})`,
+    );
+  }
   const tx = new Transaction();
+  // Split exactly `collateral` off the source coin in-PTB and pass
+  // the split result to `create_parlay`. Mirrors the pattern in
+  // `buildMintSharesTx` (prediction-market-client.ts) — without
+  // this split, the contract's `coin::value(&coin)` would lock the
+  // entire source coin balance as collateral.
+  const [parlayCoin] = tx.splitCoins(tx.object(args.coinId), [
+    tx.pure.u64(collateral),
+  ]);
   tx.moveCall({
     target: `${PKG()}::parlay::create_parlay`,
     typeArguments: [args.coinType],
     arguments: [
       tx.object(args.poolId),
-      tx.object(args.coinId),
+      tx.object(parlayCoin),
       tx.pure.vector("id", args.marketIds),
       tx.pure.vector("u8", args.predictions),
       tx.pure.u64(args.payoutBps),

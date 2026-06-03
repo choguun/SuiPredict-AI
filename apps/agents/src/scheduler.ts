@@ -37,6 +37,11 @@ const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 60_000);
 // double-write daily_scores rows. The flag is keyed by entry.name
 // (not a global counter) so other agents are unaffected.
 const inFlight = new Set<string>();
+// Active timer handles per agent. Cleared on stopScheduler so a
+// SIGTERM during a quiet period doesn't leave orphan timers firing
+// after the process is supposed to be gone.
+const activeTimers = new Map<string, NodeJS.Timeout>();
+let shuttingDown = false;
 
 export function startScheduler(
   ctx: AgentContext,
@@ -45,9 +50,45 @@ export function startScheduler(
   for (const entry of entries) scheduleNext(ctx, entry);
 }
 
+/**
+ * Stop scheduling new agent runs and cancel pending timers. Waits
+ * up to `graceMs` for any in-flight agent to finish (the
+ * `inFlight` set above) before resolving. Called from the
+ * SIGTERM/SIGINT handler in index.ts so Railway redeploys and
+ * Ctrl-C drain the queue instead of aborting mid-PTB.
+ */
+export function stopScheduler(graceMs = 5_000): Promise<void> {
+  if (shuttingDown) return Promise.resolve();
+  shuttingDown = true;
+  for (const t of activeTimers.values()) clearTimeout(t);
+  activeTimers.clear();
+  const deadline = Date.now() + graceMs;
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (inFlight.size === 0 || Date.now() >= deadline) {
+        if (inFlight.size > 0) {
+          console.warn(
+            `[scheduler] Shutdown deadline hit with ${inFlight.size} agent(s) still in flight: ${Array.from(inFlight).join(", ")}. ` +
+              "Forcing exit; in-flight PTBs may be left in a partial state on the RPC.",
+          );
+        } else {
+          console.log("[scheduler] All agents drained cleanly.");
+        }
+        resolve();
+        return;
+      }
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
 function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
+  if (shuttingDown) return;
   const delay = msUntilNext(entry.cron);
-  setTimeout(async () => {
+  const timer = setTimeout(async () => {
+    activeTimers.delete(entry.name);
+    if (shuttingDown) return;
     if (inFlight.has(entry.name)) {
       console.warn(
         `[scheduler] ${entry.name} still running from previous tick; skipping this fire.`,
@@ -67,6 +108,7 @@ function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
     }
     scheduleNext(ctx, entry);
   }, delay);
+  activeTimers.set(entry.name, timer);
   console.log(
     `[scheduler] ${entry.name} next in ${Math.round(delay / 1000)}s (${entry.cron})`,
   );

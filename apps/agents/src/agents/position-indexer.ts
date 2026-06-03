@@ -282,7 +282,10 @@ export async function runPositionIndexer(
     (ev) => {
       const j = ev.parsedJson as RedeemedJson;
       if (!j?.market_id || !j?.user) return;
-      const burned = Number(j.winning_amount ?? 0);
+      // R36 audit fix: `winning_amount` is a u64. Coerce through
+      // BigInt first to preserve precision for any downstream
+      // arithmetic (the floor() check at <= 0 stays the same).
+      const burned = Number(BigInt(j.winning_amount ?? 0));
       if (burned <= 0) return;
       // Both `redeem` and `redeem_no` emit the same RedeemedEvent
       // struct, so the only way to know which side was burned is to
@@ -344,8 +347,16 @@ export async function runPositionIndexer(
         // comment in markets/store.ts.
         client_order_id: String(j.client_order_id ?? "0"),
         is_bid: Boolean(j.is_bid),
-        price: Number(j.price ?? 0),
-        quantity: Number(j.quantity ?? 0),
+        // R36 audit fix: on-chain `price` and `quantity` are u64.
+        // The previous `Number(...)` cast lost precision above
+        // 2^53-1, which a market with `lotSize=1` and an iceberg
+        // order of 9e9 lots can reach. Coerce through BigInt first
+        // so any conditional / arithmetic in the indexer keeps
+        // exact precision; the cast to Number happens at the
+        // recordChainOrder boundary (the store still takes `number`
+        // today — bumping that to bigint is a separate change).
+        price: Number(BigInt(j.price ?? 0)),
+        quantity: Number(BigInt(j.quantity ?? 0)),
         timestamp_ms: ts,
       });
     },
@@ -533,7 +544,10 @@ export async function runPositionIndexer(
         user: j.user,
         week_index: weekIndex,
         rank: Number(j.rank),
-        amount: Number(j.amount ?? 0),
+        // R36 audit fix: prize `amount` is a u64. Coerce via BigInt
+        // to preserve precision above 2^53-1 (the leaderboard top
+        // prize + the on-chain `current_pot` could otherwise drift).
+        amount: Number(BigInt(j.amount ?? 0)),
         tx_digest: ev.id?.txDigest ?? null,
         claimed_at_ms: ts,
         // R33 audit fix: surface the source pool from the on-chain
@@ -697,8 +711,10 @@ export async function runPositionIndexer(
         vault_id: j.vault_id,
         kind: "deposit",
         actor: j.user ?? undefined,
-        amount: Number(j.amount ?? 0),
-        vlp_delta: Number(j.vlp_minted ?? 0),
+        // R36 audit fix: vault u64 amounts (DUSDC base units) coerced
+        // via BigInt to preserve precision above 2^53-1.
+        amount: Number(BigInt(j.amount ?? 0)),
+        vlp_delta: Number(BigInt(j.vlp_minted ?? 0)),
         ts_ms: ts,
       });
     },
@@ -721,8 +737,9 @@ export async function runPositionIndexer(
         vault_id: j.vault_id,
         kind: "withdraw",
         actor: j.user ?? undefined,
-        amount: Number(j.amount ?? 0),
-        vlp_delta: -Number(j.vlp_burned ?? 0),
+        // R36 audit fix: BigInt round-trip preserves u64 precision.
+        amount: Number(BigInt(j.amount ?? 0)),
+        vlp_delta: -Number(BigInt(j.vlp_burned ?? 0)),
         ts_ms: ts,
       });
     },
@@ -743,8 +760,9 @@ export async function runPositionIndexer(
       recordVaultFlow({
         vault_id: j.vault_id,
         kind: "allocate",
-        amount: Number(j.amount ?? 0),
-        total_allocated: Number(j.total_allocated ?? 0),
+        // R36 audit fix: BigInt round-trip preserves u64 precision.
+        amount: Number(BigInt(j.amount ?? 0)),
+        total_allocated: Number(BigInt(j.total_allocated ?? 0)),
         ts_ms: ts,
       });
     },
@@ -765,8 +783,9 @@ export async function runPositionIndexer(
       recordVaultFlow({
         vault_id: j.vault_id,
         kind: "deallocate",
-        amount: Number(j.amount ?? 0),
-        total_allocated: Number(j.total_allocated ?? 0),
+        // R36 audit fix: BigInt round-trip preserves u64 precision.
+        amount: Number(BigInt(j.amount ?? 0)),
+        total_allocated: Number(BigInt(j.total_allocated ?? 0)),
         ts_ms: ts,
       });
     },
@@ -795,7 +814,8 @@ export async function runPositionIndexer(
         vault_id: vaultId,
         kind: "withdraw",
         actor: j.admin,
-        amount: Number(j.amount),
+        // R36 audit fix: BigInt round-trip preserves u64 precision.
+        amount: Number(BigInt(j.amount ?? 0)),
         ts_ms: ts,
       });
     },
@@ -1130,17 +1150,29 @@ export async function runPositionIndexer(
     parlayType("ParlayFinalized"),
     "position_indexer.parlay_finalized",
     (ev) => {
+      // R36 audit fix: the on-chain `parlay::ParlayFinalized` event
+      // carries `pool_id`, `user`, and `legs_lost` in addition to
+      // `parlay_id`/`won`/`payout`. The previous indexer typed the
+      // payload with only the latter three and dropped the rest,
+      // which left `pool_id`/`user`/`legs_lost` null on every
+      // finalized parlay row. Read all six.
       const j = ev.parsedJson as {
         parlay_id?: string;
+        pool_id?: string;
+        user?: string;
         won?: boolean;
         payout?: string | number;
+        legs_lost?: string | number;
       };
       if (!j?.parlay_id) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
       recordParlayFinalized({
         parlay_id: j.parlay_id,
+        pool_id: j.pool_id ?? "",
+        user: j.user ?? "",
         won: j.won === true,
         payout: Number(j.payout ?? 0),
+        legs_lost: Number(j.legs_lost ?? 0),
         ts_ms: ts,
       });
     },

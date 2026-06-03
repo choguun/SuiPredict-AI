@@ -138,6 +138,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   const [depositAsset, setDepositAsset] = useState<"quote" | "base">("quote");
   const [depositAmount, setDepositAmount] = useState(10);
   const initializedPrice = useRef(false);
+  // R36 audit fix: a single AbortController for the component's
+  // lifetime. Polling intervals and the post-submit order-confirm
+  // poll both honour it — on unmount the cleanup aborts both, so
+  // navigating away mid-poll stops the in-flight fetches instead
+  // of letting them run to the timeoutMs. The `null` sentinel lets
+  // a click handler (e.g. placeOrder) read the current signal
+  // lazily without re-rendering.
+  const abortRef = useRef<AbortController | null>(null);
   // Refs let the polling `refresh` see the latest deepBookMarket config
   // (resolved after `market` loads) without re-creating the interval.
   const deepBookMarketRef = useRef<{
@@ -149,7 +157,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   const clientRef = useRef(client);
   clientRef.current = client;
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    // R36 audit fix: bail out before any state writes if the
+    // component has already unmounted. setState on a dead component
+    // is a no-op in React 18 but logs a warning; checking up-front
+    // keeps the dev console clean during route changes.
+    if (signal?.aborted) return;
     let m: MarketInfo;
     try {
       m = await getMarket(marketId);
@@ -165,6 +178,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       setLoadError({ kind, message: msg });
       return;
     }
+    if (signal?.aborted) return;
     setLoadError(null);
     setMarket(m);
     const cfg = deepBookMarketRef.current;
@@ -202,9 +216,20 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   }, [marketId]);
 
   useEffect(() => {
-    refresh().catch(console.error);
-    const t = setInterval(() => refresh().catch(console.error), 4000);
-    return () => clearInterval(t);
+    // R36 audit fix: install an AbortController on mount; abort it
+    // on unmount. The 4s refresh interval is short, but a user
+    // navigating away mid-fetch would otherwise keep the request
+    // open until the RPC returns. AbortController is plumbed into
+    // the fetch in `refresh` via the `signal` arg below.
+    const ctl = new AbortController();
+    abortRef.current = ctl;
+    refresh(ctl.signal).catch(console.error);
+    const t = setInterval(() => refresh(ctl.signal).catch(console.error), 4000);
+    return () => {
+      clearInterval(t);
+      ctl.abort();
+      abortRef.current = null;
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -405,7 +430,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // worst-case lag; the first confirmation attempt was more
       // likely to time out than succeed under load (round-17 audit
       // finding #10).
-      const placed = await waitForOrderInBook(market.id, clientOrderId, 65_000);
+      const placed = await waitForOrderInBook(
+        market.id,
+        clientOrderId,
+        65_000,
+        abortRef.current?.signal,
+      );
       if (placed) {
         toast.success(`Order placed: ${digest.slice(0, 16)}…`, { id: toastId });
       } else {
@@ -435,13 +465,20 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     mid: string,
     clientOrderId: string,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
     const url = `${base}/markets/${encodeURIComponent(mid)}/orders?limit=50`;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      // R36 audit fix: bail out of the poll loop if the caller
+      // unmounts (Next.js cancels via AbortSignal on the parent
+      // effect's cleanup). Without this, an in-flight order
+      // confirmation keeps fetching for the full timeout after
+      // the user has navigated away.
+      if (signal?.aborted) return false;
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store", signal });
         if (res.ok) {
           const data = (await res.json()) as {
             orders?: { client_order_id?: number | string }[];
@@ -454,8 +491,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             return true;
           }
         }
-      } catch {
-        // agents service down — let the natural tick pick it up
+      } catch (err) {
+        // AbortError on unmount; otherwise agents down — let the
+        // natural tick pick it up.
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return false;
+        }
       }
       await new Promise((r) => setTimeout(r, 1_500));
     }

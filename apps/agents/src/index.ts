@@ -16,7 +16,7 @@ import type { AgentContext } from "./lib.js";
 import { getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
-import { startScheduler } from "./scheduler.js";
+import { startScheduler, stopScheduler } from "./scheduler.js";
 import { corsFor } from "./http-cors.js";
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
@@ -356,6 +356,25 @@ async function main() {
   // Override any entry with AGENT_CRON_<NAME>=<expr> for tests.
   startScheduler(ctx, buildSchedule());
   console.log(`[agents] Scheduler online (POLL_MS=${POLL_MS})`);
+
+  // R36 audit fix: register SIGTERM/SIGINT handlers so Railway
+  // redeploys and `kill <pid>` drain in-flight agents gracefully.
+  // Without this, a redeploy mid-PTB leaves the on-chain transaction
+  // half-signed and the gRPC subscription cursors inconsistent. The
+  // health server is bound to :3001 and gets its own close on
+  // `process.exit`, so we don't track it separately.
+  let shuttingDown = false;
+  const handleSignal = (sig: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[agents] Caught ${sig}, draining scheduler (max 5s)...`);
+    stopScheduler(5_000).then(() => {
+      console.log(`[agents] Exiting after ${sig}.`);
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", handleSignal);
+  process.on("SIGINT", handleSignal);
 }
 
 main().catch(console.error);

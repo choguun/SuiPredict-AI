@@ -834,24 +834,46 @@ export function recordParlayLeg(p: {
  */
 export function recordParlayFinalized(p: {
   parlay_id: string;
+  pool_id?: string;
+  user?: string;
   won: boolean;
   payout: number;
+  legs_lost: number;
   ts_ms: number;
 }): void {
   const won = p.won ? 1 : 0;
+  // R36 audit fix: the on-chain `parlay::ParlayFinalized` event
+  // carries `pool_id`, `user`, and `legs_lost` in addition to
+  // `parlay_id`/`won`/`payout`. The off-chain indexer previously
+  // only persisted the latter three, so:
+  //   - `pool_id` and `user` stayed null on the row (they were set
+  //     at ParlayCreated time and never overwritten, but if a
+  //     pre-existing row lacked them they would stay blank),
+  //   - `legs_lost` was never updated, so the web's ParlayHistory
+  //     and the per-user rollup both showed `0` even on parlays
+  //     that lost a leg.
+  // Persist all three on finalize. COALESCE keeps any pre-existing
+  // value (ParlayCreated normally wrote it) — the indexer is the
+  // source of truth but the upsert-on-create path is a backstop.
   getDb()
     .prepare(
       `UPDATE parlays
          SET finalized = 1,
              won = @won,
              payout = @payout,
+             legs_lost = @legs_lost,
+             pool_id = COALESCE(NULLIF(@pool_id, ''), pool_id),
+             user = COALESCE(NULLIF(@user, ''), user),
              updated_at_ms = @ts_ms
        WHERE parlay_id = @parlay_id`,
     )
     .run({
       parlay_id: p.parlay_id,
+      pool_id: p.pool_id ?? "",
+      user: p.user ?? "",
       won,
       payout: p.payout,
+      legs_lost: p.legs_lost,
       ts_ms: p.ts_ms,
     });
 }
