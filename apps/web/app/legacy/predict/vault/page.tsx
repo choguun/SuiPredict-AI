@@ -88,10 +88,16 @@ export default function VaultPage() {
       });
       tx.transferObjects([lpCoin], tx.pure.address(account.address));
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R34 audit fix: same R30/R32 pattern. The literal `"unknown"`
+      // fallback on Failed / EffectsCert silently toasts a fake
+      // success, telling the LP that a deposit happened when the
+      // chain rejected it. Bail with a clear error before reading
+      // the digest.
+      if (result.$kind !== "Transaction") {
+        setStatus("Supply failed on-chain");
+        return;
+      }
+      const digest = result.Transaction.digest;
       setStatus(`Supplied $${amount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
       await Promise.all([refreshVault(), refreshPlp()]);
     } catch (e) {
@@ -121,10 +127,15 @@ export default function VaultPage() {
       });
       tx.transferObjects([plpCoin], tx.pure.address(account.address));
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R34 audit fix: same R30/R32 pattern as supply() above.
+      // Failed / EffectsCert results carry no digest; the previous
+      // fallback to "unknown" lied about the withdrawal. Bail with
+      // a clear error before reading the digest.
+      if (result.$kind !== "Transaction") {
+        setStatus("Withdraw failed on-chain");
+        return;
+      }
+      const digest = result.Transaction.digest;
       setStatus(`Withdrew $${withdrawAmount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
       await Promise.all([refreshVault(), refreshPlp()]);
     } catch (e) {

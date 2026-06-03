@@ -233,7 +233,14 @@ export default function AgentsPage() {
               <p className="mt-2 text-sm text-zinc-300 leading-relaxed">{d.reasoning}</p>
               {d.txDigest && (
                 <a
-                  href={`https://suiscan.xyz/testnet/tx/${d.txDigest}`}
+                  // R34 audit fix: hard-coded testnet explorer link
+                  // broke on mainnet. Reuse the same env-driven
+                  // SUI_NETWORK pattern as admin/page.tsx so the
+                  // link tracks the rest of the stack. SuiVision is
+                  // the explorer the admin page uses; matches its
+                  // txblock path. Fall back to testnet for local dev
+                  // to preserve the pre-R34 default.
+                  href={`https://${process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet"}.suivision.xyz/txblock/${d.txDigest}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="mt-3 inline-block rounded-md bg-cyan-500/10 px-2 py-1 text-xs font-mono text-cyan-400 hover:bg-cyan-500/20 transition-colors"

@@ -732,13 +732,19 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                       <span>Bids</span>
                       <span className="text-right">Shares</span>
                     </div>
-                    {bids.map((l) => (
+                    {bids.map((l, idx) => (
                       <div
-                        key={`b-${l.price_bps}`}
+                        // R34 audit fix: keying on price_bps alone is
+                        // unstable — multiple bids at the same price
+                        // level (different sizes, different makers)
+                        // produce duplicate React keys, which silently
+                        // drops or mashes rows on every refetch. Add
+                        // the row index and quantity to disambiguate.
+                        key={`b-${l.price_bps}-${l.quantity}-${idx}`}
                         className="relative grid grid-cols-2 px-3 py-2 text-sm text-emerald-300 group z-0"
                       >
-                        <div 
-                          className="absolute inset-y-0 right-0 bg-emerald-500/10 -z-10 transition-all group-hover:bg-emerald-500/20" 
+                        <div
+                          className="absolute inset-y-0 right-0 bg-emerald-500/10 -z-10 transition-all group-hover:bg-emerald-500/20"
                           style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
                         />
                         <span>{(l.price_bps / 100).toFixed(1)}¢</span>
@@ -756,13 +762,17 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                       <span>Asks</span>
                       <span className="text-right">Shares</span>
                     </div>
-                    {asks.map((l) => (
+                    {asks.map((l, idx) => (
                       <div
-                        key={`a-${l.price_bps}`}
+                        // Same key-uniqueness fix as the bids block
+                        // above. Asks can have multiple orders at the
+                        // same price level; price_bps alone is not
+                        // a stable React key.
+                        key={`a-${l.price_bps}-${l.quantity}-${idx}`}
                         className="relative grid grid-cols-2 px-3 py-2 text-sm text-rose-300 group z-0"
                       >
-                        <div 
-                          className="absolute inset-y-0 right-0 bg-rose-500/10 -z-10 transition-all group-hover:bg-rose-500/20" 
+                        <div
+                          className="absolute inset-y-0 right-0 bg-rose-500/10 -z-10 transition-all group-hover:bg-rose-500/20"
                           style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
                         />
                         <span>{(l.price_bps / 100).toFixed(1)}¢</span>

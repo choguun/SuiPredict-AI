@@ -154,10 +154,17 @@ export default function TradePage() {
       });
 
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R34 audit fix: same R30/R32 pattern — Failed / EffectsCert
+      // variants carry no digest. The previous code fell through to
+      // the literal string "unknown" and toasted it as a success,
+      // lying to the user that a position was minted when the tx
+      // had failed. Bail with a clear error toast before reading
+      // the digest.
+      if (result.$kind !== "Transaction") {
+        toast.error("Mint failed on-chain", { id: toastId });
+        return;
+      }
+      const digest = result.Transaction.digest;
       toast.success(`Minted! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {

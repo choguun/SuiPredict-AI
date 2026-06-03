@@ -38,6 +38,7 @@ import {
   buildInitFeeVaultTx,
   buildRotatePubkeyTx,
   createClient,
+  DEEP_TYPE,
   DUSDC_TYPE,
   executeTransaction,
   keypairFromPrivateKey,
@@ -571,7 +572,16 @@ async function main() {
     NEXT_PUBLIC_DEEPBOOK_YES_COIN_SCALAR: "1000000",
     NEXT_PUBLIC_DEEPBOOK_QUOTE_COIN_SCALAR: "1000000",
     NEXT_PUBLIC_DEEP_TYPE:
-      process.env.NEXT_PUBLIC_DEEP_TYPE ?? process.env.DEEP_TYPE ?? "",
+      // R34 audit fix: bootstrap-gamification falls through to the
+      // SDK's `DEEP_TYPE` constant when neither env var is set, so
+      // a fresh deploy with a clean env still gets the testnet
+      // default. The resume script previously fell through to `""`,
+      // which writes an empty NEXT_PUBLIC_DEEP_TYPE to .env and
+      // breaks `market-creator` (it uses the constant to filter the
+      // market registry on first tick). Match the bootstrap path.
+      process.env.NEXT_PUBLIC_DEEP_TYPE ??
+      process.env.DEEP_TYPE ??
+      DEEP_TYPE,
     NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS:
       process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
       process.env.REFERRAL_TREASURY_ADDRESS ??
