@@ -7,7 +7,6 @@
  *   GET /prize/signature?week=N&rank=R&user=:addr&amount=:a
  *   GET /prize/claims?week=N
  *   GET /profile/:addr
- *   GET /streak/badges/:addr
  *   GET /parlay/:id
  *   GET /parlay/user/:addr
  *
@@ -36,7 +35,6 @@ import {
   recordPrizeClaim,
   getPrizeClaim,
   getUserProfile,
-  listBadgesForUser,
   getParlay,
   listAllParlaysForUser,
   listUnfinalizedParlays,
@@ -478,22 +476,6 @@ export async function handleGamificationRoute(
       return true;
     }
     json(res, 200, row);
-    return true;
-  }
-
-  // GET /streak/badges/:addr
-  //
-  // Reads the indexer-mirrored `streak_badges` rows for a user.
-  // The web streak panel uses this to render which tiers the user
-  // has already minted (the on-chain `UserStreak.claimed_tiers` flag
-  // is the source of truth for eligibility, but the badge NFT
-  // itself lives at a separate object id and would otherwise require
-  // a `getOwnedObjects` call to enumerate).
-  const badgesMatch = url.pathname.match(/^\/streak\/badges\/(0x[a-fA-F0-9]+)$/);
-  if (badgesMatch) {
-    const addr = badgesMatch[1]!;
-    const rows = listBadgesForUser(addr);
-    json(res, 200, { user: addr, badges: rows });
     return true;
   }
 

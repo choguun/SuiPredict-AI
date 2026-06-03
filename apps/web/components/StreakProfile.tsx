@@ -2,7 +2,7 @@
 
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { buildClaimBadgeTx, buildCreateStreakTx, buildMintBadgeTx } from "@suipredict/sdk";
+import { buildCreateStreakTx, buildMintBadgeTx } from "@suipredict/sdk";
 import { toast } from "sonner";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";

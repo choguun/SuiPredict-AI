@@ -13,7 +13,7 @@ import { runReferralKeeper } from "./agents/referral-keeper.js";
 import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
-import { getAgentStats, getRecentDecisions } from "./store.js";
+import { getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
 import { startScheduler } from "./scheduler.js";
@@ -280,14 +280,6 @@ function startHealthServer() {
           })),
         ),
       );
-      return;
-    }
-    if (url.pathname === "/stats") {
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      });
-      res.end(JSON.stringify(getAgentStats()));
       return;
     }
     res.writeHead(404);

@@ -902,19 +902,18 @@ export function listReadyToFinalizeParlays(): ParlayRow[] {
 // streak_badges - StreakBadge NFT mints
 // ============================================================
 
-export interface StreakBadgeRow {
-  badge_id: string;
-  user: string;
-  tier: number;
-  longest_streak_at_mint: number;
-  minted_at_ms: number;
-}
-
 /**
  * Insert a badge mint from a BadgeMinted event. The on-chain
  * event is emitted from both mint_badge and mint_badge_to_kiosk
  * so we don't need a separate event type for the kiosk path. The
  * INSERT OR IGNORE makes re-polling the same cursor safe.
+ *
+ * R29: the row sits in the table for future use; no read path
+ * currently consumes it. The on-chain `UserStreak.claimed_tiers`
+ * boolean array is the source of truth for the web's "Badges
+ * Earned" UI (see StreakProfile), so a `listBadgesForUser`
+ * consumer is unnecessary until a profile page needs to render
+ * the badge NFT metadata (image, kiosk id, etc).
  */
 export function recordBadgeMint(b: {
   badge_id: string;
@@ -931,14 +930,4 @@ export function recordBadgeMint(b: {
          (@badge_id, @user, @tier, @longest_streak_at_mint, @minted_at_ms)`,
     )
     .run(b);
-}
-
-/** Read the badges a user currently owns. Sorted by tier desc so the
- *  highest tier renders first in the UI. */
-export function listBadgesForUser(user: string): StreakBadgeRow[] {
-  return getDb()
-    .prepare(
-      `SELECT * FROM streak_badges WHERE user = ? ORDER BY tier DESC, minted_at_ms DESC`,
-    )
-    .all(user) as StreakBadgeRow[];
 }

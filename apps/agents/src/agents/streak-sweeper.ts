@@ -507,6 +507,43 @@ export async function resolveDayOutcomes(
   return out;
 }
 
+/**
+ * Append a single `record_participation` call to a multi-call PTB.
+ *
+ * R29: extracted from the inline `tx.moveCall` blocks in
+ * `buildSweepTx` — the SDK's `buildRecordParticipationTx` builds a
+ * fresh `Transaction` for a single call, but the sweeper needs to
+ * batch N calls (one per user) into one transaction to keep gas
+ * low. This helper takes an existing `tx` and appends one call,
+ * keeping the target string / arg encoding in lock-step with the
+ * SDK builder (mirror the arg order in
+ * `packages/sdk/src/streak-client.ts::buildRecordParticipationTx`).
+ */
+function appendRecordParticipation(
+  tx: Transaction,
+  args: {
+    adminId: string;
+    registryId: string;
+    streakId: string;
+    dayIndex: bigint;
+    outcome: number;
+    category: number;
+  },
+): void {
+  tx.moveCall({
+    target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
+    arguments: [
+      tx.object(args.adminId),
+      tx.object(args.registryId),
+      tx.object(args.streakId),
+      tx.pure.u64(args.dayIndex),
+      tx.pure.u8(args.outcome),
+      tx.pure.u8(args.category),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+}
+
 function buildSweepTx(
   registryId: string,
   adminId: string,
@@ -523,43 +560,24 @@ function buildSweepTx(
       // wallet; once they do, the next sweep picks them up.
       continue;
     }
-    if (u.outcome === OUTCOME_NOT_SUBMITTED) {
-      // The on-chain contract resets `current_streak` to 0 on the first
-      // NOT_SUBMITTED, and then every subsequent NOT_SUBMITTED for the
-      // same user is a no-op (current_streak is already 0). We therefore
-      // only need one NOT_SUBMITTED call per skipped user; the gap's
-      // other missed days are unrecoverable from this contract (the
-      // assertion `day_index == last + 1` rejects multi-day backfill
-      // without a contract change). The leaderboard is fed from
-      // off-chain `daily_scores` for the multi-day case.
-      tx.moveCall({
-        target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
-        arguments: [
-          tx.object(adminId),
-          tx.object(registryId),
-          tx.object(u.streakId),
-          tx.pure.u64(dayIndex),
-          tx.pure.u8(OUTCOME_NOT_SUBMITTED),
-          tx.pure.u8(u.category),
-          tx.object(CLOCK_OBJECT_ID),
-        ],
-      });
-    } else {
-      // Minted user — record the resolved outcome (ALL_CORRECT or
-      // SOME_WRONG) for `dayIndex`.
-      tx.moveCall({
-        target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
-        arguments: [
-          tx.object(adminId),
-          tx.object(registryId),
-          tx.object(u.streakId),
-          tx.pure.u64(dayIndex),
-          tx.pure.u8(u.outcome),
-          tx.pure.u8(u.category),
-          tx.object(CLOCK_OBJECT_ID),
-        ],
-      });
-    }
+    // The on-chain contract resets `current_streak` to 0 on the first
+    // NOT_SUBMITTED, and then every subsequent NOT_SUBMITTED for the
+    // same user is a no-op (current_streak is already 0). We therefore
+    // only need one NOT_SUBMITTED call per skipped user; the gap's
+    // other missed days are unrecoverable from this contract (the
+    // assertion `day_index == last + 1` rejects multi-day backfill
+    // without a contract change). The leaderboard is fed from
+    // off-chain `daily_scores` for the multi-day case.
+    // Minted users (ALL_CORRECT / SOME_WRONG) take the same path; the
+    // helper differs only in the outcome byte.
+    appendRecordParticipation(tx, {
+      adminId,
+      registryId,
+      streakId: u.streakId,
+      dayIndex,
+      outcome: u.outcome,
+      category: u.category,
+    });
   }
   return tx;
 }

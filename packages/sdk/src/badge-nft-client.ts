@@ -76,34 +76,6 @@ export function buildMintBadgeTx(args: {
   return tx;
 }
 
-/**
- * Build a PTB that mints a `StreakBadge` straight into the user's
- * kiosk. The on-chain call is `badge_nft::mint_badge_to_kiosk`,
- * which calls `kiosk::place` internally — skipping the
- * transfer-to-sender hop, so the badge is immediately listable /
- * displayable on TradePort.
- */
-export function buildMintBadgeToKioskTx(args: {
-  streakId: string;
-  tier: number;
-  kioskId: string;
-  kioskCapId: string;
-}): Transaction {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PKG()}::badge_nft::mint_badge_to_kiosk`,
-    typeArguments: [],
-    arguments: [
-      tx.object(args.streakId),
-      tx.pure.u8(args.tier),
-      tx.object(args.kioskId),
-      tx.object(args.kioskCapId),
-      tx.object(CLOCK_OBJECT_ID),
-    ],
-  });
-  return tx;
-}
-
 // ============================================================
 // Reads
 // ============================================================

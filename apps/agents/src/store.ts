@@ -140,12 +140,3 @@ export function getRecentDecisions(limit = 50): AgentDecisionLog[] {
       };
     });
 }
-
-export function getAgentStats() {
-  const rows = getDb()
-    .prepare(
-      `SELECT agent, action, COUNT(*) as count FROM decisions GROUP BY agent, action`,
-    )
-    .all() as { agent: string; action: string; count: number }[];
-  return rows;
-}
