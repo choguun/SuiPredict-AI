@@ -5,9 +5,13 @@
  *   - buildCreateStreakTx         — user creates their own UserStreak
  *   - buildRecordParticipationTx  — backend records a user-day outcome
  *   - buildRedeemWithStreakTx     — user redeems with streak multiplier
- *   - buildClaimBadgeTx           — user claims an earned tier badge
  *   - getStreakInfo               — view: read UserStreak fields
  *   - streakIdForUser             — view: lookup streak ID by owner address
+ *
+ * Note: `buildClaimBadgeTx` was removed in R31. The web flow now calls
+ * `badge_nft::mint_badge`, which internally invokes `claim_badge`, so a
+ * standalone claim wrapper had no consumer (see comment in
+ * StreakProfile.tsx for the design note).
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
@@ -99,18 +103,6 @@ export function buildRecordParticipationTx(params: {
 /**
  * Build `redeem_no_with_streak` transaction. See `buildRedeemWithStreakTx`.
  */
-
-/**
- * Build `claim_badge` transaction. Tier 1..5; 1=bronze (3d), 5=diamond (100d).
- */
-export function buildClaimBadgeTx(streakId: string, tier: number): Transaction {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PKG()}::streak_system::claim_badge`,
-    arguments: [tx.object(streakId), tx.pure.u8(tier)],
-  });
-  return tx;
-}
 
 /**
  * Read a `UserStreak` object's fields.
