@@ -336,7 +336,14 @@ export default function ParlayPage() {
           <div className="flex items-center gap-4">
             <input
               type="range"
-              min={1}
+              // The contract asserts `payout_bps > BPS` (strictly
+              // greater than 1x) at create_parlay time — a 1.0x
+              // parlay has no upside so the contract refuses it with
+              // EPayoutTooLarge. The previous `min={1}` let the user
+              // slide to exactly 1.0x and watch the tx abort. Start
+              // one step above the boundary so every reachable value
+              // is on-chain valid. (Round-23 audit finding.)
+              min={1.5}
               // Clamp to the pool's on-chain max_payout_bps (read
               // above) so the user can never pick a multiplier the
               // chain would reject with EPayoutTooLarge.

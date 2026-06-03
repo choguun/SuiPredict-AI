@@ -352,6 +352,42 @@ fun create_parlay_with_payout_above_pool_cap_aborts() {
     abort 999
 }
 
+/// `create_parlay` asserts `payout_bps > BPS` (strictly greater than
+/// 10_000, i.e. strictly greater than 1.0x). A 1.0x parlay has no
+/// upside so the contract refuses it with EPayoutTooLarge. The
+/// companion test `set_max_payout_bps_updates_cap` proves the cap
+/// itself accepts `>= BPS` (you can set the cap to exactly 1.0x),
+/// so the boundary differs between cap-set and parlay-create — a
+/// non-obvious invariant the web UI now mirrors by clamping the
+/// parlay slider to `min=1.5x` (round-23 audit finding).
+#[test, expected_failure(abort_code = suipredict_agent_policy::parlay::EPayoutTooLarge)]
+fun create_parlay_with_one_x_payout_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    setup_pool(&mut scenario);
+
+    let mut m1 = fresh_market(&mut scenario);
+    let mut m2 = fresh_market(&mut scenario);
+    let clock = fresh_clock(&mut scenario);
+
+    ts::next_tx(&mut scenario, USER);
+    let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
+    let coin = coin::mint_for_testing<SUI>(10, ts::ctx(&mut scenario));
+    // BPS = 10_000 = 1.0x. The assertion is `payout_bps > BPS` (not
+    // `>=`) so exactly 1x must abort, even though the cap accepts it.
+    parlay::create_parlay(
+        &mut pool,
+        coin,
+        vector[object::id(&m1), object::id(&m2)],
+        vector[PREDICT_YES, PREDICT_YES],
+        BPS,
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    test_utils::destroy(m1);
+    test_utils::destroy(m2);
+    abort 999
+}
+
 #[test, expected_failure(abort_code = suipredict_agent_policy::parlay::EPoolUnderfunded)]
 fun create_parlay_underfunded_aborts() {
     let mut scenario = ts::begin(ADMIN);

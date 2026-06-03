@@ -13,6 +13,10 @@
  *      creator (set at `create_market` time) — this is per-market, not
  *      per-admin, but the page surfaces it because a deployer is
  *      typically also the creator.
+ *   4. Update the parlay pool's max payout cap (`max_payout_bps`).
+ *      Authority: connected wallet must equal `pool.admin` (set at
+ *      `parlay::create_pool` time). The /parlay page slider is then
+ *      clamped to this new cap on the next page load.
  *
  * The page is intentionally not linked in the nav. Bookmark
  * `/admin` (or set `NEXT_PUBLIC_ADMIN_ADDRESS` to your wallet so the
@@ -29,6 +33,7 @@ import {
   buildSetDistributionTx,
   buildResolveDisputeTx,
   buildCreateMarketTx,
+  buildSetMaxPayoutBpsTx,
   isValidSuiAddress,
 } from "@suipredict/sdk";
 import { Card, Stat, Badge } from "@/components/ui";
@@ -41,6 +46,13 @@ import { Card, Stat, Badge } from "@/components/ui";
 const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 const PRIZE_POOL_ID = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.NEXT_PUBLIC_PRIZE_ADMIN_ID ?? "";
+const PARLAY_POOL_ID = process.env.NEXT_PUBLIC_PARLAY_POOL_ID ?? "";
+// Used as the placeholder in the SetMaxPayoutBpsCard input. The actual
+// submit reads the input value, not this — we just want the form to
+// pre-fill with a sensible round number on first render.
+const PARLAY_DEFAULT_MAX_BPS = Number(
+  process.env.NEXT_PUBLIC_PARLAY_MAX_PAYOUT_BPS ?? 50_000,
+);
 const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 
 // SuiVision is the canonical Sui explorer; the per-network subdomain
@@ -165,6 +177,13 @@ export default function AdminPage() {
       />
       <CreateMarketCard
         onSubmit={(d) => setLastAction({ label: "Create market", digest: d })}
+        dAppKit={dAppKit}
+        disabled={!walletConnected || !isAdmin}
+      />
+      <SetMaxPayoutBpsCard
+        onSubmit={(d) =>
+          setLastAction({ label: "Set parlay max payout", digest: d })
+        }
         dAppKit={dAppKit}
         disabled={!walletConnected || !isAdmin}
       />
@@ -589,3 +608,130 @@ function CreateMarketCard(props: {
     </Card>
   );
 }
+
+// ============================================================
+// Set parlay max payout cap
+// ============================================================
+
+function SetMaxPayoutBpsCard(props: {
+  onSubmit: (digest: string) => void;
+  dAppKit: ReturnType<typeof useDAppKit>;
+  disabled: boolean;
+}) {
+  const [bps, setBps] = useState<string>(String(PARLAY_DEFAULT_MAX_BPS));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [digest, setDigest] = useState<string | null>(null);
+
+  // Mirror the on-chain guard: `new_max_bps >= BPS` (10_000). 50_000 =
+  // 5x is the production default. We render the multiplier in x for
+  // human readability but submit bps.
+  const parsedBps = Number(bps);
+  const isValid =
+    Number.isFinite(parsedBps) &&
+    Number.isInteger(parsedBps) &&
+    parsedBps >= 10_000;
+
+  async function submit() {
+    setErr(null);
+    setDigest(null);
+    if (!PARLAY_POOL_ID) {
+      setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
+      return;
+    }
+    if (!isValid) {
+      setErr("Max payout must be an integer >= 10_000 bps (1.0x).");
+      return;
+    }
+    setBusy(true);
+    try {
+      // The contract is generic over the pool's collateral type. The
+      // production pool is `ParlayPool<dUSDC>`; the SDK hard-codes the
+      // generic to DUSDC_TYPE on the parlay helpers, which matches the
+      // pool bootstrap-parlay creates. If a non-dUSDC pool is ever
+      // added the on-chain call would need a different type argument.
+      const tx = buildSetMaxPayoutBpsTx(
+        PARLAY_POOL_ID,
+        parsedBps,
+        process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID
+          ? `${process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID}::dusdc::DUSDC`
+          : DUSDC_TYPE_FALLBACK,
+      );
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit(d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Set parlay max payout cap">
+      <div className="space-y-4">
+        <p className="text-sm text-zinc-400">
+          Updates the on-chain
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">max_payout_bps</code>
+          cap used by
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">parlay::create_parlay</code>.
+          The new value must be <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">{"≥ 10_000 bps"}</code> (1.0x) and applies to
+          future parlays only — open parlays keep the cap they were
+          created with. Default 50_000 = 5x.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Stat label="Pool" value={shortAddr(PARLAY_POOL_ID)} />
+          <Stat
+            label="Current (bps)"
+            value={bps || "—"}
+          />
+          <Stat
+            label="Multiplier"
+            value={
+              isValid ? `${(parsedBps / 10_000).toFixed(2)}x` : "—"
+            }
+          />
+        </div>
+        <label className="block space-y-1 text-xs text-zinc-400">
+          New max payout (bps)
+          <input
+            type="number"
+            min="10000"
+            step="1000"
+            value={bps}
+            onChange={(e) => setBps(e.target.value)}
+            className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white focus:outline-none ${
+              isValid ? "border-white/10 focus:border-rose-400" : "border-rose-500/40"
+            }`}
+            disabled={props.disabled || busy}
+          />
+        </label>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={props.disabled || busy || !isValid}
+            className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Submitting…" : "Set max payout"}
+          </button>
+          <Badge variant={isValid ? "success" : "warning"}>
+            {isValid ? "valid" : "invalid"}
+          </Badge>
+        </div>
+        {err && <p className="text-xs text-rose-400">{err}</p>}
+        {digest && (
+          <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// Fallback used when NEXT_PUBLIC_DUSDC_PACKAGE_ID is not set in
+// `apps/web/.env.local`. The production default in the SDK is the
+// Mysten testnet dUSDC at 0xe9a73…a705; the literal here mirrors
+// SDK/src/constants.ts so the admin card works on a fresh deploy
+// without a fully configured env.
+const DUSDC_TYPE_FALLBACK = "0xe9a73ee16dabd84dad0a0638a8d4c7d5bf09b76f50a705a705::dusdc::DUSDC";

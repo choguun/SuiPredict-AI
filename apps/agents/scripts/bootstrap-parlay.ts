@@ -36,10 +36,12 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import {
   buildCreateParlayPoolTx,
   buildFundParlayPoolTx,
+  buildSetMaxPayoutBpsTx,
   createClient,
   DUSDC_TYPE,
   executeTransaction,
   keypairFromPrivateKey,
+  readParlayMaxPayoutBps,
 } from "@suipredict/sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -150,6 +152,37 @@ async function main() {
   let poolId = EXISTING_POOL;
   if (poolId) {
     log(`PARLAY_POOL_ID already set: ${poolId} — re-using.`);
+    // Sync the on-chain cap to the env's MAX_PAYOUT_BPS. Without this,
+    // an operator who bumps `NEXT_PUBLIC_PARLAY_MAX_PAYOUT_BPS` in
+    // `.env` would have the web UI honor the new value but the chain
+    // keep the old cap, surfacing as EPayoutTooLarge on legitimate
+    // picks. Reading-then-writing is cheap (one getObject + one PTB)
+    // and idempotent. If the read fails (RPC outage, freshly
+    // migrated chain) we log and skip — the operator can still drive
+    // the update through the /admin "Set parlay max payout cap" card.
+    try {
+      const onChainCap = await readParlayMaxPayoutBps(txClient, poolId);
+      if (onChainCap !== MAX_PAYOUT_BPS) {
+        log(
+          `On-chain cap is ${onChainCap.toString()} bps, env wants ` +
+            `${MAX_PAYOUT_BPS.toString()} bps — syncing…`,
+        );
+        const tx = buildSetMaxPayoutBpsTx(
+          poolId,
+          MAX_PAYOUT_BPS,
+          DUSDC_TYPE,
+        );
+        const res = await executeTransaction(txClient, tx, signer);
+        log(`Cap updated: ${res.digest}`);
+      } else {
+        log(`On-chain cap already at ${onChainCap.toString()} bps.`);
+      }
+    } catch (e) {
+      log(
+        `WARN: could not read/sync max payout cap (${e instanceof Error ? e.message : String(e)}). ` +
+          "Use the /admin 'Set parlay max payout cap' card to update manually.",
+      );
+    }
   } else {
     log("Creating ParlayPool<DBUSDC>…");
     const tx = buildCreateParlayPoolTx(MAX_PAYOUT_BPS, DUSDC_TYPE);
