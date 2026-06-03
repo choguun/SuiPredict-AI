@@ -39,6 +39,8 @@ import {
   buildSetMaxPayoutBpsTx,
   buildParlayAdminWithdrawTx,
   buildRotateParlayAdminTx,
+  buildAllocateForMmTx,
+  buildReturnFromMmTx,
   isValidSuiAddress,
   readFeeVaultBalance,
   readFeeVaultAdmin,
@@ -224,6 +226,13 @@ export default function AdminPage() {
         disabled={!walletConnected || !isAdmin}
         poolBalance={live.state.parlayPool?.balance}
         currentAdmin={live.state.parlayPool?.admin}
+      />
+      <VaultAdminCard
+        onSubmit={(label, d) => setLastAction({ label, digest: d })}
+        dAppKit={dAppKit}
+        disabled={!walletConnected || !isAdmin}
+        available={live.state.protocolVault?.available}
+        allocated={live.state.protocolVault?.allocated}
       />
     </div>
   );
@@ -1282,6 +1291,211 @@ function ParlayAdminCard(props: {
               className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy === "rotate" ? "Submitting…" : "Rotate admin"}
+            </button>
+          </div>
+        </div>
+
+        {err && <p className="text-xs text-rose-400">{err}</p>}
+        {digest && (
+          <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ============================================================
+// Protocol vault admin (allocate_for_mm / return_from_mm)
+// ============================================================
+
+function VaultAdminCard(props: {
+  onSubmit: (label: string, digest: string) => void;
+  dAppKit: ReturnType<typeof useDAppKit>;
+  disabled: boolean;
+  // Live protocol vault state. Both come from the LiveStateCard
+  // panel; without them the on-chain calls would either revert
+  // with EInsufficientAvailable (allocate) or just transfer value
+  // out of the MM allocation (return). Surfaced as pre-flight
+  // checks below.
+  available?: bigint;
+  allocated?: bigint;
+}) {
+  const [allocateAmount, setAllocateAmount] = useState<string>("");
+  const [returnCoinId, setReturnCoinId] = useState<string>("");
+  const [busy, setBusy] = useState<null | "allocate" | "return">(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [digest, setDigest] = useState<string | null>(null);
+
+  const parsedAllocate = Number(allocateAmount);
+  const isAllocateValid =
+    Number.isFinite(parsedAllocate) &&
+    Number.isInteger(parsedAllocate) &&
+    parsedAllocate > 0;
+  // Pre-flight: amount must be positive AND, if we have a live
+  // available balance, must not exceed it. The on-chain guard
+  // enforces this with EInsufficientAvailable, but the pre-check
+  // saves gas and gives a clearer error message.
+  const overAvailable =
+    isAllocateValid &&
+    props.available !== undefined &&
+    BigInt(parsedAllocate) > props.available;
+  // return_from_mm just needs a valid object id for the Coin to
+  // deposit back into the vault. The on-chain guard rejects zero-
+  // value coins with EZeroAmount; the Sui runtime will surface a
+  // clear "coin not found" error for a bad id.
+  const isReturnValid = returnCoinId.trim().length > 0;
+
+  async function submitAllocate() {
+    setErr(null);
+    setDigest(null);
+    if (!VAULT_OBJECT_ID) {
+      setErr("NEXT_PUBLIC_VAULT_OBJECT_ID not set.");
+      return;
+    }
+    if (!isAllocateValid) {
+      setErr("Allocate amount must be a positive integer (base units of dUSDC).");
+      return;
+    }
+    if (overAvailable) {
+      setErr(
+        `Amount exceeds live available balance (${formatDusdc(
+          props.available,
+        )} DUSDC). Refresh Live state and try a smaller amount.`,
+      );
+      return;
+    }
+    setBusy("allocate");
+    try {
+      const tx = buildAllocateForMmTx(
+        VAULT_OBJECT_ID,
+        BigInt(parsedAllocate),
+        dUSDCType(),
+      );
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit("Allocate for MM", d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitReturn() {
+    setErr(null);
+    setDigest(null);
+    if (!VAULT_OBJECT_ID) {
+      setErr("NEXT_PUBLIC_VAULT_OBJECT_ID not set.");
+      return;
+    }
+    if (!isReturnValid) {
+      setErr("Return coin object id is required.");
+      return;
+    }
+    setBusy("return");
+    try {
+      const tx = buildReturnFromMmTx(
+        VAULT_OBJECT_ID,
+        returnCoinId.trim(),
+        dUSDCType(),
+      );
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit("Return from MM", d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card title="Protocol vault admin">
+      <div className="space-y-6">
+        <p className="text-sm text-zinc-400">
+          Two admin-gated operations on the protocol&apos;s
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">ProtocolVault&lt;dUSDC&gt;</code>.
+          Both require the connected wallet to be
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">vault.admin</code>.
+          Allocate moves dUSDC from the available balance to the
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">allocated</code>
+          reserve (for market-making); return moves a Coin back into
+          the vault, increasing the available balance and decreasing
+          the allocation. Open MM positions are unaffected.
+        </p>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block space-y-1 text-xs text-zinc-400">
+            Allocate amount (dUSDC base units)
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={allocateAmount}
+              onChange={(e) => setAllocateAmount(e.target.value)}
+              placeholder="1000000 (= 1 DUSDC)"
+              className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
+                overAvailable
+                  ? "border-rose-500/60 focus:border-rose-400"
+                  : isAllocateValid
+                    ? "border-white/10 focus:border-rose-400"
+                    : "border-rose-500/40"
+              }`}
+              disabled={props.disabled || busy !== null}
+            />
+            {props.available !== undefined && (
+              <span className="mt-1 block text-[10px] text-zinc-500">
+                Available: {formatDusdc(props.available)} DUSDC
+                {props.allocated !== undefined &&
+                  ` · Allocated: ${formatDusdc(props.allocated)} DUSDC`}
+              </span>
+            )}
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={submitAllocate}
+              disabled={
+                props.disabled || busy !== null || !isAllocateValid || overAvailable
+              }
+              className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "allocate" ? "Submitting…" : "Allocate for MM"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block space-y-1 text-xs text-zinc-400">
+            Return coin object id (0x… 64 hex)
+            <input
+              type="text"
+              value={returnCoinId}
+              onChange={(e) => setReturnCoinId(e.target.value)}
+              placeholder="0x…"
+              className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
+                isReturnValid
+                  ? "border-white/10 focus:border-rose-400"
+                  : "border-rose-500/40"
+              }`}
+              disabled={props.disabled || busy !== null}
+            />
+            {props.allocated !== undefined && (
+              <span className="mt-1 block text-[10px] text-zinc-500">
+                Returned amount must be ≤ Allocated ({formatDusdc(props.allocated)} DUSDC).
+              </span>
+            )}
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={submitReturn}
+              disabled={props.disabled || busy !== null || !isReturnValid}
+              className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "return" ? "Submitting…" : "Return from MM"}
             </button>
           </div>
         </div>

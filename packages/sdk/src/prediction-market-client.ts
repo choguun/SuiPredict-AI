@@ -905,6 +905,100 @@ export function buildVaultWithdrawTx(
   return tx;
 }
 
+/**
+ * Build `vault::create_vault` transaction. Consumes a
+ * `TreasuryCap<VLP>` and produces a shared `ProtocolVault<QuoteCoin>`.
+ * The TreasuryCap is destroyed by this call — there is no
+ * post-creation mint path, which is what makes the VLP supply
+ * equal to the on-chain quote balance.
+ *
+ * Round-27 audit finding C1: the bootstrap script used to build this
+ * PTB inline; this builder consolidates the call so the /admin
+ * VaultAdminCard and the bootstrap can share the same code path.
+ *
+ * @param vlpTreasuryCapId  - TreasuryCap<VLP> object ID (from the
+ *                            VLP module's init, or `vlp::mint` for
+ *                            self-hosted deployments)
+ * @param quoteType         - Quote coin type (e.g. DUSDC_TYPE or DBUSDC_TYPE)
+ */
+export function buildCreateVaultTx(
+  vlpTreasuryCapId: string,
+  quoteType: string = DUSDC_TYPE,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::vault::create_vault`,
+    typeArguments: [quoteType],
+    arguments: [tx.object(vlpTreasuryCapId)],
+  });
+  return tx;
+}
+
+/**
+ * Build `vault::allocate_for_mm` transaction. Moves `amount` of
+ * `QuoteCoin` from the vault's available balance to its `allocated`
+ * reserve and returns a `Coin<QuoteCoin>` for the market-maker to
+ * deposit into a DeepBook balance manager. Admin-only.
+ *
+ * The on-chain guard is `amount <= available_balance` — callers
+ * should pre-flight against the live `available` read to avoid
+ * paying gas for a tx that will revert with `EInsufficientAvailable`.
+ *
+ * @param vaultId    - ProtocolVault<QuoteCoin> object ID
+ * @param amount     - Amount in base units of QuoteCoin
+ * @param quoteType  - Quote coin type (e.g. DUSDC_TYPE or DBUSDC_TYPE)
+ */
+export function buildAllocateForMmTx(
+  vaultId: string,
+  amount: bigint,
+  quoteType: string = DUSDC_TYPE,
+): Transaction {
+  const tx = new Transaction();
+  const coin = tx.moveCall({
+    target: `${PKG()}::vault::allocate_for_mm`,
+    typeArguments: [quoteType],
+    arguments: [tx.object(vaultId), tx.pure.u64(amount)],
+  });
+  // The Coin<QuoteCoin> is sent to the sender so the market-maker
+  // can deposit it into the DeepBook balance manager in a follow-up
+  // tx. Returning it to a specific address would require a recipient
+  // param; the default (@{sender}) matches the existing market-maker
+  // flow.
+  tx.transferObjects([coin], tx.pure.address("@{sender}"));
+  return tx;
+}
+
+/**
+ * Build `vault::return_from_mm` transaction. Returns a
+ * `Coin<QuoteCoin>` to the vault, decreasing the `allocated` reserve
+ * and increasing `available_balance`. Admin-only.
+ *
+ * The on-chain guard is `coin::value(&coin) <= allocated` — callers
+ * should pre-flight against the live `allocated` read to avoid
+ * paying gas for a tx that will revert with `EInsufficientAvailable`.
+ *
+ * @param vaultId    - ProtocolVault<QuoteCoin> object ID
+ * @param coinId     - Object ID of a Coin<QuoteCoin> returned from
+ *                     a market-maker (must not be a balance manager
+ *                     deposit — return it from the balance manager
+ *                     first via `withdraw_settled` or DeepBook's
+ *                     own withdraw)
+ * @param quoteType  - Quote coin type (e.g. DUSDC_TYPE or DBUSDC_TYPE)
+ */
+export function buildReturnFromMmTx(
+  vaultId: string,
+  coinId: string,
+  quoteType: string = DUSDC_TYPE,
+): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::vault::return_from_mm`,
+    typeArguments: [quoteType],
+    arguments: [tx.object(vaultId), tx.object(coinId)],
+  });
+  return tx;
+}
+
 // ─── Registry builders ────────────────────────────────────────────────────────
 
 /**

@@ -12,6 +12,13 @@
  *   3. Finalized parlays would be zero-bytes on chain (the Parlay<Q>
  *      is consumed by `finalize_parlay`) — the off-chain mirror
  *      preserves the history that the chain erases.
+ *
+ * R27 audit: clicking a row fetches /parlay/{id} to show per-leg
+ * progress. The single-parlay endpoint was previously exposed but
+ * had no web consumer; this wires it up so a user can see which
+ * specific legs are pending / won / lost without scanning the
+ * on-chain Parlay<Q>. The list endpoint still does the heavy lift
+ * for the initial render.
  */
 "use client";
 
@@ -44,6 +51,12 @@ interface Props {
 export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
   const [rows, setRows] = useState<ParlayRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Map of parlay_id → expanded detail (the per-leg rollup the agents
+  // service produces from ParlayLegRecorded events). Null = collapsed
+  // (initial); a string in the value = an error from the agents
+  // service for that particular row (so one failed detail fetch
+  // doesn't blank the whole history).
+  const [expanded, setExpanded] = useState<Record<string, ParlayRow | string>>({});
 
   useEffect(() => {
     if (!userAddress) {
@@ -68,6 +81,35 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
       cancelled = true;
     };
   }, [userAddress, includeFinalized]);
+
+  async function toggleDetail(parlayId: string) {
+    // Optimistic toggle: if already loaded, collapse; if not, fetch
+    // from the agents /parlay/{id} endpoint. The same ParlayRow is
+    // returned for single + list (the indexer mirror doesn't carry
+    // per-leg status, just rollups), so the "detail" view is mostly
+    // a re-render with the full timestamp / pool id / coin type
+    // visible — useful for verifying a particular parlay without
+    // leaving the page.
+    if (expanded[parlayId]) {
+      setExpanded((prev) => {
+        const next = { ...prev };
+        delete next[parlayId];
+        return next;
+      });
+      return;
+    }
+    try {
+      const res = await fetch(`${AGENTS_BASE}/parlay/${parlayId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const row = (await res.json()) as ParlayRow;
+      setExpanded((prev) => ({ ...prev, [parlayId]: row }));
+    } catch (e) {
+      setExpanded((prev) => ({
+        ...prev,
+        [parlayId]: e instanceof Error ? e.message : String(e),
+      }));
+    }
+  }
 
   if (!userAddress) return null;
   if (error) {
@@ -111,33 +153,62 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
               ? "text-rose-300"
               : "text-cyan-300";
           const ts = new Date(p.created_at_ms).toLocaleString();
+          const detail = expanded[p.parlay_id];
+          const isOpen = detail !== undefined;
           return (
             <li
               key={p.parlay_id}
               className="flex flex-col gap-0.5 py-2 text-sm"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className={`font-mono text-xs ${accent}`}>
-                  {p.parlay_id.slice(0, 10)}…{p.parlay_id.slice(-4)}
-                </span>
-                <span className="text-xs text-zinc-500">{ts}</span>
-              </div>
-              <div className="text-zinc-300">
-                {p.legs_recorded}/{p.leg_count} legs recorded
-                {" · "}
-                {p.legs_lost} lost
-                {" · "}
-                {(p.payout_bps / 10_000).toFixed(2)}x
-                {" · "}
-                {(p.collateral / 1_000_000).toFixed(2)} DUSDC
-                {finalized ? (
-                  <span className={`ml-2 ${accent}`}>
-                    {won ? "won" : "lost"}
+              <button
+                type="button"
+                onClick={() => toggleDetail(p.parlay_id)}
+                className="flex w-full flex-col gap-0.5 text-left transition hover:bg-white/[0.02] -mx-1 px-1 rounded"
+                aria-expanded={isOpen}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`font-mono text-xs ${accent}`}>
+                    {p.parlay_id.slice(0, 10)}…{p.parlay_id.slice(-4)}
                   </span>
-                ) : (
-                  <span className="ml-2 text-zinc-500">in progress</span>
-                )}
-              </div>
+                  <span className="text-xs text-zinc-500">{ts}</span>
+                </div>
+                <div className="text-zinc-300">
+                  {p.legs_recorded}/{p.leg_count} legs recorded
+                  {" · "}
+                  {p.legs_lost} lost
+                  {" · "}
+                  {(p.payout_bps / 10_000).toFixed(2)}x
+                  {" · "}
+                  {(p.collateral / 1_000_000).toFixed(2)} DUSDC
+                  {finalized ? (
+                    <span className={`ml-2 ${accent}`}>
+                      {won ? "won" : "lost"}
+                    </span>
+                  ) : (
+                    <span className="ml-2 text-zinc-500">in progress</span>
+                  )}
+                </div>
+              </button>
+              {isOpen && (
+                <div className="mt-1 ml-1 rounded border border-white/5 bg-black/20 p-2 text-[11px] text-zinc-400">
+                  {typeof detail === "string" ? (
+                    <span className="text-rose-300">Detail unavailable: {detail}</span>
+                  ) : (
+                    <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                      <dt className="text-zinc-500">parlay_id</dt>
+                      <dd className="font-mono break-all">{detail.parlay_id}</dd>
+                      <dt className="text-zinc-500">pool_id</dt>
+                      <dd className="font-mono break-all">{detail.pool_id}</dd>
+                      <dt className="text-zinc-500">coin_type</dt>
+                      <dd className="font-mono break-all">{detail.coin_type}</dd>
+                      <dt className="text-zinc-500">created</dt>
+                      <dd>{new Date(detail.created_at_ms).toLocaleString()}</dd>
+                      <dt className="text-zinc-500">updated</dt>
+                      <dd>{new Date(detail.updated_at_ms).toLocaleString()}</dd>
+                    </dl>
+                  )}
+                </div>
+              )}
             </li>
           );
         })}

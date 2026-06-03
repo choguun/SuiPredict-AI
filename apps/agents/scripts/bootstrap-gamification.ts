@@ -29,6 +29,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import {
+  buildCreateVaultTx,
   createClient,
   DEEP_TYPE,
   DUSDC_TYPE,
@@ -618,12 +619,11 @@ async function main() {
     log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
     log("Creating ProtocolVault<DBUSDC>...");
     const vaultDigest = await (async () => {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::vault::create_vault`,
-        typeArguments: [DUSDC_TYPE],
-        arguments: [tx.object(vlpTreasuryCapId)],
-      });
+      // R27: use the SDK builder so the bootstrap and the /admin
+      // VaultAdminCard share the same target string / type
+      // argument. If `create_vault` ever grows a new parameter
+      // (e.g. a fee schedule), only the builder needs updating.
+      const tx = buildCreateVaultTx(vlpTreasuryCapId, DUSDC_TYPE);
       const res = await executeTransaction(txClient, tx, signer);
       log(`  create_vault: ${res.digest}`);
       return res.digest;
