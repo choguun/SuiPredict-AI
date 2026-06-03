@@ -206,3 +206,115 @@ fun test_paused_policy_blocks_spend() {
 
     ts::end(scenario);
 }
+
+// ============================================================
+// log_action — audit-only event emission
+// ============================================================
+
+/// `log_action` lets the agent emit an `AgentActionEvent` without
+/// spending budget. Used by the redeem-keeper and other off-chain
+/// workers to record activity against the policy. Happy path: the
+/// action string is recorded; spent_total mirrors `policy.spent`
+/// (which is unchanged); amount is 0.
+#[test]
+fun log_action_emits_event() {
+    let mut scenario = setup();
+    let expires = 999_999_999_999;
+
+    ts::next_tx(&mut scenario, OWNER);
+    agent_policy::create_policy(AGENT, 1_000_000, expires, ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, AGENT);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    let clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    agent_policy::log_action(
+        &mut policy,
+        b"redeem_keeper_ping",
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    // Spent is unchanged because log_action does not consume budget.
+    assert!(agent_policy::spent(&policy) == 0, 0);
+    assert!(agent_policy::remaining(&policy) == 1_000_000, 0);
+    clock::destroy_for_testing(clock);
+    ts::return_shared(policy);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = agent_policy::ENotAgent)]
+fun log_action_not_agent_aborts() {
+    let mut scenario = setup();
+    let expires = 999_999_999_999;
+
+    ts::next_tx(&mut scenario, OWNER);
+    agent_policy::create_policy(AGENT, 1_000_000, expires, ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, OWNER);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    let clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    agent_policy::log_action(
+        &mut policy,
+        b"redeem_keeper_ping",
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    clock::destroy_for_testing(clock);
+    ts::return_shared(policy);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = agent_policy::ERevoked)]
+fun log_action_revoked_aborts() {
+    let mut scenario = setup();
+    let expires = 999_999_999_999;
+
+    ts::next_tx(&mut scenario, OWNER);
+    agent_policy::create_policy(AGENT, 1_000_000, expires, ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, OWNER);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    agent_policy::revoke(&mut policy, ts::ctx(&mut scenario));
+    ts::return_shared(policy);
+
+    // Switch to AGENT (the policy agent) and call log_action —
+    // the ENotAgent check passes, but ERevoked trips next.
+    ts::next_tx(&mut scenario, AGENT);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    let clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    agent_policy::log_action(
+        &mut policy,
+        b"redeem_keeper_ping",
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    clock::destroy_for_testing(clock);
+    ts::return_shared(policy);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = agent_policy::EPaused)]
+fun log_action_paused_aborts() {
+    let mut scenario = setup();
+    let expires = 999_999_999_999;
+
+    ts::next_tx(&mut scenario, OWNER);
+    agent_policy::create_policy(AGENT, 1_000_000, expires, ts::ctx(&mut scenario));
+
+    ts::next_tx(&mut scenario, OWNER);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    agent_policy::pause(&mut policy, ts::ctx(&mut scenario));
+    ts::return_shared(policy);
+
+    ts::next_tx(&mut scenario, AGENT);
+    let mut policy = ts::take_shared<AgentPolicy>(&scenario);
+    let clock = clock::create_for_testing(ts::ctx(&mut scenario));
+    agent_policy::log_action(
+        &mut policy,
+        b"redeem_keeper_ping",
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    clock::destroy_for_testing(clock);
+    ts::return_shared(policy);
+    abort 999
+}

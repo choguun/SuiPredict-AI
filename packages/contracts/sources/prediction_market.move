@@ -1159,3 +1159,42 @@ public fun destroy_for_testing<Q>(market: PredictionMarket<Q>) {
     sui::test_utils::destroy(no_cap);
     sui::test_utils::destroy(collateral);
 }
+
+/// Test-only helper: seed `market.collateral` with a quote-coin
+/// balance. Production flows route collateral through `mint_shares`
+/// (which takes a 1% fee to the FeeVault). Tests for `redeem`,
+/// `redeem_with_streak`, and the referral-claim path need a market
+/// with non-zero collateral to redeem against.
+#[test_only]
+public fun add_collateral_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
+    coin: Coin<Q>,
+) {
+    market.collateral.join(coin.into_balance());
+}
+
+/// Test-only helper: mint a `Coin<YES<Q>>` through the market's
+/// real `TreasuryCap`. Use this in redeem tests — the production
+/// `redeem` path calls `coin::burn(&mut market.yes_cap, …)` which
+/// asserts the cap's total supply >= the burned value, so a coin
+/// produced by `coin::mint_for_testing` (which bypasses the cap)
+/// will fail the burn.
+#[test_only]
+public fun mint_yes_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
+    amount: u64,
+    ctx: &mut TxContext,
+): Coin<YES<Q>> {
+    coin::mint(&mut market.yes_cap, amount, ctx)
+}
+
+/// Test-only helper: mint a `Coin<NO<Q>>` through the market's
+/// real `TreasuryCap`. Same rationale as `mint_yes_for_testing`.
+#[test_only]
+public fun mint_no_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
+    amount: u64,
+    ctx: &mut TxContext,
+): Coin<NO<Q>> {
+    coin::mint(&mut market.no_cap, amount, ctx)
+}

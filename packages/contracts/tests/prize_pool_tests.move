@@ -292,3 +292,136 @@ fun claim_prize_amount_too_large_aborts() {
     );
     abort 999
 }
+
+// ============================================================
+// rotate_admin / rotate_pubkey — admin key rotation
+// ============================================================
+
+/// `rotate_admin` lets the current admin rotate the prize-admin
+/// address (e.g. when the backend hot-wallet moves to a new key).
+/// After the rotation, the new address must sign subsequent admin
+/// operations. Non-admin callers must abort.
+#[test, expected_failure(abort_code = prize_pool::ENotAdmin)]
+fun rotate_admin_not_admin_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, STRANGER);
+    let mut admin = ts::take_shared<PrizeAdmin>(&scenario);
+    prize_pool::rotate_admin(&mut admin, @0xDEF, ts::ctx(&mut scenario));
+    ts::return_shared(admin);
+    abort 999
+}
+
+#[test]
+fun rotate_admin_succeeds() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut admin = ts::take_shared<PrizeAdmin>(&scenario);
+    prize_pool::rotate_admin(&mut admin, @0xDEF, ts::ctx(&mut scenario));
+    assert!(prize_pool::prize_admin_address(&admin) == @0xDEF, 0);
+    ts::return_shared(admin);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = prize_pool::ENotAdmin)]
+fun rotate_pubkey_not_admin_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, STRANGER);
+    let mut admin = ts::take_shared<PrizeAdmin>(&scenario);
+    prize_pool::rotate_pubkey(&mut admin, bogus_sig(), ts::ctx(&mut scenario));
+    ts::return_shared(admin);
+    abort 999
+}
+
+#[test]
+fun rotate_pubkey_succeeds() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut admin = ts::take_shared<PrizeAdmin>(&scenario);
+    let new_pk = bogus_sig();
+    prize_pool::rotate_pubkey(&mut admin, new_pk, ts::ctx(&mut scenario));
+    ts::return_shared(admin);
+    ts::end(scenario);
+}
+
+// ============================================================
+// rotate_week / settle_week
+// ============================================================
+
+#[test, expected_failure(abort_code = prize_pool::ENotAdmin)]
+fun rotate_week_not_admin_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, STRANGER);
+    let mut pool = ts::take_shared<PrizePool<SUI>>(&scenario);
+    let admin = ts::take_shared<PrizeAdmin>(&scenario);
+    prize_pool::rotate_week<SUI>(&mut pool, &admin, 5, ts::ctx(&mut scenario));
+    ts::return_shared(pool);
+    ts::return_shared(admin);
+    abort 999
+}
+
+#[test]
+fun rotate_week_resets_weekly_prize() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut pool = ts::take_shared<PrizePool<SUI>>(&scenario);
+    let admin = ts::take_shared<PrizeAdmin>(&scenario);
+    // Bump weekly_prize via a fund_pool call (create_pool's seed
+    // coin goes to balance, not weekly_prize).
+    let topup = coin::mint_for_testing<SUI>(5_000, ts::ctx(&mut scenario));
+    prize_pool::fund_pool<SUI>(&mut pool, topup, ts::ctx(&mut scenario));
+    assert!(prize_pool::weekly_prize(&pool) == 5_000, 0);
+    assert!(prize_pool::current_week(&pool) == 0, 0);
+    prize_pool::rotate_week<SUI>(&mut pool, &admin, 7, ts::ctx(&mut scenario));
+    assert!(prize_pool::current_week(&pool) == 7, 0);
+    // rotate_week resets weekly_prize to 0; the new week's prize
+    // is whatever is funded into the pool after the rotation.
+    assert!(prize_pool::weekly_prize(&pool) == 0, 0);
+    ts::return_shared(pool);
+    ts::return_shared(admin);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = prize_pool::ENotAdmin)]
+fun settle_week_not_admin_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, STRANGER);
+    let mut pool = ts::take_shared<PrizePool<SUI>>(&scenario);
+    let admin = ts::take_shared<PrizeAdmin>(&scenario);
+    prize_pool::settle_week<SUI>(&mut pool, &admin, 0, ts::ctx(&mut scenario));
+    ts::return_shared(pool);
+    ts::return_shared(admin);
+    abort 999
+}
+
+#[test]
+fun settle_week_marks_settled() {
+    let mut scenario = ts::begin(ADMIN);
+    init_prize(&mut scenario);
+    create_test_pool(&mut scenario, 0);
+    ts::next_tx(&mut scenario, ADMIN);
+    let mut pool = ts::take_shared<PrizePool<SUI>>(&scenario);
+    let admin = ts::take_shared<PrizeAdmin>(&scenario);
+    assert!(!prize_pool::is_settled(&pool, 0), 0);
+    prize_pool::settle_week<SUI>(&mut pool, &admin, 0, ts::ctx(&mut scenario));
+    assert!(prize_pool::is_settled(&pool, 0), 0);
+    // Re-settling is idempotent.
+    prize_pool::settle_week<SUI>(&mut pool, &admin, 0, ts::ctx(&mut scenario));
+    assert!(prize_pool::is_settled(&pool, 0), 0);
+    ts::return_shared(pool);
+    ts::return_shared(admin);
+    ts::end(scenario);
+}
