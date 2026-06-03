@@ -81,6 +81,7 @@ export * from "./prize-client.js";
 export * from "./badge-nft-client.js";
 export * from "./parlay-client.js";
 export * from "./user-profile-client.js";
+export * from "./protocol-reads.js";
 
 // Legacy DeepBook Predict
 export * as predict from "./predict/index.js";

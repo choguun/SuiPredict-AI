@@ -40,7 +40,23 @@ import {
   buildParlayAdminWithdrawTx,
   buildRotateParlayAdminTx,
   isValidSuiAddress,
+  readFeeVaultBalance,
+  readFeeVaultAdmin,
+  readPrizePoolBalance,
+  readPrizePoolCurrentWeek,
+  readPrizePoolWeeklyPrize,
+  readPrizePoolDistribution,
+  readProtocolVaultTotalBalance,
+  readProtocolVaultAvailableBalance,
+  readProtocolVaultAllocated,
+  readProtocolVaultAdmin,
+  readParlayPoolBalance,
+  readParlayPoolAdmin,
+  readParlayMaxPayoutBps,
+  readParlayTotalVolume,
+  readParlayTotalPaidOut,
 } from "@suipredict/sdk";
+import { useCurrentClient } from "@mysten/dapp-kit-react";
 import { Card, Stat, Badge } from "@/components/ui";
 
 // Read FEE_VAULT_ID from the env directly instead of the SDK's
@@ -52,6 +68,7 @@ const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 const PRIZE_POOL_ID = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.NEXT_PUBLIC_PRIZE_ADMIN_ID ?? "";
 const PARLAY_POOL_ID = process.env.NEXT_PUBLIC_PARLAY_POOL_ID ?? "";
+const VAULT_OBJECT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
 // Used as the placeholder in the SetMaxPayoutBpsCard input. The actual
 // submit reads the input value, not this — we just want the form to
 // pre-fill with a sensible round number on first render.
@@ -116,6 +133,8 @@ export default function AdminPage() {
     }
   }, [ADMIN_ADDRESS, isValidAdmin]);
 
+  const live = useLiveState();
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
@@ -161,10 +180,17 @@ export default function AdminPage() {
         )}
       </div>
 
+      <LiveStateCard
+        state={live.state}
+        loading={live.loading}
+        onRefresh={live.refresh}
+      />
+
       <WithdrawFeesCard
         onSubmit={(d) => setLastAction({ label: "Withdraw fees", digest: d })}
         dAppKit={dAppKit}
         disabled={!walletConnected || !isAdmin}
+        vaultBalance={live.state.feeVault?.balance}
       />
       <SetDistributionCard
         onSubmit={(d) =>
@@ -196,8 +222,252 @@ export default function AdminPage() {
         onSubmit={(label, d) => setLastAction({ label, digest: d })}
         dAppKit={dAppKit}
         disabled={!walletConnected || !isAdmin}
+        poolBalance={live.state.parlayPool?.balance}
+        currentAdmin={live.state.parlayPool?.admin}
       />
     </div>
+  );
+}
+
+// ============================================================
+// Live state — read all shared objects, surface balances and admins
+// so operators can see what they're operating on before submitting
+// a tx. Round-26 audit finding C3: the page was previously
+// "submit-only" with no live state.
+// ============================================================
+
+interface LiveState {
+  feeVault: { balance: bigint; admin: string } | null;
+  prizePool: {
+    balance: bigint;
+    weeklyPrize: bigint;
+    currentWeek: bigint;
+    distribution: number[];
+  } | null;
+  protocolVault: {
+    available: bigint;
+    allocated: bigint;
+    total: bigint;
+    admin: string;
+  } | null;
+  parlayPool: {
+    balance: bigint;
+    totalVolume: bigint;
+    totalPaidOut: bigint;
+    maxPayoutBps: bigint;
+    admin: string;
+  } | null;
+}
+
+const EMPTY_LIVE_STATE: LiveState = {
+  feeVault: null,
+  prizePool: null,
+  protocolVault: null,
+  parlayPool: null,
+};
+
+function useLiveState(): { state: LiveState; loading: boolean; refresh: () => void } {
+  const client = useCurrentClient();
+  const [state, setState] = useState<LiveState>(EMPTY_LIVE_STATE);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const next: LiveState = {
+        feeVault: null,
+        prizePool: null,
+        protocolVault: null,
+        parlayPool: null,
+      };
+      // Each read is best-effort: a missing env id or a transient
+      // RPC failure leaves that slot `null` rather than crashing
+      // the whole panel. Operators can see "—" for a slot that
+      // failed to load and try the refresh button.
+      try {
+        if (FEE_VAULT_ID) {
+          const [balance, admin] = await Promise.all([
+            readFeeVaultBalance(client, FEE_VAULT_ID),
+            readFeeVaultAdmin(client, FEE_VAULT_ID),
+          ]);
+          next.feeVault = { balance, admin };
+        }
+      } catch {
+        // leave null
+      }
+      try {
+        if (PRIZE_POOL_ID) {
+          const [balance, weeklyPrize, currentWeek, distribution] =
+            await Promise.all([
+              readPrizePoolBalance(client, PRIZE_POOL_ID),
+              readPrizePoolWeeklyPrize(client, PRIZE_POOL_ID),
+              readPrizePoolCurrentWeek(client, PRIZE_POOL_ID),
+              readPrizePoolDistribution(client, PRIZE_POOL_ID),
+            ]);
+          next.prizePool = { balance, weeklyPrize, currentWeek, distribution };
+        }
+      } catch {
+        // leave null
+      }
+      try {
+        if (VAULT_OBJECT_ID) {
+          const [available, allocated, total, admin] = await Promise.all([
+            readProtocolVaultAvailableBalance(client, VAULT_OBJECT_ID),
+            readProtocolVaultAllocated(client, VAULT_OBJECT_ID),
+            readProtocolVaultTotalBalance(client, VAULT_OBJECT_ID),
+            readProtocolVaultAdmin(client, VAULT_OBJECT_ID),
+          ]);
+          next.protocolVault = { available, allocated, total, admin };
+        }
+      } catch {
+        // leave null
+      }
+      try {
+        if (PARLAY_POOL_ID) {
+          const [balance, totalVolume, totalPaidOut, maxPayoutBps, admin] =
+            await Promise.all([
+              readParlayPoolBalance(client, PARLAY_POOL_ID, "0x2::sui::SUI"),
+              readParlayTotalVolume(client, PARLAY_POOL_ID),
+              readParlayTotalPaidOut(client, PARLAY_POOL_ID),
+              readParlayMaxPayoutBps(client, PARLAY_POOL_ID),
+              readParlayPoolAdmin(client, PARLAY_POOL_ID),
+            ]);
+          next.parlayPool = {
+            balance,
+            totalVolume,
+            totalPaidOut,
+            maxPayoutBps,
+            admin,
+          };
+        }
+      } catch {
+        // leave null
+      }
+      if (!cancelled) {
+        setState(next);
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, nonce]);
+
+  return { state, loading, refresh: () => setNonce((n) => n + 1) };
+}
+
+function formatDusdc(amount: bigint | undefined, decimals = 6): string {
+  if (amount === undefined) return "—";
+  // Move balances are in base units (10^decimals). Render as DUSDC
+  // with 2 trailing digits for compactness; operators can switch
+  // to a "raw" view if they need exact base-unit arithmetic.
+  const base = Number(amount) / 10 ** decimals;
+  if (!Number.isFinite(base)) return "—";
+  return base.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatBps(bps: bigint | undefined): string {
+  if (bps === undefined) return "—";
+  // 10_000 bps = 1.0x, 50_000 bps = 5.0x. Show both for clarity.
+  const bpsNum = Number(bps);
+  return `${bpsNum.toLocaleString()} bps (${(bpsNum / 10_000).toFixed(2)}x)`;
+}
+
+function LiveStateCard(props: {
+  state: LiveState;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  const { state, loading, onRefresh } = props;
+  // Show "— (env unset)" when the env id wasn't set at build time,
+  // vs. "—" (no value yet) when the read is in flight. Operators
+  // can distinguish "I forgot to deploy this" from "RPC is slow".
+  const envLabel = (id: string) => (id ? shortAddr(id) : "(env unset)");
+
+  return (
+    <Card
+      title={
+        <span className="flex items-center gap-2">
+          Live state
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-300 transition hover:bg-white/[0.08] disabled:opacity-40"
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </span>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-xs text-zinc-500">
+          Read-only snapshot of every shared object the cards below
+          touch. Numbers are in DUSDC base units (10^6) unless noted.
+          Click Refresh after a tx to see the new state.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Stat
+            label={`FeeVault ${envLabel(FEE_VAULT_ID)}`}
+            value={`${formatDusdc(state.feeVault?.balance)} DUSDC`}
+          />
+          <Stat
+            label="FeeVault admin"
+            value={shortAddr(state.feeVault?.admin)}
+          />
+          <Stat
+            label={`PrizePool ${envLabel(PRIZE_POOL_ID)}`}
+            value={`${formatDusdc(state.prizePool?.balance)} DUSDC`}
+          />
+          <Stat
+            label="PrizePool week / prize"
+            value={
+              state.prizePool
+                ? `week ${state.prizePool.currentWeek.toString()} / ${formatDusdc(state.prizePool.weeklyPrize)} DUSDC`
+                : "—"
+            }
+          />
+          <Stat
+            label={`ProtocolVault ${envLabel(VAULT_OBJECT_ID)}`}
+            value={
+              state.protocolVault
+                ? `${formatDusdc(state.protocolVault.available)} avail · ${formatDusdc(state.protocolVault.allocated)} alloc`
+                : "—"
+            }
+          />
+          <Stat
+            label="ProtocolVault admin"
+            value={shortAddr(state.protocolVault?.admin)}
+          />
+          <Stat
+            label={`ParlayPool ${envLabel(PARLAY_POOL_ID)}`}
+            value={`${formatDusdc(state.parlayPool?.balance)} DUSDC`}
+          />
+          <Stat
+            label="ParlayPool volume / paid"
+            value={
+              state.parlayPool
+                ? `${formatDusdc(state.parlayPool.totalVolume)} / ${formatDusdc(state.parlayPool.totalPaidOut)}`
+                : "—"
+            }
+          />
+          <Stat
+            label="Parlay max payout cap"
+            value={formatBps(state.parlayPool?.maxPayoutBps)}
+          />
+          <Stat
+            label="ParlayPool admin"
+            value={shortAddr(state.parlayPool?.admin)}
+          />
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -209,11 +479,31 @@ function WithdrawFeesCard(props: {
   onSubmit: (digest: string) => void;
   dAppKit: ReturnType<typeof useDAppKit>;
   disabled: boolean;
+  // Live FeeVault balance in base units, sourced from the LiveStateCard
+  // panel. Undefined until the first read returns. The pre-flight
+  // check below prevents submitting an amount the vault can't satisfy
+  // — without it, the tx would either revert with EInsufficientFunds
+  // or leave the on-chain balance negative (depending on the path).
+  vaultBalance?: bigint;
 }) {
   const [amountDusdc, setAmountDusdc] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+
+  const amountBig = (() => {
+    const n = Number(amountDusdc);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return BigInt(Math.round(n * 1_000_000));
+  })();
+  // Pre-flight: amount must be positive AND, if we have a live
+  // balance, must not exceed it. We surface the comparison as an
+  // explicit error so the operator can see "vault only has 12.5k"
+  // and adjust before paying gas.
+  const overBalance =
+    amountBig !== null && props.vaultBalance !== undefined
+      ? amountBig > props.vaultBalance
+      : false;
 
   async function submit() {
     setErr(null);
@@ -225,6 +515,14 @@ function WithdrawFeesCard(props: {
     const amount = BigInt(Math.round(Number(amountDusdc) * 1_000_000)); // DUSDC has 6 decimals
     if (amount <= BigInt(0)) {
       setErr("Amount must be positive.");
+      return;
+    }
+    if (props.vaultBalance !== undefined && amount > props.vaultBalance) {
+      setErr(
+        `Amount exceeds live FeeVault balance (${formatDusdc(
+          props.vaultBalance,
+        )} DUSDC). Click Refresh and try a smaller amount.`,
+      );
       return;
     }
     setBusy(true);
@@ -254,6 +552,14 @@ function WithdrawFeesCard(props: {
         </p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Stat label="Vault" value={shortAddr(FEE_VAULT_ID)} />
+          <Stat
+            label="Live balance"
+            value={
+              props.vaultBalance !== undefined
+                ? `${formatDusdc(props.vaultBalance)} DUSDC`
+                : "— (refresh Live state)"
+            }
+          />
           <Stat label="Amount" value={amountDusdc ? `${amountDusdc} DUSDC` : "—"} />
         </div>
         <div className="flex gap-2">
@@ -264,18 +570,27 @@ function WithdrawFeesCard(props: {
             placeholder="0.0"
             value={amountDusdc}
             onChange={(e) => setAmountDusdc(e.target.value)}
-            className="w-40 rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:border-rose-400 focus:outline-none"
+            className={`w-40 rounded-md border bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none ${
+              overBalance
+                ? "border-rose-500/60 focus:border-rose-400"
+                : "border-white/10 focus:border-rose-400"
+            }`}
             disabled={props.disabled || busy}
           />
           <button
             type="button"
             onClick={submit}
-            disabled={props.disabled || busy || !amountDusdc}
+            disabled={props.disabled || busy || !amountDusdc || overBalance}
             className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? "Submitting…" : "Withdraw"}
           </button>
         </div>
+        {overBalance && (
+          <p className="text-xs text-rose-400">
+            Amount exceeds live FeeVault balance ({formatDusdc(props.vaultBalance)} DUSDC).
+          </p>
+        )}
         {err && <p className="text-xs text-rose-400">{err}</p>}
         {digest && (
           <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
@@ -641,6 +956,12 @@ function SetMaxPayoutBpsCard(props: {
     Number.isFinite(parsedBps) &&
     Number.isInteger(parsedBps) &&
     parsedBps >= 10_000;
+  // The contract has no upper bound, but a 100x cap is a footgun:
+  // a single bad tick can drain the pool. Surface a soft warning at
+  // > 10x so the operator has to look at the input before clicking
+  // through. The submit button stays enabled — this is a hint, not
+  // a hard error.
+  const isHigh = isValid && parsedBps > 100_000;
 
   async function submit() {
     setErr(null);
@@ -730,6 +1051,13 @@ function SetMaxPayoutBpsCard(props: {
             {isValid ? "valid" : "invalid"}
           </Badge>
         </div>
+        {isHigh && (
+          <p className="text-xs text-amber-400">
+            Heads up: {(parsedBps / 10_000).toFixed(2)}x is well above the
+            production default of 5x. A single bad tick could let one
+            parlay drain a large share of the pool.
+          </p>
+        )}
         {err && <p className="text-xs text-rose-400">{err}</p>}
         {digest && (
           <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
@@ -763,6 +1091,13 @@ function ParlayAdminCard(props: {
   onSubmit: (label: string, digest: string) => void;
   dAppKit: ReturnType<typeof useDAppKit>;
   disabled: boolean;
+  // Live parlay pool balance in dUSDC base units, plus the current
+  // admin address. Both are best-effort from the LiveStateCard
+  // panel; the pre-flight checks below compare the operator's
+  // inputs to the live values to fail fast instead of paying gas
+  // for a tx the on-chain guards will reject.
+  poolBalance?: bigint;
+  currentAdmin?: string;
 }) {
   const [withdrawAmount, setWithdrawAmount] = useState<string>("");
   const [newAdmin, setNewAdmin] = useState<string>("");
@@ -775,10 +1110,28 @@ function ParlayAdminCard(props: {
     Number.isFinite(parsedAmount) &&
     Number.isInteger(parsedAmount) &&
     parsedAmount > 0;
+  // Pre-flight: amount must be positive AND, if we have a live
+  // balance, must not exceed it. Withdrawing more than the pool
+  // holds would either revert on-chain or (worse) silently drain
+  // funds earmarked for open parlays.
+  const overBalance =
+    isWithdrawValid &&
+    props.poolBalance !== undefined &&
+    BigInt(parsedAmount) > props.poolBalance;
   // Reject obvious non-address input up front. The Sui runtime
   // rejects malformed addresses anyway, but checking here gives a
   // friendlier error than a Move-abort stack trace.
-  const isRotateValid = isValidSuiAddress(newAdmin.trim());
+  const trimmedNewAdmin = newAdmin.trim();
+  const isRotateAddress = isValidSuiAddress(trimmedNewAdmin);
+  // Catch the operator trying to rotate to themselves. The on-chain
+  // call would succeed (it just rewrites the same address) but it's
+  // a no-op that wastes gas; we surface it as a warning instead of
+  // an error so the operator can confirm "yes, I really mean it".
+  const isSameAsCurrent =
+    isRotateAddress &&
+    props.currentAdmin !== undefined &&
+    trimmedNewAdmin.toLowerCase() === props.currentAdmin.toLowerCase();
+  const isRotateValid = isRotateAddress && !isSameAsCurrent;
 
   async function submitWithdraw() {
     setErr(null);
@@ -789,6 +1142,14 @@ function ParlayAdminCard(props: {
     }
     if (!isWithdrawValid) {
       setErr("Withdraw amount must be a positive integer (base units of dUSDC).");
+      return;
+    }
+    if (overBalance) {
+      setErr(
+        `Amount exceeds live parlay pool balance (${formatDusdc(
+          props.poolBalance,
+        )} DUSDC). Click Refresh and try a smaller amount.`,
+      );
       return;
     }
     setBusy("withdraw");
@@ -863,18 +1224,27 @@ function ParlayAdminCard(props: {
               onChange={(e) => setWithdrawAmount(e.target.value)}
               placeholder="1000000 (= 1 DUSDC)"
               className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
-                isWithdrawValid
-                  ? "border-white/10 focus:border-rose-400"
-                  : "border-rose-500/40"
+                overBalance
+                  ? "border-rose-500/60 focus:border-rose-400"
+                  : isWithdrawValid
+                    ? "border-white/10 focus:border-rose-400"
+                    : "border-rose-500/40"
               }`}
               disabled={props.disabled || busy !== null}
             />
+            {props.poolBalance !== undefined && (
+              <span className="mt-1 block text-[10px] text-zinc-500">
+                Pool balance: {formatDusdc(props.poolBalance)} DUSDC
+              </span>
+            )}
           </label>
           <div className="flex items-end">
             <button
               type="button"
               onClick={submitWithdraw}
-              disabled={props.disabled || busy !== null || !isWithdrawValid}
+              disabled={
+                props.disabled || busy !== null || !isWithdrawValid || overBalance
+              }
               className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy === "withdraw" ? "Submitting…" : "Withdraw"}
@@ -897,6 +1267,12 @@ function ParlayAdminCard(props: {
               }`}
               disabled={props.disabled || busy !== null}
             />
+            {isSameAsCurrent && (
+              <span className="mt-1 block text-[10px] text-amber-400">
+                New admin is the same as the current admin — rotation would
+                be a no-op.
+              </span>
+            )}
           </label>
           <div className="flex items-end">
             <button

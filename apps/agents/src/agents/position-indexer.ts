@@ -39,6 +39,7 @@ import {
   upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
+import { logPolicyEvent } from "../store.js";
 import {
   recordPrizeClaim,
   recordStreakEvent,
@@ -813,6 +814,82 @@ export async function runPositionIndexer(
       if (!j?.agent) return;
     },
   );
+
+  // PolicyCreated / PolicyRevoked / PolicyPaused — fired by
+  // agent_policy.move's `create_policy`, `revoke`, and `pause` /
+  // `unpause`. Round-26 audit finding C2: an operator revoking or
+  // pausing a policy in an emergency had no off-chain mirror;
+  // future /admin or compliance pages would have to scan the RPC
+  // for these events. Each event appends a row to the
+  // `policy_events` table keyed on (policy_id, tx_digest, event_type)
+  // so re-runs are idempotent and the cursor advances even if the
+  // insert no-ops.
+  const policyLifecycle = [
+    {
+      name: "PolicyCreated",
+      type: "created" as const,
+      cursor: "position_indexer.policy_created",
+    },
+    {
+      name: "PolicyRevoked",
+      type: "revoked" as const,
+      cursor: "position_indexer.policy_revoked",
+    },
+    {
+      name: "PolicyPaused",
+      type: "paused" as const,
+      cursor: "position_indexer.policy_paused",
+    },
+  ];
+  for (const sub of policyLifecycle) {
+    await guardedPoll(
+      sub.name,
+      `${predictPackageId}::agent_policy::${sub.name}`,
+      sub.cursor,
+      (ev) => {
+        // On-chain payload:
+        //   PolicyCreated { policy_id, owner, agent, max_budget, expires_at }
+        //   PolicyRevoked { policy_id, owner }
+        //   PolicyPaused  { policy_id, paused }
+        // The actor field is `owner` for created/revoked; for
+        // `paused` the same `paused: bool` discriminates pause vs
+        // unpause (the same event type is emitted by both).
+        const j = ev.parsedJson as {
+          policy_id?: string;
+          owner?: string;
+          agent?: string;
+          paused?: boolean;
+        };
+        if (!j?.policy_id) return;
+        const details: Record<string, unknown> = {};
+        if (j.owner) details.owner = j.owner;
+        if (j.agent) details.agent = j.agent;
+        if (sub.type === "paused") {
+          // Distinguish pause from unpause in the audit row.
+          details.paused = !!j.paused;
+        }
+        try {
+          logPolicyEvent({
+            policyId: j.policy_id,
+            eventType: sub.type,
+            actor: j.owner ?? "",
+            tsMs: Number(ev.timestampMs ?? Date.now()),
+            txDigest: ev.id?.txDigest ?? "",
+            details: JSON.stringify(details),
+          });
+        } catch (e) {
+          // Don't let a DB write failure (disk full, schema drift)
+          // stop the indexer — the cursor still advances via
+          // `guardedPoll`, so a future tick will retry and either
+          // succeed (transient) or skip past (permanent). Log
+          // loudly so the operator notices.
+          console.warn(
+            `[position-indexer] policy_events insert failed for ${sub.name} ${j.policy_id}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      },
+    );
+  }
 
   // ReferralSetEvent — fired by prediction_market::setup_referral.
   // The referral-keeper can verify its own writes against this on-chain

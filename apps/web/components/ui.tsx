@@ -3,7 +3,10 @@ export function Card({
   children,
   className = "",
 }: {
-  title?: string;
+  // React.ReactNode (not just string) so callers can drop inline
+  // controls like a Refresh button into the title row. All current
+  // call sites still pass a plain string, which is a valid ReactNode.
+  title?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {

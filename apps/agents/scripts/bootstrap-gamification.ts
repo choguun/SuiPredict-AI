@@ -346,36 +346,48 @@ async function main() {
   //     to create and share the vault. The vault_admin is the same
   //     signer — it is the address authorized to call withdraw_fees
   //     later.
-  log("Creating FeeVault<DBUSDC> via init_fee_vault...");
-  const protocolAdminCapId = await findOwnedObject(
-    grpc,
-    signerAddr,
-    "::prediction_market::ProtocolAdminCap",
-  );
-  if (!protocolAdminCapId) {
-    err(
-      "No ProtocolAdminCap found in deployer wallet. Was the package just published? " +
-        "prediction_market::init() should have transferred one to the publisher.",
+  //
+  //     Idempotency: if `FEE_VAULT_ID` is already in .env, the
+  //     previous bootstrap left a valid shared object and a re-run
+  //     would mint a SECOND FeeVault, splitting the protocol fees
+  //     between two vaults (only the one in .env can be withdrawn
+  //     from). The deployer would never see the funds in the
+  //     abandoned vault. Refuse to create a duplicate.
+  let feeVaultId = process.env.FEE_VAULT_ID ?? "";
+  if (feeVaultId) {
+    log(`FEE_VAULT_ID already set: ${feeVaultId} — re-using (skip init_fee_vault).`);
+  } else {
+    log("Creating FeeVault<DBUSDC> via init_fee_vault...");
+    const protocolAdminCapId = await findOwnedObject(
+      grpc,
+      signerAddr,
+      "::prediction_market::ProtocolAdminCap",
     );
+    if (!protocolAdminCapId) {
+      err(
+        "No ProtocolAdminCap found in deployer wallet. Was the package just published? " +
+          "prediction_market::init() should have transferred one to the publisher.",
+      );
+    }
+    let initVaultDigest = "";
+    {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::prediction_market::init_fee_vault`,
+        typeArguments: [DUSDC_TYPE],
+        arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      initVaultDigest = res.digest;
+      log(`  init_fee_vault: ${initVaultDigest}`);
+    }
+    feeVaultId = await getSharedObjectIdFromTx(
+      grpc,
+      initVaultDigest,
+      "::prediction_market::FeeVault<",
+    );
+    log(`FeeVault:       ${feeVaultId}`);
   }
-  let initVaultDigest = "";
-  {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::prediction_market::init_fee_vault`,
-      typeArguments: [DUSDC_TYPE],
-      arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    initVaultDigest = res.digest;
-    log(`  init_fee_vault: ${initVaultDigest}`);
-  }
-  const feeVaultId = await getSharedObjectIdFromTx(
-    grpc,
-    initVaultDigest,
-    "::prediction_market::FeeVault<",
-  );
-  log(`FeeVault:       ${feeVaultId}`);
 
   // 2) Extract shared objects created at init
   const streakAdminId = findSharedObject(objects, "::streak_system::StreakAdmin");
@@ -514,113 +526,156 @@ async function main() {
   }
   log(`  seed coin: ${seedCoinId}`);
 
-  // 6) Create the prize pool
-  log("Creating PrizePool<DBUSDC>...");
-  let createPoolDigest = "";
-  {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::prize_pool::create_pool`,
-      typeArguments: [DUSDC_TYPE],
-      arguments: [tx.object(seedCoinId), tx.pure.u64(INITIAL_WEEK)],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    createPoolDigest = res.digest;
-    log(`  create_pool: ${createPoolDigest}`);
-  }
-
-  // 7) Find the new shared pool from the create_pool transaction's
-  //    effects (the pool is shared via `transfer::share_object`, so it
-  //    is not owned by the deployer and won't appear in
-  //    `listOwnedObjects`).
-  log("Fetching PrizePool object ID from create_pool effects...");
-  const prizePoolId = await getSharedObjectIdFromTx(
-    grpc,
-    createPoolDigest,
-    "::prize_pool::PrizePool<",
-  );
-  log(`PrizePool:      ${prizePoolId}`);
-
-  // 7a) Create the MarketRegistry (not auto-created on publish)
-  log("Creating MarketRegistry...");
-  const registryDigest = await (async () => {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::registry::create_registry`,
-      arguments: [],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    log(`  create_registry: ${res.digest}`);
-    return res.digest;
-  })();
-  const marketRegistryId = await getSharedObjectIdFromTx(
-    grpc,
-    registryDigest,
-    "::registry::MarketRegistry",
-  );
-  log(`MarketRegistry: ${marketRegistryId}`);
-
-  // 7b) Create the ProtocolVault<DBUSDC> from the deployer's VLP TreasuryCap
-  log("Looking for VLP TreasuryCap in deployer wallet...");
-  let vlpTreasuryCapId = process.env.VLP_TREASURY_CAP_ID ?? "";
-  if (!vlpTreasuryCapId) {
-    vlpTreasuryCapId = (await findVlpTreasuryCap(grpc, signerAddr)) ?? "";
-  }
-  if (!vlpTreasuryCapId) {
-    err(
-      "No VLP TreasuryCap found in deployer wallet. Was the package just published? " +
-        "The vlp::init() function should have transferred one to the publisher.",
+  // 6) Create the prize pool.
+  //
+  //    Idempotency: if `PRIZE_POOL_ID` is already in .env, the prior
+  //    bootstrap left a valid shared pool. A re-run would mint a
+  //    SECOND prize pool and seed it with a fresh `seedCoinId`,
+  //    stranding the seed coin in an abandoned pool that no claim
+  //    flow can ever pay out. Skip the creation step entirely.
+  let prizePoolId = process.env.PRIZE_POOL_ID ?? "";
+  if (prizePoolId) {
+    log(
+      `PRIZE_POOL_ID already set: ${prizePoolId} — re-using (skip create_pool).`,
     );
+  } else {
+    log("Creating PrizePool<DBUSDC>...");
+    let createPoolDigest = "";
+    {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::prize_pool::create_pool`,
+        typeArguments: [DUSDC_TYPE],
+        arguments: [tx.object(seedCoinId), tx.pure.u64(INITIAL_WEEK)],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      createPoolDigest = res.digest;
+      log(`  create_pool: ${createPoolDigest}`);
+    }
+
+    // Find the new shared pool from the create_pool transaction's
+    // effects (the pool is shared via `transfer::share_object`, so it
+    // is not owned by the deployer and won't appear in
+    // `listOwnedObjects`).
+    log("Fetching PrizePool object ID from create_pool effects...");
+    prizePoolId = await getSharedObjectIdFromTx(
+      grpc,
+      createPoolDigest,
+      "::prize_pool::PrizePool<",
+    );
+    log(`PrizePool:      ${prizePoolId}`);
   }
-  log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
-  log("Creating ProtocolVault<DBUSDC>...");
-  const vaultDigest = await (async () => {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::vault::create_vault`,
-      typeArguments: [DUSDC_TYPE],
-      arguments: [tx.object(vlpTreasuryCapId)],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    log(`  create_vault: ${res.digest}`);
-    return res.digest;
-  })();
-  const protocolVaultId = await getSharedObjectIdFromTx(
-    grpc,
-    vaultDigest,
-    "::vault::ProtocolVault<",
-  );
-  log(`ProtocolVault:  ${protocolVaultId}`);
+
+  // 7a) Create the MarketRegistry (not auto-created on publish).
+  //     Idempotency: skip if `MARKET_REGISTRY_ID` is in .env.
+  let marketRegistryId = process.env.MARKET_REGISTRY_ID ?? "";
+  if (marketRegistryId) {
+    log(
+      `MARKET_REGISTRY_ID already set: ${marketRegistryId} — re-using (skip create_registry).`,
+    );
+  } else {
+    log("Creating MarketRegistry...");
+    const registryDigest = await (async () => {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::registry::create_registry`,
+        arguments: [],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      log(`  create_registry: ${res.digest}`);
+      return res.digest;
+    })();
+    marketRegistryId = await getSharedObjectIdFromTx(
+      grpc,
+      registryDigest,
+      "::registry::MarketRegistry",
+    );
+    log(`MarketRegistry: ${marketRegistryId}`);
+  }
+
+  // 7b) Create the ProtocolVault<DBUSDC> from the deployer's VLP TreasuryCap.
+  //     Idempotency: skip if `VAULT_OBJECT_ID` is in .env. The
+  //     TreasuryCap is consumed by `create_vault`, so a re-run
+  //     without this guard would also strand the VLP mint authority
+  //     in an abandoned vault.
+  let protocolVaultId = process.env.VAULT_OBJECT_ID ?? "";
+  if (protocolVaultId) {
+    log(
+      `VAULT_OBJECT_ID already set: ${protocolVaultId} — re-using (skip create_vault).`,
+    );
+  } else {
+    log("Looking for VLP TreasuryCap in deployer wallet...");
+    let vlpTreasuryCapId = process.env.VLP_TREASURY_CAP_ID ?? "";
+    if (!vlpTreasuryCapId) {
+      vlpTreasuryCapId = (await findVlpTreasuryCap(grpc, signerAddr)) ?? "";
+    }
+    if (!vlpTreasuryCapId) {
+      err(
+        "No VLP TreasuryCap found in deployer wallet. Was the package just published? " +
+          "The vlp::init() function should have transferred one to the publisher.",
+      );
+    }
+    log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
+    log("Creating ProtocolVault<DBUSDC>...");
+    const vaultDigest = await (async () => {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::vault::create_vault`,
+        typeArguments: [DUSDC_TYPE],
+        arguments: [tx.object(vlpTreasuryCapId)],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      log(`  create_vault: ${res.digest}`);
+      return res.digest;
+    })();
+    protocolVaultId = await getSharedObjectIdFromTx(
+      grpc,
+      vaultDigest,
+      "::vault::ProtocolVault<",
+    );
+    log(`ProtocolVault:  ${protocolVaultId}`);
+  }
 
   // 7c) Create an AgentPolicy so the agent hot wallet can act with a
   //     capped budget. Use AGENT_MAX_BUDGET_USDC * 10^6 (DUSDC has 6
   //     decimals) and a 1-year expiry.
-  const policyBudget =
-    BigInt(process.env.AGENT_MAX_BUDGET_USDC ?? "500") * 1_000_000n;
-  const policyExpiryMs = Date.now() + 365 * 86_400_000;
-  log(
-    `Creating AgentPolicy (budget=${policyBudget} base, expires=${new Date(policyExpiryMs).toISOString()})...`,
-  );
-  const policyDigest = await (async () => {
-    const tx = new Transaction();
-    tx.moveCall({
-      target: `${packageId}::agent_policy::create_policy`,
-      arguments: [
-        tx.pure.address(signerAddr),
-        tx.pure.u64(policyBudget),
-        tx.pure.u64(policyExpiryMs),
-      ],
-    });
-    const res = await executeTransaction(txClient, tx, signer);
-    log(`  create_policy: ${res.digest}`);
-    return res.digest;
-  })();
-  const agentPolicyId = await getSharedObjectIdFromTx(
-    grpc,
-    policyDigest,
-    "::agent_policy::AgentPolicy",
-  );
-  log(`AgentPolicy:    ${agentPolicyId}`);
+  //     Idempotency: skip if `AGENT_POLICY_ID` is in .env. The policy
+  //     is created at a fresh expiry on every `create_policy` call,
+  //     so a re-run would reset the budget window and split the
+  //     operator's audit trail between two policies.
+  let agentPolicyId = process.env.AGENT_POLICY_ID ?? "";
+  if (agentPolicyId) {
+    log(
+      `AGENT_POLICY_ID already set: ${agentPolicyId} — re-using (skip create_policy).`,
+    );
+  } else {
+    const policyBudget =
+      BigInt(process.env.AGENT_MAX_BUDGET_USDC ?? "500") * 1_000_000n;
+    const policyExpiryMs = Date.now() + 365 * 86_400_000;
+    log(
+      `Creating AgentPolicy (budget=${policyBudget} base, expires=${new Date(policyExpiryMs).toISOString()})...`,
+    );
+    const policyDigest = await (async () => {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${packageId}::agent_policy::create_policy`,
+        arguments: [
+          tx.pure.address(signerAddr),
+          tx.pure.u64(policyBudget),
+          tx.pure.u64(policyExpiryMs),
+        ],
+      });
+      const res = await executeTransaction(txClient, tx, signer);
+      log(`  create_policy: ${res.digest}`);
+      return res.digest;
+    })();
+    agentPolicyId = await getSharedObjectIdFromTx(
+      grpc,
+      policyDigest,
+      "::agent_policy::AgentPolicy",
+    );
+    log(`AgentPolicy:    ${agentPolicyId}`);
+  }
 
   // 7b) Create a DeepBook V3 BalanceManager for the agent signer so
   // the market-maker can trade without a one-off setup step. The
