@@ -133,7 +133,11 @@ export default function AdminPage() {
         )} is not a 0x-prefixed 64-char hex address. Admin actions will be disabled until this is fixed.`,
       );
     }
-  }, [ADMIN_ADDRESS, isValidAdmin]);
+    // `ADMIN_ADDRESS` is a module-level constant — it can never
+    // change at runtime, so it isn't a valid dep. The effect only
+    // needs to re-run when `isValidAdmin` flips, which it does on
+    // account connect / disconnect (handled by the upstream hooks).
+  }, [isValidAdmin]);
 
   const live = useLiveState();
 

@@ -26,7 +26,7 @@ import { useEffect, useState } from "react";
 import { Card } from "./ui";
 
 const AGENTS_BASE =
-  process.env.NEXT_PUBLIC_AGENTS_BASE_URL ?? "http://localhost:3001";
+  process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 
 export interface ParlayRow {
   parlay_id: string;

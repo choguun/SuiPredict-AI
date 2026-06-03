@@ -30,10 +30,6 @@ const DEFAULT_PARLAY_LIMIT = 5;
 
 type Selection = boolean; // true=YES, false=NO
 
-function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
-  return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
-}
-
 interface DailyMarket extends MarketInfo {
   yesProbability: number;
 }
@@ -166,9 +162,9 @@ export function DailyPredictionCard() {
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       // $kind guard: a Failed / EffectsCert result carries no digest,
-      // so toasting "Predictions locked — unknown…" with a real success
-      // tone would lie to the user. The `txDigest` helper masks this
-      // with the string "unknown" — don't trust it for a success toast.
+      // so toasting a success message with a real success tone would
+      // lie to the user. Only proceed to the success toast when the
+      // fullnode actually accepted the tx.
       if (r.$kind !== "Transaction") {
         toast.error("Batch mint failed");
         return;

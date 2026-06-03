@@ -17,10 +17,6 @@ import { Card, Stat } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
 import { toast } from "sonner";
 
-function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
-  return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
-}
-
 const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
 
 export default function VaultPage() {
