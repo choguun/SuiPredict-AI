@@ -536,6 +536,10 @@ export async function runPositionIndexer(
         amount: Number(j.amount ?? 0),
         tx_digest: ev.id?.txDigest ?? null,
         claimed_at_ms: ts,
+        // R33 audit fix: surface the source pool from the on-chain
+        // `PrizeClaimed { pool_id, ... }` event so the off-chain
+        // mirror preserves the multi-pool attribution.
+        pool_id: j.pool_id ?? null,
       });
     },
   );
@@ -850,10 +854,19 @@ export async function runPositionIndexer(
         // On-chain payload:
         //   PolicyCreated { policy_id, owner, agent, max_budget, expires_at }
         //   PolicyRevoked { policy_id, owner }
-        //   PolicyPaused  { policy_id, paused }
+        //   PolicyPaused  { policy_id, paused }    <-- no owner field
         // The actor field is `owner` for created/revoked; for
         // `paused` the same `paused: bool` discriminates pause vs
-        // unpause (the same event type is emitted by both).
+        // unpause (the same event type is emitted by both), and the
+        // Move struct intentionally does not carry the actor — the
+        // policy's owner can rotate via a follow-up tx and is not
+        // meaningful for an audit row anchored to the event itself.
+        // R33 audit fix: previously the indexer read `j.owner` for
+        // paused events too, which is always `undefined` and yielded
+        // an always-empty `actor` column for every pause/unpause.
+        // We now leave actor empty for paused and add a comment
+        // noting the on-chain limitation; a future Move change to
+        // include the sender on the event would unlock attribution.
         const j = ev.parsedJson as {
           policy_id?: string;
           owner?: string;
@@ -872,7 +885,7 @@ export async function runPositionIndexer(
           logPolicyEvent({
             policyId: j.policy_id,
             eventType: sub.type,
-            actor: j.owner ?? "",
+            actor: sub.type === "paused" ? "" : (j.owner ?? ""),
             tsMs: Number(ev.timestampMs ?? Date.now()),
             txDigest: ev.id?.txDigest ?? "",
             details: JSON.stringify(details),

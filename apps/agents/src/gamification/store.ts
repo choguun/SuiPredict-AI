@@ -59,6 +59,16 @@ export interface PrizeClaim {
   amount: number;
   tx_digest: string | null;
   claimed_at_ms: number;
+  // R33 audit fix: the on-chain `PrizeClaimed { pool_id, ... }` event
+  // carries the pool the claim came from, but the off-chain mirror
+  // silently dropped it. With a single PrizePool<PrizeCoin> per
+  // deploy this was harmless (the PK `(user, week_index)` is unique
+  // by construction), but the Move struct is generic and a future
+  // second pool (e.g. a per-category prize pool) would silently
+  // collapse two valid claims onto the same row via
+  // `ON CONFLICT(user, week_index) DO UPDATE`. Surface the pool id
+  // here and in the migration below.
+  pool_id?: string | null;
 }
 
 function getDb(): Database.Database {
@@ -96,9 +106,21 @@ function getDb(): Database.Database {
         amount INTEGER NOT NULL,
         tx_digest TEXT,
         claimed_at_ms INTEGER NOT NULL,
+        pool_id TEXT,
         PRIMARY KEY (user, week_index)
       );
-
+    `);
+    // R33 migration: existing databases that pre-date the `pool_id`
+    // column need it added. SQLite errors with "duplicate column"
+    // if it's already there, so swallow that. The CREATE TABLE
+    // above already declares the column for fresh databases; this
+    // branch only runs once per pre-R33 database.
+    try {
+      getDb().exec(`ALTER TABLE prize_claims ADD COLUMN pool_id TEXT`);
+    } catch {
+      // Column already present; ignore.
+    }
+    db.exec(`
       -- Per-day sweep lock. The streak-sweeper inserts a row when it
       -- starts and updates status='complete' on success. If a prior
       -- sweep is still 'running' (started within the last 24h) the
@@ -473,14 +495,19 @@ function decorateClaimed(row: WeeklyRow): WeeklyRow {
 }
 
 export function recordPrizeClaim(claim: PrizeClaim): void {
+  // R33 audit fix: include `pool_id` in the INSERT / ON CONFLICT
+  // UPDATE so the off-chain mirror preserves the on-chain source
+  // pool. Without this, two claims against different pools in the
+  // same week would silently collapse to the same row.
   getDb()
     .prepare(
       `INSERT INTO prize_claims
-       (user, week_index, rank, amount, tx_digest, claimed_at_ms)
-       VALUES (@user, @week_index, @rank, @amount, @tx_digest, @claimed_at_ms)
+       (user, week_index, rank, amount, tx_digest, claimed_at_ms, pool_id)
+       VALUES (@user, @week_index, @rank, @amount, @tx_digest, @claimed_at_ms, @pool_id)
        ON CONFLICT(user, week_index) DO UPDATE SET
          rank=excluded.rank, amount=excluded.amount,
-         tx_digest=excluded.tx_digest, claimed_at_ms=excluded.claimed_at_ms`,
+         tx_digest=excluded.tx_digest, claimed_at_ms=excluded.claimed_at_ms,
+         pool_id=COALESCE(excluded.pool_id, prize_claims.pool_id)`,
     )
     .run(claim);
 }

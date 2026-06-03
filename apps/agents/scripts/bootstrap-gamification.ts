@@ -815,12 +815,18 @@ async function main() {
       process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001",
   };
   if (streakRegistryId) webUpdates.NEXT_PUBLIC_STREAK_REGISTRY_ID = streakRegistryId;
-  if (streakAdminId) webUpdates.NEXT_PUBLIC_STREAK_ADMIN_ID = streakAdminId;
+  // NEXT_PUBLIC_STREAK_ADMIN_ID is also dropped — see the resume
+  // script for the rationale. The web streak flow only needs
+  // NEXT_PUBLIC_STREAK_REGISTRY_ID (StreakProfile / banner / hook).
   if (prizePoolId) webUpdates.NEXT_PUBLIC_PRIZE_POOL_ID = prizePoolId;
   if (prizeAdminId) webUpdates.NEXT_PUBLIC_PRIZE_ADMIN_ID = prizeAdminId;
   if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
   if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
-  if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  // NEXT_PUBLIC_AGENT_POLICY_ID — dropped in R33. The web bundle
+  // reads the package id via NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID
+  // (admin page, agent page) and does not need the per-policy
+  // object id. Writing it here created a dead env key that confused
+  // operators reading apps/web/.env.local.
   if (profileRegistryId) {
     webUpdates.NEXT_PUBLIC_PROFILE_REGISTRY_ID = profileRegistryId;
   }

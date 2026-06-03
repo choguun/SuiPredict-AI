@@ -41,6 +41,11 @@ const checks: Check[] = [
   { name: "PrizeAdmin (PRIZE_ADMIN_ID)", id: process.env.PRIZE_ADMIN_ID ?? "", expectedTypeSuffix: "::prize_pool::PrizeAdmin" },
   { name: "PrizePool (PRIZE_POOL_ID)", id: process.env.PRIZE_POOL_ID ?? "", expectedTypeSuffix: "::prize_pool::PrizePool<" },
   { name: "FeeVault (FEE_VAULT_ID)", id: process.env.FEE_VAULT_ID ?? "", expectedTypeSuffix: "::prediction_market::FeeVault<" },
+  // ParlayPool — the parlay-worker's required env (the boot validator
+  // refuses to start without it). Without this check, a green
+  // verify-config run could still leave the agents service crashing
+  // on boot. R33 audit fix.
+  { name: "ParlayPool (PARLAY_POOL_ID)", id: process.env.PARLAY_POOL_ID ?? "", expectedTypeSuffix: "::parlay::ParlayPool<" },
   { name: "MarketRegistry (MARKET_REGISTRY_ID)", id: process.env.MARKET_REGISTRY_ID ?? "", expectedTypeSuffix: "::registry::MarketRegistry" },
   { name: "ProtocolVault (VAULT_OBJECT_ID)", id: process.env.VAULT_OBJECT_ID ?? "", expectedTypeSuffix: "::vault::ProtocolVault<" },
   { name: "AgentPolicy (AGENT_POLICY_ID)", id: process.env.AGENT_POLICY_ID ?? "", expectedTypeSuffix: "::agent_policy::AgentPolicy" },

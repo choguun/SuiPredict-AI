@@ -447,6 +447,13 @@ export async function handleGamificationRoute(
         amount: Number(amount),
         tx_digest: body.txDigest ?? null,
         claimed_at_ms: Date.now(),
+        // R33 audit fix: the POST path didn't know which pool the
+        // claim came from (the request body doesn't carry it — the
+        // server-side `expectedAmountForRank` re-derivation is the
+        // single source of truth for `amount`). Use the configured
+        // prize pool id as the attribution; the indexer will
+        // overwrite if a multi-pool deploy sends a different id.
+        pool_id: process.env.PRIZE_POOL_ID ?? null,
       });
       json(res, 200, { ok: true });
     } catch (err) {
@@ -487,6 +494,14 @@ export async function handleGamificationRoute(
   // every tick. Returns 404 if the indexer hasn't yet picked up the
   // ParlayCreated event (a 1-tick window after the user submits
   // `create_parlay`).
+  //
+  // R33 audit fix: this endpoint previously returned the raw SQL
+  // `ParlayRow` shape (with `user`, `collateral_amount`, no
+  // `coin_type`), while the list endpoint routes through
+  // `serializeParlay`. The web ParlayHistory detail panel reads
+  // `owner`/`coin_type`/`collateral`/`won`/`payout`, so a single-end
+  // click surfaced `undefined` for the field the user just clicked on
+  // to see. The two endpoints now produce the same wire shape.
   const parlayIdMatch = url.pathname.match(/^\/parlay\/(0x[a-fA-F0-9]+)$/);
   if (parlayIdMatch) {
     const id = parlayIdMatch[1]!;
@@ -495,7 +510,7 @@ export async function handleGamificationRoute(
       json(res, 404, { error: "parlay not yet indexed", parlay_id: id });
       return true;
     }
-    json(res, 200, row);
+    json(res, 200, serializeParlay(row));
     return true;
   }
 

@@ -456,6 +456,14 @@ async function main() {
 
   // 8) Create AgentPolicy (idempotent)
   let agentPolicyId = process.env.AGENT_POLICY_ID ?? "";
+  // BalanceManager — read-only here (the market-maker bot self-creates
+  // one on its first tick if BALANCE_MANAGER_ID is unset), but we
+  // surface the variable in the env-updates block so a previously-
+  // created id propagates through a partial resume. R33 audit fix:
+  // the matching write in `agentsUpdates` below was previously
+  // referencing an undefined binding, so a resume that re-derived a
+  // new BalanceManager would silently leave the env unset.
+  let balanceManagerId = process.env.BALANCE_MANAGER_ID ?? "";
   if (shouldRun("policy")) {
     if (agentPolicyId) {
       log(`AgentPolicy already configured (${agentPolicyId}); skipping.`);
@@ -516,6 +524,14 @@ async function main() {
   if (protocolVaultId) agentsUpdates.VAULT_OBJECT_ID = protocolVaultId;
   if (feeVaultId) agentsUpdates.FEE_VAULT_ID = feeVaultId;
   if (agentPolicyId) agentsUpdates.AGENT_POLICY_ID = agentPolicyId;
+  // BalanceManager — mirror bootstrap-gamification.ts so a partial
+  // resume that produced a new BalanceManager still writes the id to
+  // .env. Without this the market-maker agent would silently go
+  // inert on the next agents boot (the only reader of
+  // BALANCE_MANAGER_ID at runtime is the market-maker's first-tick
+  // self-creation path; the `agentsUpdates` block is the only place
+  // we propagate a freshly-created id). R33 audit finding.
+  if (balanceManagerId) agentsUpdates.BALANCE_MANAGER_ID = balanceManagerId;
   // ProfileRegistry — mirrors bootstrap-gamification.ts so the agents
   // /profile/:addr handler (which gates on this env) doesn't go dark
   // after a resume.
@@ -563,13 +579,19 @@ async function main() {
     NEXT_PUBLIC_AGENTS_URL:
       process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001",
   };
-  if (streakRegistryId) webUpdates.NEXT_PUBLIC_STREAK_REGISTRY_ID = streakRegistryId;
-  if (streakAdminId) webUpdates.NEXT_PUBLIC_STREAK_ADMIN_ID = streakAdminId;
+  // NEXT_PUBLIC_STREAK_ADMIN_ID — dropped in R33. The web streak
+  // surface (StreakProfile / StreakWelcomeBanner / useUserStreakId /
+  // DailyPredictionCard) reads only NEXT_PUBLIC_STREAK_REGISTRY_ID.
+  // Writing the admin id here created a dead env key that confused
+  // operators reading apps/web/.env.local after a resume.
   if (prizePoolId) webUpdates.NEXT_PUBLIC_PRIZE_POOL_ID = prizePoolId;
   if (prizeAdminId) webUpdates.NEXT_PUBLIC_PRIZE_ADMIN_ID = prizeAdminId;
   if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
   if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
-  if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  // NEXT_PUBLIC_AGENT_POLICY_ID — dropped in R33 (see the matching
+  // note in bootstrap-gamification.ts). The web bundle reads the
+  // package id via NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID and does not
+  // need the per-policy object id.
   // ProfileRegistry — paired with the agents-side write above so the
   // /settings page can build create_profile / set_country_code PTBs
   // after a resume.
