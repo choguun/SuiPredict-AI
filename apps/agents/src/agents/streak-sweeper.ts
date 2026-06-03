@@ -37,7 +37,6 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import {
   acquireSweepLock,
-  completeSweepRun,
   dayIndexFor,
   getSweepRun,
   recordDailyScore,

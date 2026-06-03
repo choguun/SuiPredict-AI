@@ -39,7 +39,23 @@ export function ConnectModal() {
         provider: "google",
         clientId: googleClientId,
         redirectUrl: redirectUrl,
-        network: "testnet",
+        // R39 audit fix: read the network from the same env var
+        // `lib/dapp-kit.ts` uses. R34 fixed the gRPC client
+        // (R34:1) but missed the Enoki zkLogin flow — its
+        // `network` field is passed to EnokiFlow independently
+        // of the dAppKit client and is what selects which
+        // network the zkLogin ephemeral keypair is bound to.
+        // A mainnet deploy with the old `network: "testnet"`
+        // would mint a testnet zkLogin session: the Google
+        // OAuth round-trip would succeed, but every subsequent
+        // signAndExecuteTransaction would target the wrong
+        // chain.
+        network:
+          (process.env.NEXT_PUBLIC_SUI_NETWORK as
+            | "testnet"
+            | "mainnet"
+            | "devnet"
+            | undefined) ?? "testnet",
       })
       .then((url) => {
         window.location.href = url;

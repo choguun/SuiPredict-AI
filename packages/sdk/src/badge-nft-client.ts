@@ -76,6 +76,45 @@ export function buildMintBadgeTx(args: {
   return tx;
 }
 
+/**
+ * Build a PTB that mints a `StreakBadge` directly into a user's
+ * Kiosk. Skips the transfer-to-sender hop, so the badge is
+ * immediately listable / displayable on TradePort or any
+ * kiosk-aware market.
+ *
+ * R39 audit fix: this wrapper was previously missing — the
+ * file's own docstring advertised `mint_badge_to_kiosk` and
+ * the agents indexer polls for the `BadgePlacedInKiosk` event,
+ * but no client could ever produce one. Without this wrapper
+ * the kiosk flow is dead in both directions.
+ *
+ * The `&mut UserStreak` and `&Clock` parameters match the
+ * existing `buildMintBadgeTx` slot order; the new args are
+ * the `&mut Kiosk` and `&KioskOwnerCap` shared objects the
+ * caller owns. The Move entry point emits both
+ * `BadgeMinted` and `BadgePlacedInKiosk` events.
+ */
+export function buildMintBadgeToKioskTx(args: {
+  streakId: string;
+  tier: number; // 1..5
+  kioskId: string;
+  kioskCapId: string;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::badge_nft::mint_badge_to_kiosk`,
+    typeArguments: [],
+    arguments: [
+      tx.object(args.streakId),
+      tx.pure.u8(args.tier),
+      tx.object(args.kioskId),
+      tx.object(args.kioskCapId),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
 // ============================================================
 // Reads
 // ============================================================

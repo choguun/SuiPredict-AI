@@ -10,6 +10,7 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   SUI_GRPC_URL,
+  SUI_NETWORK,
   dollarsToDusdc,
   dollarsToStrike,
 } from "./constants.js";
@@ -25,8 +26,14 @@ export interface TxResult {
 }
 
 export function createClient(): SuiClient {
+  // R39 audit fix: was hardcoded to `"testnet"`. Now reads
+  // `SUI_NETWORK` from the env (resolved in `constants.ts`),
+  // so a mainnet deploy no longer silently submits every
+  // agent tx — fund_pool, fund_parlay_pool, place_order,
+  // prize-admin, etc. — to the testnet cluster. The
+  // `SUI_GRPC_URL` constant follows the same env.
   return new SuiGrpcClient({
-    network: "testnet",
+    network: SUI_NETWORK,
     baseUrl: SUI_GRPC_URL,
   });
 }

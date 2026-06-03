@@ -139,8 +139,18 @@ function getDb(): Database.Database {
       -- were unsubscribed before r15 — the streak page showed stale
       -- current_streak until the next indexer poll). Powers the
       -- activity feed in the streak UI and the milestones card.
+      --
+      -- R39 audit fix: the previous schema used a synthetic
+      -- id INTEGER PRIMARY KEY AUTOINCREMENT column and a
+      -- comment claiming INSERT OR IGNORE was idempotent on
+      -- (user, kind, day_index). It was not — without a
+      -- UNIQUE constraint on those three columns, INSERT OR
+      -- IGNORE matched on the synthetic id, every re-poll
+      -- produced a fresh row, and the streak activity feed
+      -- accumulated duplicates. The PK is now the natural
+      -- (user, kind, day_index) triple; see the migration
+      -- block below for how pre-R39 databases are converted.
       CREATE TABLE IF NOT EXISTS streak_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
         user TEXT NOT NULL,
         kind TEXT NOT NULL,            -- 'updated' | 'broken' | 'milestone'
         new_streak INTEGER,
@@ -149,12 +159,19 @@ function getDb(): Database.Database {
         multiplier_tier INTEGER,
         milestone INTEGER,             -- 1=3d, 2=7d, 3=14d, 4=30d, 5=100d
         day_index INTEGER NOT NULL,
-        ts_ms INTEGER NOT NULL
+        ts_ms INTEGER NOT NULL,
+        PRIMARY KEY (user, kind, day_index)
       );
       CREATE INDEX IF NOT EXISTS idx_streak_events_user_ts
         ON streak_events(user, ts_ms DESC);
       CREATE INDEX IF NOT EXISTS idx_streak_events_ts
         ON streak_events(ts_ms DESC);
+      -- The actual migration logic that rebuilds the table with
+      -- a natural PK lives OUTSIDE this template literal — see
+      -- the try / catch block below that runs the
+      -- ALTER/INSERT/SELECT/DROP/RENAME sequence for pre-R39
+      -- databases. Putting it here would break the outer
+      -- template parser.
 
       -- Per-pool weekly settlement state. Populated by the indexer
       -- from PoolSettled events. The leaderboard-worker uses
@@ -252,6 +269,66 @@ function getDb(): Database.Database {
     } catch {
       // Column already present; ignore.
     }
+    // R39 migration: pre-R39 databases have a synthetic
+    // id INTEGER PRIMARY KEY AUTOINCREMENT on
+    // streak_events instead of the natural PK on
+    // (user, kind, day_index). SQLite does not support
+    // adding a PRIMARY KEY to an existing table, so the
+    // only way to add the constraint is to rebuild the
+    // table: copy distinct rows (deduplicating along the
+    // way) into a new table, drop the old one, rename.
+    // The dedup keeps the earliest row per
+    // (user, kind, day_index) via MIN(ts_ms). Without
+    // this migration the INSERT OR IGNORE in
+    // recordStreakEvent is a no-op (matches on the
+    // synthetic id) and every re-poll produces a
+    // duplicate row.
+    try {
+      const cols = getDb()
+        .prepare("PRAGMA table_info(streak_events)")
+        .all() as Array<{ name: string; pk: number }>;
+      const hasNaturalPK =
+        cols.length > 0 &&
+        cols.some(
+          (c) =>
+            c.pk > 0 &&
+            ["user", "kind", "day_index"].includes(c.name),
+        );
+      if (cols.length > 0 && !hasNaturalPK) {
+        db.exec(
+          [
+            "CREATE TABLE IF NOT EXISTS streak_events_new (",
+            "  user TEXT NOT NULL,",
+            "  kind TEXT NOT NULL,",
+            "  new_streak INTEGER,",
+            "  final_streak INTEGER,",
+            "  longest_streak INTEGER,",
+            "  multiplier_tier INTEGER,",
+            "  milestone INTEGER,",
+            "  day_index INTEGER NOT NULL,",
+            "  ts_ms INTEGER NOT NULL,",
+            "  PRIMARY KEY (user, kind, day_index)",
+            ");",
+            "INSERT OR IGNORE INTO streak_events_new",
+            "  (user, kind, new_streak, final_streak, longest_streak,",
+            "   multiplier_tier, milestone, day_index, ts_ms)",
+            "  SELECT user, kind, new_streak, final_streak, longest_streak,",
+            "         multiplier_tier, milestone, day_index, MIN(ts_ms)",
+            "    FROM streak_events",
+            "   GROUP BY user, kind, day_index;",
+            "DROP TABLE streak_events;",
+            "ALTER TABLE streak_events_new RENAME TO streak_events;",
+            "CREATE INDEX IF NOT EXISTS idx_streak_events_user_ts",
+            "  ON streak_events(user, ts_ms DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_streak_events_ts",
+            "  ON streak_events(ts_ms DESC);",
+          ].join("\n"),
+        );
+      }
+    } catch {
+      // Fresh database; the CREATE TABLE above already
+      // declared the natural PK. Nothing to migrate.
+    }
     db.exec(`
 
       -- StreakBadge mints - mirrored from badge_nft::BadgeMinted
@@ -277,9 +354,17 @@ function getDb(): Database.Database {
 }
 
 /**
- * Append a row to `streak_events`. Idempotent on (user, kind, day_index)
- * via `INSERT OR IGNORE` so a re-poll of the same Move event doesn't
- * double-write. `kind` is one of `'updated' | 'broken' | 'milestone'`.
+ * Append a row to `streak_events`. Idempotent on the natural
+ * PRIMARY KEY `(user, kind, day_index)` via `INSERT OR IGNORE`
+ * so a re-poll of the same Move event doesn't double-write.
+ * `kind` is one of `'updated' | 'broken' | 'milestone'`.
+ *
+ * R39 audit fix: the previous comment claimed this was
+ * idempotent but the table used a synthetic `id INTEGER
+ * PRIMARY KEY AUTOINCREMENT`, so `INSERT OR IGNORE` matched
+ * on `id` and every re-poll produced a duplicate row. The
+ * PK is now the natural triple (see the schema and migration
+ * above).
  */
 export function recordStreakEvent(ev: {
   user: string;
@@ -649,15 +734,16 @@ export function acquireSweepLock(
   return true;
 }
 
-export function completeSweepRun(dayIndex: number): void {
-  getDb()
-    .prepare(
-      `UPDATE sweep_runs
-       SET status='complete', finished_at_ms=?
-       WHERE day_index=?`,
-    )
-    .run(Date.now(), dayIndex);
-}
+// R39 audit fix: `completeSweepRun` was a no-op-on-disk dead
+// export — imported in streak-sweeper.ts:40 (per the audit) but
+// never called; the sweeper's `finally` block uses
+// `releaseSweepLock` (which DELETEs the row) on both success
+// and failure paths. Removing this function is safe and avoids
+// confusing future readers who might wire it up and create a
+// double-bookkeeping race with `acquireSweepLock`'s recovery
+// logic (which treats a `status='complete'` row older than
+// `staleMs` as "needs recovery" — the exact opposite of its
+// apparent meaning).
 
 export function releaseSweepLock(dayIndex: number): void {
   // Mark the in-flight sweep as complete (or remove it entirely if it
@@ -803,9 +889,19 @@ export function upsertParlayCreated(p: {
  * Advance `legs_recorded` / `legs_lost` from a `ParlayLegRecorded`
  * event. Idempotent on `(parlay_id, leg_index)` via the `parlay_legs`
  * sidecar table — the `INSERT OR IGNORE` returns 0 changes on a
- * re-poll, and we only then skip the `legs_lost` increment. The
- * `legs_recorded` field is set, not added, so out-of-order delivery
- * can never push the count above the actual recorded count.
+ * re-poll, and we only then skip the `legs_lost` increment.
+ *
+ * R39 audit fix: the previous SQL did an absolute assignment
+ * `legs_recorded = @leg_index + 1`, which was vulnerable to
+ * out-of-order delivery in the under-count direction. If leg
+ * 2 arrived before leg 0, the first UPDATE set the count to
+ * 3 and the second set it to 1 — a "regression" the
+ * parlay-worker treats as "more legs still pending", deferring
+ * finalization until the next poll. The new SQL uses
+ * `MAX(legs_recorded, @leg_index + 1)` so the count can only
+ * monotonically increase. The `legs_lost` increment remains
+ * safe because the `INSERT OR IGNORE` above guarantees we
+ * only enter the UPDATE for a newly-seen leg.
  */
 export function recordParlayLeg(p: {
   parlay_id: string;
@@ -838,7 +934,7 @@ export function recordParlayLeg(p: {
   if (insert.changes === 0) return; // re-poll, already recorded
   db.prepare(
     `UPDATE parlays
-       SET legs_recorded = @leg_index + 1,
+       SET legs_recorded = MAX(legs_recorded, @leg_index + 1),
            legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
            updated_at_ms = @ts_ms
      WHERE parlay_id = @parlay_id`,

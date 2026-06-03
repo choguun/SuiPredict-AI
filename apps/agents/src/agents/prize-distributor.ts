@@ -21,7 +21,7 @@
  * impossible; for a sponsored demo, the user must sign their own PTB
  * (out of scope for this file).
  */
-import { createClient } from "@suipredict/sdk";
+import { createClient, readPrizePoolBalance } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
@@ -61,30 +61,16 @@ export async function runPrizeDistributor(
   const client = createClient();
   let poolBalance = 0n;
   try {
-    const { objects } = await client.getObjects({
-      objectIds: [PRIZE_POOL_ID],
-      include: { json: true },
-    });
-    const obj = objects[0];
-    if (obj && !(obj instanceof Error)) {
-      // `PrizePool.balance` is a `Balance<T>` (a Sui framework wrapper
-      // around `u64`). The gRPC JSON view renders the wrapper as
-      // `{"value": "..."}` nested under the field name. Earlier versions
-      // of this code read `json.balance` directly and tried to coerce
-      // an object to a bigint, which threw inside the try/catch and
-      // bailed the whole distributor on every healthy deploy. Accept
-      // both shapes so we work across Sui versions that may flatten
-      // the inner u64 directly.
-      const json = obj.json as
-        | { balance?: string | number | { value: string | number } }
-        | null;
-      const field = json?.balance;
-      if (typeof field === "string" || typeof field === "number") {
-        poolBalance = BigInt(field);
-      } else if (field && typeof field === "object" && "value" in field) {
-        poolBalance = BigInt(field.value);
-      }
-    }
+    // R39 audit fix: replaced the inline shape detection with
+    // the SDK's `readPrizePoolBalance` helper. The inline copy
+    // accepted `{"value": "..."}` or `string|number` but
+    // silently fell through to `poolBalance = 0n` if the Sui
+    // gRPC view ever adds a new wrapper (e.g. `{"fields": ...}`
+    // for a future `Balance<T>` representation). The SDK
+    // helper uses the same `asBalance` codepath as every
+    // other protocol read, so future shape changes are picked
+    // up in one place.
+    poolBalance = await readPrizePoolBalance(client, PRIZE_POOL_ID);
   } catch (e) {
     return recordResult("PrizeDistributor", {
       action: "skip",

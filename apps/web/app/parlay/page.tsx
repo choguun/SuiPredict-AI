@@ -295,8 +295,17 @@ export default function ParlayPage() {
       setLegs([]);
       // The agents indexer (task #17) will start polling ParlayCreated
       // and run record_leg as markets resolve. Invalidate the markets
-      // query so the "available to bet" list refreshes.
-      queryClient.invalidateQueries({ queryKey: ["markets"] });
+      // list query so the "available to bet" list refreshes.
+      //
+      // R39 audit fix: the key was previously `["markets"]`,
+      // which no client owns — the portfolio page uses
+      // `["marketsList"]` and the daily-prediction card uses
+      // `["dailyMarkets"]`. An invalidation on a non-existent
+      // key is a silent no-op, so the markets list would stay
+      // stale until the next 8s `refetchInterval` tick. Match
+      // the actual registered keys.
+      queryClient.invalidateQueries({ queryKey: ["marketsList"] });
+      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

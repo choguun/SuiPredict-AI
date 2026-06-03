@@ -51,7 +51,34 @@ export const AGENT_POLICY_PACKAGE_ID =
   process.env.MARKET_PACKAGE_ID ??
   "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf";
 
-export const SUI_GRPC_URL = "https://fullnode.testnet.sui.io:443";
+// R39 audit fix: the URL used to be hardcoded to testnet, which
+// meant a mainnet deploy (where the agents service reads
+// `SUI_NETWORK=mainnet` for the JSON-RPC client) was silently
+// submitting every on-chain tx — fund_pool, fund_parlay_pool,
+// place_order, prize-admin, etc. — to the testnet cluster.
+// Now we resolve the URL from `SUI_NETWORK` at module load; the
+// web/agents build inlines the same env var on the read path
+// (see `lib/dapp-kit.ts` for the web side). The fallback to
+// testnet preserves the pre-R39 default for local dev.
+function resolveSuiGrpcUrl(): string {
+  const explicit =
+    process.env.NEXT_PUBLIC_SUI_RPC_URL ?? process.env.SUI_RPC_URL;
+  if (explicit) return explicit;
+  const network = (process.env.SUI_NETWORK ?? "testnet").toLowerCase();
+  if (network === "mainnet") return "https://fullnode.mainnet.sui.io:443";
+  if (network === "devnet") return "https://fullnode.devnet.sui.io:443";
+  return "https://fullnode.testnet.sui.io:443";
+}
+
+export const SUI_GRPC_URL = resolveSuiGrpcUrl();
+
+function resolveSuiNetwork(): "testnet" | "mainnet" | "devnet" {
+  const n = (process.env.SUI_NETWORK ?? "testnet").toLowerCase();
+  if (n === "mainnet" || n === "devnet" || n === "testnet") return n;
+  return "testnet";
+}
+
+export const SUI_NETWORK: "testnet" | "mainnet" | "devnet" = resolveSuiNetwork();
 
 export function dollarsToStrike(dollars: number | bigint): bigint {
   return BigInt(dollars) * PRICE_SCALE;

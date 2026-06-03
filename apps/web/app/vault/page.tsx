@@ -15,6 +15,7 @@ import {
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
+import { clampNumberString } from "@/lib/forms";
 import { toast } from "sonner";
 
 const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
@@ -211,7 +212,17 @@ export default function VaultPage() {
             type="number"
             min="1"
             value={amount}
-            onChange={(e) => setAmount(Number(e.target.value))}
+            // R39 audit fix: route through clampNumberString so a
+            // paste of "abc", "1.2.3", "1e10", or "-5" can't land
+            // `amount` in NaN. The `deposit` handler immediately
+            // does `BigInt(Math.round(amount * 1_000_000))` which
+            // throws `TypeError: Cannot mix BigInt and other
+            // types` on NaN — caught by the try/catch but toasted
+            // as a generic "Deposit failed" with no actionable
+            // detail. R37 added this pattern to the legacy
+            // `legacy/predict/vault` page but missed the new
+            // top-level vault page.
+            onChange={(e) => setAmount(clampNumberString(e.target.value, 1, 1, 1_000_000))}
             className="w-full sm:w-64 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 transition-all"
           />
           <div className="flex w-full sm:w-auto gap-3">

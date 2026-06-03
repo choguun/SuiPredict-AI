@@ -1580,7 +1580,16 @@ function VaultAdminCard(props: {
               min="1"
               step="1"
               value={allocateAmount}
-              onChange={(e) => setAllocateAmount(e.target.value)}
+              // R39 audit fix: mirror the R37 regex filter used
+              // by the sibling withdraw input on the same page.
+              // `allocateAmount` is the raw string, and a paste
+              // of "abc" or "1.2.3" would land in state as-is
+              // and then be coerced with `Number(allocateAmount)`
+              // → NaN at submit time, throwing on the
+              // BigInt round-trip. The withdraw input already
+              // uses `.replace(/[^0-9.]/g, "")`; apply the same
+              // here for consistency.
+              onChange={(e) => setAllocateAmount(e.target.value.replace(/[^0-9.]/g, ""))}
               placeholder="1000000 (= 1 DUSDC)"
               className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
                 overAvailable

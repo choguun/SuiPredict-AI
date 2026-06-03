@@ -17,7 +17,10 @@ interface Decision {
 interface AgentManifestEntry {
   name: string;
   cron: string;
-  kind: "primary" | "legacy";
+  // R39 audit fix: `"legacy"` was a dead variant — the
+  // /agents/manifest endpoint no longer emits it. Tightening
+  // the type here surfaces any stale usage at compile time.
+  kind: "primary";
 }
 
 interface HealthEnvelope {
@@ -27,6 +30,16 @@ interface HealthEnvelope {
   prize_pool_id?: string;
   parlay_pool_id?: string;
   streak_registry_id?: string;
+  // R39 audit fix: surface the resolved network, gRPC URL, and
+  // referral-treasury address from the agents /health payload.
+  // Without these the operator has no way to confirm the
+  // agents service is talking to the cluster they expect (R34
+  // fixed the gRPC client but the /health envelope never echoed
+  // the resolved value) or that the referral-sweep destination
+  // matches the web's expectation.
+  network?: string;
+  grpc_url?: string;
+  referral_treasury_address?: string;
   ts_ms?: number;
 }
 
@@ -43,9 +56,15 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   LeaderboardWorker: "Weekly rollup of daily scores to weekly archive",
   PrizeAdmin: "Funds the weekly prize pool and signs claim payloads",
   PrizeDistributor: "Auto-claims top-10 prizes for the prior week",
-  MarketStrategist: "Legacy Predict BTC mints",
-  PLPManager: "Legacy dUSDC PLP supply",
-  RedeemKeeper: "Legacy permissionless redeem",
+  // R39 audit fix: the MarketStrategist/PLPManager/RedeemKeeper
+  // entries were dead — the agents service's /agents/manifest
+  // only registers primary agents, so the `kind: "legacy"`
+  // branch in the UI never matched. Drop the legacy entries
+  // (and the legacy filter / card further down) so a future
+  // reader doesn't waste time looking for a path that wires
+  // them up. The legacy Predict code under
+  // `apps/web/app/legacy/predict/` is reachable directly and
+  // is documented separately.
 };
 
 // Env-side ID values, used to detect drift between the web bundle and
@@ -67,6 +86,16 @@ const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvel
   // no operator visibility.
   { env: "NEXT_PUBLIC_PARLAY_POOL_ID", label: "PARLAY_POOL_ID", runtimeKey: "parlay_pool_id" },
   { env: "NEXT_PUBLIC_STREAK_REGISTRY_ID", label: "STREAK_REGISTRY_ID", runtimeKey: "streak_registry_id" },
+  // R39 audit fix: track the referral-treasury address so a
+  // drift between the web bundle and the agents runtime
+  // destination would surface here instead of silently
+  // mis-routing the keeper's DeepBook-fee sweeps. The
+  // `network` and `grpc_url` are surfaced separately below
+  // because they have no env-key counterpart in the web
+  // bundle — Next.js inlines the value of
+  // `process.env.NEXT_PUBLIC_SUI_NETWORK` directly into the
+  // dAppKit config (see `lib/dapp-kit.ts`).
+  { env: "NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS", label: "REFERRAL_TREASURY_ADDRESS", runtimeKey: "referral_treasury_address" },
 ];
 
 function driftLinesFor(h: HealthEnvelope): string[] {
@@ -143,7 +172,11 @@ export default function AgentsPage() {
   }, []);
 
   const primary = manifest.filter((a) => a.kind === "primary");
-  const legacy = manifest.filter((a) => a.kind === "legacy");
+  // R39 audit fix: drop the `legacy` filter and the dead card
+  // below. The agents service's /agents/manifest never emits
+  // `kind: "legacy"` entries, so this was always `[]`. See
+  // `apps/agents/src/index.ts:345` (the manifest handler) for
+  // the corresponding agents-side cleanup.
 
   return (
     <div className="space-y-8">
@@ -198,27 +231,6 @@ export default function AgentsPage() {
           </Card>
         ))}
       </div>
-
-      {legacy.length > 0 && (
-        <Card title="Legacy Predict agents (optional)" className="border-white/10">
-          <p className="text-xs text-zinc-500 mb-4">
-            Enable with ENABLE_LEGACY_PREDICT_AGENTS=true
-          </p>
-          <div className="grid gap-4 sm:grid-cols-3">
-            {legacy.map((a) => (
-              <div key={a.name} className="text-sm rounded-xl border border-white/5 bg-black/20 p-3">
-                <span className="font-medium text-zinc-300 block mb-1">{a.name}</span>
-                <p className="text-zinc-500 text-xs">
-                  {AGENT_DESCRIPTIONS[a.name] ?? "Legacy Predict agent."}
-                </p>
-                <p className="mt-1 text-[10px] font-mono text-zinc-700">
-                  cron: {a.cron}
-                </p>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
       <Card title="Recent Decisions" className="border-white/10">
         {error && <p className="text-sm text-amber-400 mb-3">{error}</p>}

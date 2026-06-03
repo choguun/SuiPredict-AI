@@ -314,6 +314,21 @@ function startHealthServer() {
           // the parlay UI and seeing the move abort.
           parlay_pool_id: process.env.PARLAY_POOL_ID ?? "",
           streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
+          // R39 audit fix: expose the resolved network + RPC URL
+          // so the operator can confirm the agents service is
+          // talking to the cluster they expect. R34 fixed the
+          // gRPC client's network config but the /health payload
+          // never echoed the resolved value, so a mainnet deploy
+          // submitting to testnet (or vice versa) had no
+          // operator-visible signal until a user-reported
+          // failure. Also include the referral-treasury address
+          // — drift between NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS
+          // and REFERRAL_TREASURY_ADDRESS would silently route
+          // claim sweeps to the wrong destination.
+          network: process.env.SUI_NETWORK ?? "testnet",
+          grpc_url: process.env.SUI_RPC_URL ?? "",
+          referral_treasury_address:
+            process.env.REFERRAL_TREASURY_ADDRESS ?? "",
           ts_ms: Date.now(),
         }),
       );
@@ -335,14 +350,18 @@ function startHealthServer() {
       //
       // Each entry has:
       //   { name, cron, kind: "primary" | "legacy" }
-      // `kind` is derived from the entry's name against a small
-      // whitelist; expand the whitelist (or move it to .env) if
-      // a future agent is added that doesn't fit the dichotomy.
-      const legacyNames = new Set([
-        "MarketStrategist",
-        "PLPManager",
-        "RedeemKeeper",
-      ]);
+      //
+      // R39 audit fix: drop the `legacyNames` whitelist. The
+      // names MarketStrategist/PLPManager/RedeemKeeper are not
+      // registered in `buildSchedule()` (the schedule only
+      // includes primary agents), so `legacyNames.has(s.name)`
+      // is always false here. The web page's
+      // `manifest.filter(m => m.kind === "legacy")` therefore
+      // always returns an empty array, and the "Legacy Predict
+      // agents" card never renders. Rather than wire up a
+      // fake legacy path, mark every entry as "primary" and
+      // let the web page drop the dead-card branch in lockstep
+      // (see apps/web/app/agents/page.tsx:202).
       const schedule = buildSchedule();
       res.writeHead(200, {
         "Content-Type": "application/json",
@@ -353,7 +372,7 @@ function startHealthServer() {
           schedule.map((s) => ({
             name: s.name,
             cron: s.cron,
-            kind: legacyNames.has(s.name) ? "legacy" : "primary",
+            kind: "primary",
           })),
         ),
       );
