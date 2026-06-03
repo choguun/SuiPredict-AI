@@ -14,8 +14,16 @@ export default function AuthCallbackPage() {
     const handleAuth = async () => {
       try {
         await enokiFlow.handleAuthCallback();
-        // Redirect back to home after successful auth
-        router.push("/");
+        // R28: honor a `?return=/some/path` query so a deep-link
+        // (e.g. /markets/<id>) that bounced through the auth gate
+        // comes back to the originating page after zkLogin finishes.
+        // Default to "/" when missing or when the value isn't a
+        // safe same-origin path (we never want to redirect to an
+        // external host after auth).
+        const params = new URLSearchParams(window.location.search);
+        const raw = params.get("return") ?? "/";
+        const safe = raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
+        router.push(safe);
       } catch (err) {
         console.error("Auth callback failed:", err);
         setError("Authentication failed. Please try again.");

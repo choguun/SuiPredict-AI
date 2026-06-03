@@ -29,7 +29,12 @@ import { Transaction } from "@mysten/sui/transactions";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import {
+  buildCreatePoolTx,
+  buildCreatePolicyTx,
+  buildCreateRegistryTx,
   buildCreateVaultTx,
+  buildInitFeeVaultTx,
+  buildRotatePubkeyTx,
   createClient,
   DEEP_TYPE,
   DUSDC_TYPE,
@@ -372,12 +377,11 @@ async function main() {
     }
     let initVaultDigest = "";
     {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::prediction_market::init_fee_vault`,
-        typeArguments: [DUSDC_TYPE],
-        arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
-      });
+      // R28: use the SDK builder so the bootstrap and any web
+      // admin calls share the same target / type-arg string. If
+      // `init_fee_vault` ever gains a parameter (e.g. a fee
+      // schedule), only the builder needs updating.
+      const tx = buildInitFeeVaultTx(protocolAdminCapId, signerAddr);
       const res = await executeTransaction(txClient, tx, signer);
       initVaultDigest = res.digest;
       log(`  init_fee_vault: ${initVaultDigest}`);
@@ -484,14 +488,12 @@ async function main() {
   } else {
     log("Setting PrizeAdmin pubkey on-chain...");
     {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::prize_pool::rotate_pubkey`,
-        arguments: [
-          tx.object(prizeAdminId),
-          tx.pure.vector("u8", prizePubkey),
-        ],
-      });
+      // R28: use SDK builder — keeps the pubkey-rotation target
+      // string in lock-step with prize-client's other builders.
+      const tx = buildRotatePubkeyTx(
+        prizeAdminId,
+        new Uint8Array(prizePubkey),
+      );
       const res = await executeTransaction(txClient, tx, signer);
       log(`  rotate_pubkey: ${res.digest}`);
     }
@@ -543,11 +545,12 @@ async function main() {
     log("Creating PrizePool<DBUSDC>...");
     let createPoolDigest = "";
     {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::prize_pool::create_pool`,
-        typeArguments: [DUSDC_TYPE],
-        arguments: [tx.object(seedCoinId), tx.pure.u64(INITIAL_WEEK)],
+      // R28: use SDK builder for create_pool. The builder accepts
+      // a params object so future parameter additions (e.g. a
+      // distribution schedule) only need to flow through one place.
+      const tx = buildCreatePoolTx({
+        initialCoinId: seedCoinId,
+        initialWeek: BigInt(INITIAL_WEEK),
       });
       const res = await executeTransaction(txClient, tx, signer);
       createPoolDigest = res.digest;
@@ -577,11 +580,10 @@ async function main() {
   } else {
     log("Creating MarketRegistry...");
     const registryDigest = await (async () => {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::registry::create_registry`,
-        arguments: [],
-      });
+      // R28: use SDK builder for create_registry. Trivial
+      // today, but routing the call through the builder keeps
+      // the package-id interpolation centralized.
+      const tx = buildCreateRegistryTx();
       const res = await executeTransaction(txClient, tx, signer);
       log(`  create_registry: ${res.digest}`);
       return res.digest;
@@ -656,15 +658,15 @@ async function main() {
       `Creating AgentPolicy (budget=${policyBudget} base, expires=${new Date(policyExpiryMs).toISOString()})...`,
     );
     const policyDigest = await (async () => {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::agent_policy::create_policy`,
-        arguments: [
-          tx.pure.address(signerAddr),
-          tx.pure.u64(policyBudget),
-          tx.pure.u64(policyExpiryMs),
-        ],
-      });
+      // R28: use SDK builder for create_policy. The builder
+      // accepts dollars (via dollarsToDusdc) and an expiry ms,
+      // matching the existing AGENT_MAX_BUDGET_USDC env convention
+      // and avoiding the bigint hand-multiplication that lived here.
+      const tx = buildCreatePolicyTx(
+        signerAddr,
+        Number(process.env.AGENT_MAX_BUDGET_USDC ?? "500"),
+        BigInt(policyExpiryMs),
+      );
       const res = await executeTransaction(txClient, tx, signer);
       log(`  create_policy: ${res.digest}`);
       return res.digest;

@@ -31,6 +31,12 @@ import { Transaction } from "@mysten/sui/transactions";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import {
+  buildCreatePoolTx,
+  buildCreatePolicyTx,
+  buildCreateRegistryTx,
+  buildCreateVaultTx,
+  buildInitFeeVaultTx,
+  buildRotatePubkeyTx,
   createClient,
   DUSDC_TYPE,
   executeTransaction,
@@ -216,12 +222,9 @@ async function main() {
       }
       log(`  ProtocolAdminCap: ${protocolAdminCapId}`);
       const initVaultDigest = await (async () => {
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${packageId}::prediction_market::init_fee_vault`,
-          typeArguments: [DUSDC_TYPE],
-          arguments: [tx.object(protocolAdminCapId), tx.pure.address(signerAddr)],
-        });
+        // R28: use SDK builder so the resume path matches
+        // bootstrap-gamification's target / type-arg string.
+        const tx = buildInitFeeVaultTx(protocolAdminCapId, signerAddr);
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
       })();
@@ -306,11 +309,12 @@ async function main() {
     }
     log("Setting PrizeAdmin pubkey on-chain...");
     {
-      const tx = new Transaction();
-      tx.moveCall({
-        target: `${packageId}::prize_pool::rotate_pubkey`,
-        arguments: [tx.object(prizeAdminId), tx.pure.vector("u8", prizePubkey)],
-      });
+      // R28: use SDK builder — keeps rotate_pubkey in sync with
+      // prize-client (used by the web's admin PrizePool card).
+      const tx = buildRotatePubkeyTx(
+        prizeAdminId,
+        new Uint8Array(prizePubkey),
+      );
       const res = await executeTransaction(txClient, tx, signer);
       log(`  rotate_pubkey: ${res.digest}`);
     }
@@ -353,11 +357,10 @@ async function main() {
       // 5) Create PrizePool
       log("Creating PrizePool<DBUSDC>...");
       const createPoolDigest = await (async () => {
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${packageId}::prize_pool::create_pool`,
-          typeArguments: [DUSDC_TYPE],
-          arguments: [tx.object(seedCoinId), tx.pure.u64(INITIAL_WEEK)],
+        // R28: use SDK builder. Mirrors bootstrap-gamification.
+        const tx = buildCreatePoolTx({
+          initialCoinId: seedCoinId,
+          initialWeek: BigInt(INITIAL_WEEK),
         });
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
@@ -382,11 +385,8 @@ async function main() {
     } else {
       log("Creating MarketRegistry...");
       const registryDigest = await (async () => {
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${packageId}::registry::create_registry`,
-          arguments: [],
-        });
+        // R28: use SDK builder.
+        const tx = buildCreateRegistryTx();
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
       })();
@@ -426,12 +426,9 @@ async function main() {
       log(`  VLP TreasuryCap: ${vlpTreasuryCapId}`);
       log("Creating ProtocolVault<DBUSDC>...");
       const vaultDigest = await (async () => {
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${packageId}::vault::create_vault`,
-          typeArguments: [DUSDC_TYPE],
-          arguments: [tx.object(vlpTreasuryCapId)],
-        });
+        // R28: use SDK builder. R27 had already migrated this in
+        // bootstrap-gamification — bringing resume-bootstrap in line.
+        const tx = buildCreateVaultTx(vlpTreasuryCapId, DUSDC_TYPE);
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
       })();
@@ -456,15 +453,12 @@ async function main() {
       const policyExpiryMs = Date.now() + 365 * 86_400_000;
       log(`Creating AgentPolicy (budget=${policyBudget}, expires=${new Date(policyExpiryMs).toISOString()})...`);
       const policyDigest = await (async () => {
-        const tx = new Transaction();
-        tx.moveCall({
-          target: `${packageId}::agent_policy::create_policy`,
-          arguments: [
-            tx.pure.address(signerAddr),
-            tx.pure.u64(policyBudget),
-            tx.pure.u64(policyExpiryMs),
-          ],
-        });
+        // R28: use SDK builder. dollarsToDusdc lives in the builder.
+        const tx = buildCreatePolicyTx(
+          signerAddr,
+          Number(process.env.AGENT_MAX_BUDGET_USDC ?? "500"),
+          BigInt(policyExpiryMs),
+        );
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
       })();
