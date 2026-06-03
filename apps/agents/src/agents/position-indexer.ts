@@ -32,6 +32,8 @@ import {
   markMarketUndisputed,
   markOrderCancelled,
   recordChainOrder,
+  recordRegisteredMarket,
+  recordRegistry,
   recordSettlement,
   recordVaultFlow,
   upsertMarket,
@@ -759,6 +761,35 @@ export async function runPositionIndexer(
     },
   );
 
+  // FeesWithdrawnEvent — admin sweeps accumulated fees from
+  // FeeVault<Q>. Emitted by prediction_market::withdraw_fees. The
+  // vault_flows table already accepts a `withdraw` kind; the
+  // "vault_id" is the FeeVault's id and "actor" is the admin
+  // (a different address from the user's deposit/withdraw actor
+  // recorded against the regular Vault).
+  const feesWithdrawn = await guardedPoll(
+    "FeesWithdrawn",
+    `${predictPackageId}::prediction_market::FeesWithdrawnEvent`,
+    "position_indexer.fees_withdrawn",
+    (ev) => {
+      const j = ev.parsedJson as {
+        admin?: string;
+        amount?: string | number;
+      };
+      if (!j?.admin || j?.amount == null) return;
+      const vaultId = process.env.FEE_VAULT_ID ?? "";
+      if (!vaultId) return;
+      const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      recordVaultFlow({
+        vault_id: vaultId,
+        kind: "withdraw",
+        actor: j.admin,
+        amount: Number(j.amount),
+        ts_ms: ts,
+      });
+    },
+  );
+
   // AgentActionEvent — fired by agent_policy.move's `authorize_spend`
   // and `log_action`. The on-chain stream is the only audit trail of
   // who spent what under which policy, so risk-monitor alerting and
@@ -799,15 +830,28 @@ export async function runPositionIndexer(
   // from registry.move. They fire once at registry init / per market
   // register, so the volume is negligible. Subscribing keeps the
   // indexer cursor consistent across the published event surface and
-  // surfaces the off-chain registry state for a future admin view
-  // (round-17 audit finding #4).
+  // populates the `registries` and `registered_markets` tables that
+  // the admin dashboard reads to show registry state and the
+  // registered-market index without an on-chain round-trip.
+  //
+  // The Move structs are:
+  //   struct RegistryCreated  { registry_id: ID, admin: address }
+  //   struct MarketRegistered { market_id: ID, market_index: u64 }
+  // Field names must match these exactly — the old handler read
+  // `registry_id` off MarketRegistered (which has no such field) and
+  // silently dropped every event; that bug was the H1 audit finding.
   const registryCreated = await guardedPoll(
     "RegistryCreated",
     `${predictPackageId}::registry::RegistryCreated`,
     "position_indexer.registry_created",
     (ev) => {
       const j = ev.parsedJson as { registry_id?: string; admin?: string };
-      if (!j?.registry_id) return;
+      if (!j?.registry_id || !j?.admin) return;
+      recordRegistry({
+        id: j.registry_id,
+        admin: j.admin,
+        ts_ms: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
+      });
     },
   );
 
@@ -816,8 +860,21 @@ export async function runPositionIndexer(
     `${predictPackageId}::registry::MarketRegistered`,
     "position_indexer.market_registered",
     (ev) => {
-      const j = ev.parsedJson as { registry_id?: string; market_id?: string };
-      if (!j?.registry_id || !j?.market_id) return;
+      const j = ev.parsedJson as {
+        market_id?: string;
+        market_index?: string | number;
+      };
+      if (!j?.market_id || j?.market_index == null) return;
+      const idx =
+        typeof j.market_index === "string"
+          ? parseInt(j.market_index, 10)
+          : j.market_index;
+      if (!Number.isFinite(idx)) return;
+      recordRegisteredMarket({
+        market_id: j.market_id,
+        market_index: idx,
+        ts_ms: ev.timestampMs ? Number(ev.timestampMs) : Date.now(),
+      });
     },
   );
 

@@ -463,3 +463,129 @@ fun test_invalid_outcome_aborts() {
     clock::destroy_for_testing(clock);
     ts::end(scenario);
 }
+
+#[test]
+/// Same-day replay: a second `record_participation` call for the
+/// same `day_index` must abort with EAlreadyRecordedToday. This is
+/// distinct from EStreakBroken (which fires for a non-consecutive
+/// day after at least one recorded day).
+#[expected_failure(abort_code = suipredict_agent_policy::streak_system::EAlreadyRecordedToday)]
+fun test_already_recorded_today_aborts() {
+    let (mut scenario, clock) = setup();
+    init_modules(&mut scenario);
+    create_user_streak(&mut scenario);
+
+    let day0 = clock::timestamp_ms(&clock) / DAY_MS;
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let admin = ts::take_shared<StreakAdmin>(&scenario);
+        let mut registry = ts::take_shared<StreakRegistry>(&scenario);
+        let mut streak = take_user_streak(&scenario);
+        streak_system::record_participation(
+            &admin, &mut registry, &mut streak, day0, OUTCOME_ALL_CORRECT, 1,
+            &clock, ts::ctx(&mut scenario),
+        );
+        ts::return_shared(admin);
+        ts::return_shared(registry);
+        ts::return_to_address(USER, streak);
+    };
+
+    // Re-submit the same day — should abort.
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let admin = ts::take_shared<StreakAdmin>(&scenario);
+        let mut registry = ts::take_shared<StreakRegistry>(&scenario);
+        let mut streak = take_user_streak(&scenario);
+        streak_system::record_participation(
+            &admin, &mut registry, &mut streak, day0, OUTCOME_ALL_CORRECT, 1,
+            &clock, ts::ctx(&mut scenario),
+        );
+        ts::return_shared(admin);
+        ts::return_shared(registry);
+        ts::return_to_address(USER, streak);
+    };
+
+    clock::destroy_for_testing(clock);
+    ts::end(scenario);
+}
+
+#[test]
+/// Calling `claim_badge` with a tier outside 1..=4 must abort with
+/// EInvalidTier. The off-chain `badge_nft::mint_badge` re-asserts
+/// this via `assert_eligible` so the contract-level test pins the
+/// behavior independently.
+#[expected_failure(abort_code = suipredict_agent_policy::streak_system::EInvalidTier)]
+fun test_claim_badge_invalid_tier_aborts() {
+    let (mut scenario, clock) = setup();
+    init_modules(&mut scenario);
+    create_user_streak(&mut scenario);
+
+    // No streak length needed — claim_badge validates tier before
+    // checking eligibility.
+    let day0 = clock::timestamp_ms(&clock) / DAY_MS;
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let admin = ts::take_shared<StreakAdmin>(&scenario);
+        let mut registry = ts::take_shared<StreakRegistry>(&scenario);
+        let mut streak = take_user_streak(&scenario);
+        streak_system::record_participation(
+            &admin, &mut registry, &mut streak, day0, OUTCOME_ALL_CORRECT, 1,
+            &clock, ts::ctx(&mut scenario),
+        );
+        ts::return_shared(admin);
+        ts::return_shared(registry);
+        ts::return_to_address(USER, streak);
+    };
+
+    ts::next_tx(&mut scenario, USER);
+    {
+        let mut streak = take_user_streak(&scenario);
+        streak_system::claim_badge(&mut streak, 9, ts::ctx(&mut scenario));
+        ts::return_to_address(USER, streak);
+    };
+
+    clock::destroy_for_testing(clock);
+    ts::end(scenario);
+}
+
+#[test]
+/// `rotate_admin` rejects `@0x0` so the admin address can never
+/// be zeroed out (which would brick the protocol — no one could
+/// ever rotate away from it).
+#[expected_failure(abort_code = suipredict_agent_policy::streak_system::EInvalidNewAdmin)]
+fun test_rotate_admin_to_zero_aborts() {
+    let (mut scenario, _clock) = setup();
+    init_modules(&mut scenario);
+
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let mut admin = ts::take_shared<StreakAdmin>(&scenario);
+        streak_system::rotate_admin(&mut admin, @0x0, ts::ctx(&mut scenario));
+        ts::return_shared(admin);
+    };
+
+    clock::destroy_for_testing(_clock);
+    ts::end(scenario);
+}
+
+#[test]
+/// `rotate_admin` is admin-only; a non-admin caller must abort
+/// with ENotAdmin. This pins the admin-gate independently of the
+/// `record_participation` admin check that was already covered by
+/// test_non_admin_cannot_record.
+#[expected_failure(abort_code = suipredict_agent_policy::streak_system::ENotAdmin)]
+fun test_rotate_admin_by_stranger_aborts() {
+    let (mut scenario, _clock) = setup();
+    init_modules(&mut scenario);
+
+    ts::next_tx(&mut scenario, USER);
+    {
+        let mut admin = ts::take_shared<StreakAdmin>(&scenario);
+        streak_system::rotate_admin(&mut admin, USER, ts::ctx(&mut scenario));
+        ts::return_shared(admin);
+    };
+
+    clock::destroy_for_testing(_clock);
+    ts::end(scenario);
+}

@@ -119,6 +119,27 @@ export function getDb(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_vault_flows_vault_ts
         ON vault_flows(vault_id, ts_ms DESC);
+
+      -- Registry tracking. Populated by the position-indexer from the
+      -- RegistryCreated / MarketRegistered events (registry.move). The
+      -- MarketRegistry itself is a single shared object so the
+      -- 'registries' table has at most one row in production, but
+      -- tracking its id+admin gives the admin dashboard a
+      -- confirmed-bootstrap signal. The 'registered_markets' table
+      -- mirrors the on-chain Table<u64, ID> index so the admin view
+      -- can list all known markets without an on-chain read.
+      CREATE TABLE IF NOT EXISTS registries (
+        id TEXT PRIMARY KEY,
+        admin TEXT NOT NULL,
+        ts_ms INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS registered_markets (
+        market_id TEXT PRIMARY KEY,
+        market_index INTEGER NOT NULL,
+        ts_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_registered_markets_index
+        ON registered_markets(market_index);
     `);
     migrateMarketColumns();
     seedDemoMarkets();
@@ -207,6 +228,68 @@ function migrateMarketColumns() {
       getDb().exec(`ALTER TABLE markets ADD COLUMN ${name} ${type}`);
     }
   }
+}
+
+/** Idempotent insert of a RegistryCreated event. */
+export function recordRegistry(row: {
+  id: string;
+  admin: string;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO registries (id, admin, ts_ms)
+       VALUES (@id, @admin, @ts_ms)
+       ON CONFLICT(id) DO UPDATE SET
+         admin = excluded.admin,
+         ts_ms = excluded.ts_ms`,
+    )
+    .run({ id: row.id, admin: row.admin, ts_ms: row.ts_ms });
+}
+
+/** Idempotent insert of a MarketRegistered event. */
+export function recordRegisteredMarket(row: {
+  market_id: string;
+  market_index: number;
+  ts_ms: number;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO registered_markets (market_id, market_index, ts_ms)
+       VALUES (@market_id, @market_index, @ts_ms)
+       ON CONFLICT(market_id) DO UPDATE SET
+         market_index = excluded.market_index,
+         ts_ms = excluded.ts_ms`,
+    )
+    .run({
+      market_id: row.market_id,
+      market_index: row.market_index,
+      ts_ms: row.ts_ms,
+    });
+}
+
+export interface RegisteredMarketRow {
+  market_id: string;
+  market_index: number;
+  ts_ms: number;
+}
+
+export function listRegisteredMarkets(limit = 200): RegisteredMarketRow[] {
+  return getDb()
+    .prepare(
+      `SELECT market_id, market_index, ts_ms
+         FROM registered_markets
+        ORDER BY market_index ASC
+        LIMIT ?`,
+    )
+    .all(limit) as RegisteredMarketRow[];
+}
+
+export function getRegistry(): { id: string; admin: string; ts_ms: number } | null {
+  const row = getDb()
+    .prepare(`SELECT id, admin, ts_ms FROM registries ORDER BY ts_ms ASC LIMIT 1`)
+    .get() as { id: string; admin: string; ts_ms: number } | undefined;
+  return row ?? null;
 }
 
 function seedDemoMarkets() {
@@ -420,6 +503,17 @@ export function getOrderBook(marketId: string): OrderBookSnapshot {
   // `price` field is a u64 in DeepBook's scaled-integer space, so we
   // need both scalars to normalize back to the [0,1] range the UI
   // formats as bps (`price_bps = normalized * 10_000`).
+  //
+  // `chain_orders.filled_quantity` is declared for forward-compat
+  // (a future fill-event subscription would write to it) but the
+  // current Sui Predict contract does NOT emit an OrderFilled event
+  // — fills happen inside DeepBook's matching engine and we have no
+  // off-chain mirror of partial fill state. We therefore do NOT filter
+  // on `co.filled_quantity < co.quantity`: every uncancelled placed
+  // order is shown at its full quantity. For partial-fill state, the
+  // /markets/:id/book REST route already overlays DeepBook's
+  // authoritative `getOrderBookDepth` in the maker-bot path
+  // (apps/agents/src/agents/market-maker.ts).
   const rows = getDb()
     .prepare(
       `SELECT co.*, m.deepbook_base_scalar, m.deepbook_quote_scalar
@@ -427,7 +521,6 @@ export function getOrderBook(marketId: string): OrderBookSnapshot {
        LEFT JOIN markets m ON co.market_id = m.id
        WHERE co.market_id = ?
          AND co.cancelled_at_ms IS NULL
-         AND co.filled_quantity < co.quantity
        ORDER BY co.price`,
     )
     .all(marketId) as Record<string, unknown>[];
@@ -435,7 +528,8 @@ export function getOrderBook(marketId: string): OrderBookSnapshot {
   const bids: OrderBookLevel[] = [];
   const asks: OrderBookLevel[] = [];
   for (const r of rows) {
-    const remaining = (r.quantity as number) - (r.filled_quantity as number);
+    // No fill tracking → treat the full `quantity` as remaining.
+    const remaining = r.quantity as number;
     if (remaining <= 0) continue;
     const baseScalar = (r.deepbook_base_scalar as number | null) ?? 1_000_000;
     const quoteScalar = (r.deepbook_quote_scalar as number | null) ?? 1_000_000;

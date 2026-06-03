@@ -10,7 +10,7 @@
  *   - streakIdForUser             — view: lookup streak ID by owner address
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID, DUSDC_TYPE } from "./constants.js";
+import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
 

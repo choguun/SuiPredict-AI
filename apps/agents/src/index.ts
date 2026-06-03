@@ -58,7 +58,16 @@ function validateBootConfig(): void {
     { name: "PrizeAdmin Key",     envVar: "PRIZE_ADMIN_PRIVATE_KEY",       agent: "PrizeDistributor", required: false },
     { name: "Prize Weekly Amt",   envVar: "PRIZE_WEEKLY_AMOUNT",           agent: "PrizeDistributor", required: false },
     { name: "ParlayPool",         envVar: "PARLAY_POOL_ID",                agent: "ParlayWorker",   required: true },
-    { name: "ProfileRegistry",    envVar: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", agent: "ParlayWorker", required: false },
+    { name: "ProfileRegistry",    envVar: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", agent: "ProfileRoute", required: false },
+    // DeepBook wiring. The market-maker bot needs a BalanceManager
+    // (signed for the agent's hot wallet); the deepbook registry
+    // defaults to testnet if blank so it's `required: false`. Pool
+    // key is a per-deployment string, not optional but the bot can
+    // self-discover per-market keys via listRegisteredMarkets, so
+    // it's also `required: false`.
+    { name: "BalanceManager",     envVar: "BALANCE_MANAGER_ID",            agent: "MarketMaker",    required: false },
+    { name: "DeepBookRegistry",   envVar: "DEEPBOOK_REGISTRY_ID",          agent: "MarketMaker",    required: false },
+    { name: "PredictPoolKey",     envVar: "PREDICT_DEEPBOOK_POOL_KEY",     agent: "MarketMaker",    required: false },
   ];
 
   const missing: VarCheck[] = [];

@@ -152,7 +152,7 @@ async function main() {
     log(`PARLAY_POOL_ID already set: ${poolId} — re-using.`);
   } else {
     log("Creating ParlayPool<DBUSDC>…");
-    const tx = buildCreateParlayPoolTx(MAX_PAYOUT_BPS);
+    const tx = buildCreateParlayPoolTx(MAX_PAYOUT_BPS, DUSDC_TYPE);
     const res = await executeTransaction(txClient, tx, signer);
     poolId = await findSharedObjectId(
       client,

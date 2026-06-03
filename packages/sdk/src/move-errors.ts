@@ -17,6 +17,10 @@
  *   - prize_pool.move             (E0..E9)
  *   - agent_policy.move           (E0..E6)
  *   - parlay.move                 (E0..E14)
+ *   - user_profile.move           (E0..E3)
+ *   - badge_nft.move              (E0..E1)
+ *   - vault.move                  (E0, E1, E3)
+ *   - registry.move               (E0..E1)
  *
  * If a new module is added, the abort codes must be added here too —
  * but the unknown-code fallback still returns a usable "Move abort N"
@@ -28,7 +32,11 @@ export type MoveModule =
   | "streak_system"
   | "prize_pool"
   | "agent_policy"
-  | "parlay";
+  | "parlay"
+  | "user_profile"
+  | "badge_nft"
+  | "vault"
+  | "registry";
 
 /**
  * `code: number` per module. We don't key the map by `(module, code)`
@@ -110,12 +118,40 @@ const PARLAY_CODES: Record<number, string> = {
   14: "EInvalidNewAdmin",
 };
 
+const USER_PROFILE_CODES: Record<number, string> = {
+  0: "EProfileExists",
+  1: "ENotOwner",
+  2: "EInvalidCountry",
+  3: "EInvalidForecasterKind",
+};
+
+const BADGE_NFT_CODES: Record<number, string> = {
+  0: "ENotStreakOwner",
+  1: "EInvalidTier",
+};
+
+const VAULT_CODES: Record<number, string> = {
+  0: "ENotAdmin",
+  1: "EZeroAmount",
+  // Code 2 is intentionally absent — vault.move never assigned one.
+  3: "EInsufficientAvailable",
+};
+
+const REGISTRY_CODES: Record<number, string> = {
+  0: "ENotAdmin",
+  1: "EMarketExists",
+};
+
 const MODULE_CODES: Record<MoveModule, Record<number, string>> = {
   prediction_market: PREDICTION_MARKET_CODES,
   streak_system: STREAK_SYSTEM_CODES,
   prize_pool: PRIZE_POOL_CODES,
   agent_policy: AGENT_POLICY_CODES,
   parlay: PARLAY_CODES,
+  user_profile: USER_PROFILE_CODES,
+  badge_nft: BADGE_NFT_CODES,
+  vault: VAULT_CODES,
+  registry: REGISTRY_CODES,
 };
 
 /** Extract the abort code from a Sui Move-abort error message.

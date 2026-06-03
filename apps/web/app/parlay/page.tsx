@@ -20,6 +20,7 @@ import {
   type MarketInfo,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { ParlayHistory } from "@/components/ParlayHistory";
 import { toast } from "sonner";
 
 const MIN_LEGS = 2;
@@ -388,6 +389,8 @@ export default function ParlayPage() {
           </div>
         </Card>
       )}
+
+      <ParlayHistory userAddress={account?.address ?? null} />
     </div>
   );
 }

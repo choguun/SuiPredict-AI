@@ -148,3 +148,46 @@ fun test_set_country_then_clear() {
 
     ts::end(scenario);
 }
+
+#[test]
+/// Symmetric to test_set_country_by_non_owner_aborts: a non-owner
+/// calling `set_forecaster_kind` must abort with ENotOwner. This
+/// pins the admin-gate on the second mutator and gives a regression
+/// signal if the gate ever drifts.
+#[expected_failure(abort_code = suipredict_agent_policy::user_profile::ENotOwner)]
+fun test_set_forecaster_kind_by_non_owner_aborts() {
+    let mut scenario = ts::begin(ADMIN);
+    init_modules(&mut scenario);
+    create_for(&mut scenario, USER);
+
+    ts::next_tx(&mut scenario, OTHER);
+    {
+        let mut profile = ts::take_from_address<UserProfile>(&scenario, USER);
+        user_profile::set_forecaster_kind(&mut profile, 2, ts::ctx(&mut scenario));
+        ts::return_to_address(USER, profile);
+    };
+
+    ts::end(scenario);
+}
+
+#[test]
+/// `init_for_testing` creates the shared `ProfileRegistry` so the
+/// agent can call `profile_id_for` against it. This test pins the
+/// bootstrap shape: a fresh init produces a registry with an empty
+/// `profiles` table, ready for `create_profile` to populate.
+fun test_profile_init_creates_registry() {
+    let mut scenario = ts::begin(ADMIN);
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        user_profile::init_for_testing(ts::ctx(&mut scenario));
+    };
+    ts::next_tx(&mut scenario, ADMIN);
+    {
+        let registry = ts::take_shared<ProfileRegistry>(&scenario);
+        // No user has a profile yet.
+        assert!(user_profile::profile_id_for(&registry, USER).is_none(), 0);
+        assert!(user_profile::profile_id_for(&registry, ADMIN).is_none(), 1);
+        ts::return_shared(registry);
+    };
+    ts::end(scenario);
+}

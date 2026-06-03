@@ -22,6 +22,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { TransactionObjectInput } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import type { SuiClient } from "./predict-client.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -36,14 +37,21 @@ const PKG = () => AGENT_POLICY_PACKAGE_ID;
  *
  * `max_payout_bps` is the cap on the per-parlay multiplier (e.g.
  * 50_000 = 5x). The on-chain check requires `>= BPS` (10_000).
+ *
+ * `coinType` is the generic `Q` (the collateral coin type, e.g.
+ * `DUSDC_TYPE` for dUSDC). The Move function is generic over `Q`,
+ * so the PTB must supply `typeArguments: [coinType]` or the
+ * transaction will fail at signature with a type-argument-count
+ * mismatch.
  */
 export function buildCreateParlayPoolTx(
   maxPayoutBps: number | bigint,
+  coinType: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::create_pool`,
-    typeArguments: [],
+    typeArguments: [coinType],
     arguments: [tx.pure.u64(maxPayoutBps)],
   });
   return tx;
@@ -89,15 +97,20 @@ export function buildParlayAdminWithdrawTx(
 /**
  * Build a PTB that rotates the pool admin to `newAdmin`. The on-chain
  * check rejects `@0x0` (EInvalidNewAdmin).
+ *
+ * `coinType` is required: `parlay::rotate_admin<Q>` is generic over
+ * the pool's collateral type, so the PTB must supply
+ * `typeArguments: [coinType]`.
  */
 export function buildRotateParlayAdminTx(
   poolId: string,
   newAdmin: string,
+  coinType: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::rotate_admin`,
-    typeArguments: [],
+    typeArguments: [coinType],
     arguments: [tx.object(poolId), tx.pure.address(newAdmin)],
   });
   return tx;
@@ -107,15 +120,20 @@ export function buildRotateParlayAdminTx(
  * Build a PTB that updates the pool's max payout multiplier. The
  * new cap must be >= BPS (10_000) — the on-chain check rejects
  * anything below 1x.
+ *
+ * `coinType` is required: `parlay::set_max_payout_bps<Q>` is generic
+ * over the pool's collateral type, so the PTB must supply
+ * `typeArguments: [coinType]`.
  */
 export function buildSetMaxPayoutBpsTx(
   poolId: string,
   newMaxBps: number | bigint,
+  coinType: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::set_max_payout_bps`,
-    typeArguments: [],
+    typeArguments: [coinType],
     arguments: [tx.object(poolId), tx.pure.u64(newMaxBps)],
   });
   return tx;
@@ -215,39 +233,37 @@ export function buildFinalizeParlayTx(args: {
 // Reads
 // ============================================================
 
+async function readParlayObject(
+  client: SuiClient,
+  objectId: string,
+): Promise<Record<string, unknown> | null> {
+  const { object } = await client.core.getObject({
+    objectId,
+    include: { json: true },
+  });
+  return (object.json as Record<string, unknown> | null) ?? null;
+}
+
 /** Fetch the current `pool_balance` (u64) for a `ParlayPool<Q>`. */
 export async function readParlayPoolBalance(
-  client: { getObject: Function },
+  client: SuiClient,
   poolId: string,
   coinType: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: poolId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as
-    | { pool_balance?: string; id?: { id?: string } }
-    | undefined;
+  const fields = await readParlayObject(client, poolId);
   if (!fields) return 0n;
-  // Balance is a `Balance<Q>` wrapper. Sui renders it as a struct with
-  // a `value` field. The parlay struct stores it under
-  // `pool_balance`; for a generic-object read, look for either the
-  // raw `value` or the wrapped form.
-  const bal = (fields as Record<string, unknown>).pool_balance as
+  // `pool_balance` is a `Balance<Q>` wrapper. Sui's gRPC JSON renders
+  // it as a struct with a `value` field. For backward compat with
+  // older Sui JSON encodings, also accept the raw string form.
+  const bal = fields.pool_balance as
     | string
-    | { fields?: { value?: string | number } };
+    | { fields?: { value?: string | number } }
+    | undefined;
   if (typeof bal === "string") return BigInt(bal);
   if (bal && typeof bal === "object" && "fields" in bal) {
-    const v = (bal as { fields: { value?: string | number } }).fields.value;
+    const v = bal.fields?.value;
     if (v != null) return BigInt(v);
   }
-  // Fallback: many Sui RPCs return a `value` sibling.
-  const direct = (fields as Record<string, unknown>).value as
-    | string
-    | number
-    | undefined;
-  if (direct != null) return BigInt(direct);
   return 0n;
   // coinType is reserved for the call site that needs to disambiguate
   // phantom types — kept in the signature so a typed client can pass
@@ -257,114 +273,74 @@ export async function readParlayPoolBalance(
 
 /** Fetch the `admin` (address) for a `ParlayPool<Q>`. */
 export async function readParlayPoolAdmin(
-  client: { getObject: Function },
+  client: SuiClient,
   poolId: string,
 ): Promise<string> {
-  const res = await client.getObject({
-    id: poolId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { admin?: string } | undefined;
-  return fields?.admin ?? "";
+  const fields = await readParlayObject(client, poolId);
+  return (fields?.admin as string | undefined) ?? "";
 }
 
 /** Fetch the `max_payout_bps` (u64) for a `ParlayPool<Q>`. */
 export async function readParlayMaxPayoutBps(
-  client: { getObject: Function },
+  client: SuiClient,
   poolId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: poolId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { max_payout_bps?: string | number } | undefined;
-  return BigInt(fields?.max_payout_bps ?? 0);
+  const fields = await readParlayObject(client, poolId);
+  return BigInt((fields?.max_payout_bps as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `total_volume` (u64) for a `ParlayPool<Q>`. */
 export async function readParlayTotalVolume(
-  client: { getObject: Function },
+  client: SuiClient,
   poolId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: poolId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { total_volume?: string | number } | undefined;
-  return BigInt(fields?.total_volume ?? 0);
+  const fields = await readParlayObject(client, poolId);
+  return BigInt((fields?.total_volume as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `total_paid_out` (u64) for a `ParlayPool<Q>`. */
 export async function readParlayTotalPaidOut(
-  client: { getObject: Function },
+  client: SuiClient,
   poolId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: poolId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { total_paid_out?: string | number } | undefined;
-  return BigInt(fields?.total_paid_out ?? 0);
+  const fields = await readParlayObject(client, poolId);
+  return BigInt((fields?.total_paid_out as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `collateral_amount` (u64) snapshot for a `Parlay<Q>`. */
 export async function readParlayCollateral(
-  client: { getObject: Function },
+  client: SuiClient,
   parlayId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: parlayId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { collateral_amount?: string | number } | undefined;
-  return BigInt(fields?.collateral_amount ?? 0);
+  const fields = await readParlayObject(client, parlayId);
+  return BigInt((fields?.collateral_amount as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `payout_bps` (u64) for a `Parlay<Q>`. */
 export async function readParlayPayoutBps(
-  client: { getObject: Function },
+  client: SuiClient,
   parlayId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: parlayId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { payout_bps?: string | number } | undefined;
-  return BigInt(fields?.payout_bps ?? 0);
+  const fields = await readParlayObject(client, parlayId);
+  return BigInt((fields?.payout_bps as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `owner` (address) for a `Parlay<Q>`. */
 export async function readParlayOwner(
-  client: { getObject: Function },
+  client: SuiClient,
   parlayId: string,
 ): Promise<string> {
-  const res = await client.getObject({
-    id: parlayId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { owner?: string } | undefined;
-  return fields?.owner ?? "";
+  const fields = await readParlayObject(client, parlayId);
+  return (fields?.owner as string | undefined) ?? "";
 }
 
 /** Fetch the `legs_recorded` (u64) for a `Parlay<Q>`. */
 export async function readParlayLegsRecorded(
-  client: { getObject: Function },
+  client: SuiClient,
   parlayId: string,
 ): Promise<bigint> {
-  const res = await client.getObject({
-    id: parlayId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { legs_recorded?: string | number } | undefined;
-  return BigInt(fields?.legs_recorded ?? 0);
+  const fields = await readParlayObject(client, parlayId);
+  return BigInt((fields?.legs_recorded as string | number | undefined) ?? 0);
 }
 
 /** Fetch the `legs_lost` (u64) for a `Parlay<Q>`. */
