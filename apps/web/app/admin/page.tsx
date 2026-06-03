@@ -17,6 +17,9 @@
  *      Authority: connected wallet must equal `pool.admin` (set at
  *      `parlay::create_pool` time). The /parlay page slider is then
  *      clamped to this new cap on the next page load.
+ *   5. Parlay pool admin: withdraw dUSDC from the pool's balance, or
+ *      rotate the admin address to a new key. Both gated by
+ *      `pool.admin` at the on-chain call site.
  *
  * The page is intentionally not linked in the nav. Bookmark
  * `/admin` (or set `NEXT_PUBLIC_ADMIN_ADDRESS` to your wallet so the
@@ -34,6 +37,8 @@ import {
   buildResolveDisputeTx,
   buildCreateMarketTx,
   buildSetMaxPayoutBpsTx,
+  buildParlayAdminWithdrawTx,
+  buildRotateParlayAdminTx,
   isValidSuiAddress,
 } from "@suipredict/sdk";
 import { Card, Stat, Badge } from "@/components/ui";
@@ -184,6 +189,11 @@ export default function AdminPage() {
         onSubmit={(d) =>
           setLastAction({ label: "Set parlay max payout", digest: d })
         }
+        dAppKit={dAppKit}
+        disabled={!walletConnected || !isAdmin}
+      />
+      <ParlayAdminCard
+        onSubmit={(label, d) => setLastAction({ label, digest: d })}
         dAppKit={dAppKit}
         disabled={!walletConnected || !isAdmin}
       />
@@ -735,3 +745,176 @@ function SetMaxPayoutBpsCard(props: {
 // SDK/src/constants.ts so the admin card works on a fresh deploy
 // without a fully configured env.
 const DUSDC_TYPE_FALLBACK = "0xe9a73ee16dabd84dad0a0638a8d4c7d5bf09b76f50a705a705::dusdc::DUSDC";
+
+// Resolved once at module load. Used by every parlay admin card to
+// pass the pool's generic type argument. Same fallback pattern as
+// the SetMaxPayoutBpsCard above — the production pool is dUSDC.
+function dUSDCType(): string {
+  return process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID
+    ? `${process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID}::dusdc::DUSDC`
+    : DUSDC_TYPE_FALLBACK;
+}
+
+// ============================================================
+// Parlay admin (withdraw + rotate admin)
+// ============================================================
+
+function ParlayAdminCard(props: {
+  onSubmit: (label: string, digest: string) => void;
+  dAppKit: ReturnType<typeof useDAppKit>;
+  disabled: boolean;
+}) {
+  const [withdrawAmount, setWithdrawAmount] = useState<string>("");
+  const [newAdmin, setNewAdmin] = useState<string>("");
+  const [busy, setBusy] = useState<null | "withdraw" | "rotate">(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [digest, setDigest] = useState<string | null>(null);
+
+  const parsedAmount = Number(withdrawAmount);
+  const isWithdrawValid =
+    Number.isFinite(parsedAmount) &&
+    Number.isInteger(parsedAmount) &&
+    parsedAmount > 0;
+  // Reject obvious non-address input up front. The Sui runtime
+  // rejects malformed addresses anyway, but checking here gives a
+  // friendlier error than a Move-abort stack trace.
+  const isRotateValid = isValidSuiAddress(newAdmin.trim());
+
+  async function submitWithdraw() {
+    setErr(null);
+    setDigest(null);
+    if (!PARLAY_POOL_ID) {
+      setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
+      return;
+    }
+    if (!isWithdrawValid) {
+      setErr("Withdraw amount must be a positive integer (base units of dUSDC).");
+      return;
+    }
+    setBusy("withdraw");
+    try {
+      const tx = buildParlayAdminWithdrawTx(
+        PARLAY_POOL_ID,
+        parsedAmount,
+        dUSDCType(),
+      );
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit("Parlay admin withdraw", d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitRotate() {
+    setErr(null);
+    setDigest(null);
+    if (!PARLAY_POOL_ID) {
+      setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
+      return;
+    }
+    if (!isRotateValid) {
+      setErr("New admin must be a 0x-prefixed 64-char hex address.");
+      return;
+    }
+    setBusy("rotate");
+    try {
+      const tx = buildRotateParlayAdminTx(
+        PARLAY_POOL_ID,
+        newAdmin.trim(),
+        dUSDCType(),
+      );
+      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const d = txDigest(r);
+      setDigest(d);
+      props.onSubmit("Rotate parlay admin", d);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card title="Parlay pool admin">
+      <div className="space-y-6">
+        <p className="text-sm text-zinc-400">
+          Two admin-gated operations on the parlay pool. Both require
+          the connected wallet to be
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">pool.admin</code>
+          (set at
+          <code className="mx-1 rounded bg-white/5 px-1 py-0.5 text-xs">parlay::create_pool</code>
+          time). Withdraw pulls dUSDC out of the pool; rotate moves
+          admin authority to a new key (one-way — the new admin
+          becomes the only address that can call admin functions).
+        </p>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block space-y-1 text-xs text-zinc-400">
+            Withdraw amount (dUSDC base units)
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              placeholder="1000000 (= 1 DUSDC)"
+              className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
+                isWithdrawValid
+                  ? "border-white/10 focus:border-rose-400"
+                  : "border-rose-500/40"
+              }`}
+              disabled={props.disabled || busy !== null}
+            />
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={submitWithdraw}
+              disabled={props.disabled || busy !== null || !isWithdrawValid}
+              className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "withdraw" ? "Submitting…" : "Withdraw"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block space-y-1 text-xs text-zinc-400">
+            New admin address
+            <input
+              type="text"
+              value={newAdmin}
+              onChange={(e) => setNewAdmin(e.target.value)}
+              placeholder="0x…"
+              className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
+                isRotateValid
+                  ? "border-white/10 focus:border-rose-400"
+                  : "border-rose-500/40"
+              }`}
+              disabled={props.disabled || busy !== null}
+            />
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={submitRotate}
+              disabled={props.disabled || busy !== null || !isRotateValid}
+              className="rounded-md bg-gradient-to-r from-rose-500 to-amber-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-rose-500/20 transition hover:from-rose-400 hover:to-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "rotate" ? "Submitting…" : "Rotate admin"}
+            </button>
+          </div>
+        </div>
+
+        {err && <p className="text-xs text-rose-400">{err}</p>}
+        {digest && (
+          <p className="break-all text-xs text-emerald-300">✓ {digest}</p>
+        )}
+      </div>
+    </Card>
+  );
+}

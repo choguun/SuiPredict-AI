@@ -65,6 +65,42 @@ export default function ParlayPage() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<CreatedParlay | null>(null);
+  // Connected wallet's DUSDC picture. We need a single coin >= the
+  // 1 DUSDC collateral for `create_parlay` (the on-chain call takes
+  // one coin). Show the total balance + largest coin so the user
+  // knows up front whether they can submit, and the refresh button
+  // re-fetches after they receive more DUSDC.
+  const [dusdcBalance, setDusdcBalance] = useState<{
+    total: bigint;
+    largest: bigint;
+    coinCount: number;
+  } | null>(null);
+  const [loadingBalance, setLoadingBalance] = useState(false);
+
+  async function refreshDusdcBalance() {
+    if (!client || !account) return;
+    setLoadingBalance(true);
+    try {
+      const { objects } = await client.core.listCoins({
+        owner: account.address,
+        coinType: DUSDC_TYPE,
+      });
+      const total = objects.reduce(
+        (acc, c) => acc + BigInt(c.balance),
+        BigInt(0),
+      );
+      const largest = objects.reduce(
+        (acc, c) => (BigInt(c.balance) > acc ? BigInt(c.balance) : acc),
+        BigInt(0),
+      );
+      setDusdcBalance({ total, largest, coinCount: objects.length });
+    } catch {
+      // RPC outage — leave the previous balance on screen rather than
+      // clearing it; the next refresh will recover.
+    } finally {
+      setLoadingBalance(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -139,6 +175,24 @@ export default function ParlayPage() {
     };
   }, [client, created?.parlayId]);
 
+  // Refresh the DUSDC balance whenever the connected account changes.
+  // Polling is overkill here — the user only needs a fresh read on
+  // connect, after receiving dUSDC, or after submitting a parlay
+  // (which absorbs one coin into the pool).
+  useEffect(() => {
+    if (!client || !account) {
+      setDusdcBalance(null);
+      return;
+    }
+    refreshDusdcBalance();
+    // Also re-fetch right after a successful create — `created`
+    // transitions from null to a value, which means a coin just got
+    // absorbed. The refetch reads the post-absorb state.
+    // (Effect deps re-run on the next render after setCreated; the
+    // created?.parlayId dependency below is what makes that fire.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, account?.address, created?.parlayId]);
+
   const payoutBps = useMemo(() => BigInt(Math.round(multiplier * 10_000)), [multiplier]);
 
   const canSubmit =
@@ -146,7 +200,14 @@ export default function ParlayPage() {
     !!PARLAY_POOL_ID &&
     legs.length >= MIN_LEGS &&
     legs.length <= MAX_LEGS &&
-    multiplier >= 1;
+    multiplier >= 1.5 &&
+    // Disabling the submit button on insufficient balance gives the
+    // user a clear visual signal that the tx will reject, without
+    // making them wait for the on-chain check. The actual error
+    // toast at submit time still fires if the user tries (e.g. with
+    // a stale balance read).
+    !!dusdcBalance &&
+    dusdcBalance.largest >= COLLATERAL_ATOMS;
 
   const handleAddLeg = (marketId: string) => {
     if (legs.length >= MAX_LEGS) return;
@@ -362,6 +423,45 @@ export default function ParlayPage() {
             Pool cap: {(maxPayoutBps / 10_000).toFixed(1)}x.
             Pool must hold enough to cover worst-case payout.
           </p>
+          <div className="flex items-center gap-3 border-t border-white/5 pt-3 text-xs text-zinc-400">
+            <span>
+              Your DUSDC:{" "}
+              <span
+                className={
+                  dusdcBalance && dusdcBalance.largest >= COLLATERAL_ATOMS
+                    ? "font-mono text-emerald-300"
+                    : "font-mono text-rose-300"
+                }
+              >
+                {dusdcBalance
+                  ? `${(Number(dusdcBalance.total) / 1_000_000).toFixed(2)}`
+                  : loadingBalance
+                    ? "…"
+                    : "—"}
+              </span>{" "}
+              DUSDC
+              {dusdcBalance && dusdcBalance.coinCount > 1 && (
+                <span className="text-zinc-500">
+                  {" "}
+                  (largest coin:{" "}
+                  {(Number(dusdcBalance.largest) / 1_000_000).toFixed(2)})
+                </span>
+              )}
+            </span>
+            {dusdcBalance && dusdcBalance.largest < COLLATERAL_ATOMS && (
+              <span className="text-rose-300">
+                · need 1.00 in a single coin to submit
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={refreshDusdcBalance}
+              disabled={loadingBalance}
+              className="ml-auto rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-300 transition hover:bg-white/10 disabled:opacity-40"
+            >
+              {loadingBalance ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
         </div>
       </Card>
 

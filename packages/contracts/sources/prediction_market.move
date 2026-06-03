@@ -525,6 +525,7 @@ public fun dispute_market<Q>(
         now <= market.resolved_ms + DISPUTE_WINDOW_MS,
         EDisputeWindowExpired,
     );
+    assert!(market.dispute_count == 0, EAlreadyDisputed);
     market.disputed = true;
     market.dispute_count = market.dispute_count + 1;
     market.dispute_evidence_uri = evidence_uri;

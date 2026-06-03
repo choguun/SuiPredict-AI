@@ -191,3 +191,72 @@ fun dispute_freezes_market_and_increments_count() {
     clock.destroy_for_testing();
     ts::end(scenario);
 }
+
+// ============================================================
+// dispute_market — double-dispute guard
+// ============================================================
+
+/// Calling `dispute_market` twice on the same market must abort with
+/// `EAlreadyDisputed`. Without this guard a re-dispute would re-freeze
+/// the market and re-emit a `MarketDisputedEvent`, leaving the
+/// /dispute page and the parlay worker (`record_leg`) to chase
+/// contradictory state. Reachable from the web /dispute page if a
+/// user submits twice (the UI is single-shot today, but a stale tab
+/// or a refresh mid-submit could re-trigger the form). Round-24
+/// audit finding.
+#[test, expected_failure(abort_code = prediction_market::EAlreadyDisputed)]
+fun dispute_market_twice_aborts() {
+    let mut scenario = ts::begin(CREATOR);
+    let now = 2_000_000;
+    let mut market = fresh_market(now, &mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    clock.set_for_testing(now);
+    ts::next_tx(&mut scenario, CREATOR);
+    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    ts::next_tx(&mut scenario, STRANGER);
+    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
+    // Second dispute must abort — `disputed_for_testing` is now true.
+    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence-2", &clock, ts::ctx(&mut scenario));
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
+
+// ============================================================
+// resolve_dispute — not-disputed guard
+// ============================================================
+
+/// Calling `resolve_dispute` on a market that was never disputed
+/// must abort with `ENotDisputed`. The /admin ResolveDisputeCard
+/// calls this on a market-id the operator pastes in; if they paste
+/// a non-disputed market the tx would silently no-op without this
+/// check (the field is already false). Reachable from the admin
+/// panel. Round-24 audit finding.
+#[test, expected_failure(abort_code = prediction_market::ENotDisputed)]
+fun resolve_dispute_on_unresolved_market_aborts() {
+    // The on-chain entry point isn't reachable from this test file
+    // because `resolve_dispute` is a public function that takes the
+    // market and an outcome; calling it without a prior dispute
+    // exercises the `ENotDisputed` guard. The full function takes a
+    // `DisputeEvidence` reference — for the test we use the public
+    // entry pattern. (`resolve_dispute` is declared as
+    // `public fun resolve_dispute<Q>(market, outcome, ctx)`, with
+    // the `assert!(market.disputed, ENotDisputed)` check at the top
+    // — the dispute evidence struct is created by the
+    // `dispute_market` caller and stored on the market.)
+    //
+    // NOTE: the assertion order in `resolve_dispute` is
+    //   1. ENotCreator  (sender must equal market.creator)
+    //   2. ENotDisputed (this test exercises this branch)
+    //   3. EInvalidOutcome
+    // so the test must run as the CREATOR (not a stranger) so the
+    // creator check passes and we land on ENotDisputed.
+    let mut scenario = ts::begin(CREATOR);
+    let mut market = fresh_market(0, &mut scenario);
+    // No resolve_market, no dispute_market — market is fresh and
+    // never disputed. Calling resolve_dispute must abort with
+    // ENotDisputed (the creator check passes).
+    prediction_market::resolve_dispute<SUI>(&mut market, 1, ts::ctx(&mut scenario));
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
