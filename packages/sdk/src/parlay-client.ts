@@ -61,17 +61,33 @@ export function buildCreateParlayPoolTx(
  * Build a PTB that tops up an existing `ParlayPool<Q>`. Anyone can
  * call this — the function doesn't gate on admin. Useful for the
  * protocol seeding bot and partner donations.
+ *
+ * R38 audit fix: the on-chain `parlay::fund_pool<Q>` takes a
+ * `Coin<Q>` BY VALUE and absorbs the entire balance into
+ * `pool.pool_balance`. The previous builder passed
+ * `tx.object(coinId)` directly, which would have drained the
+ * user's full DUSDC balance. Split `amountAtoms` off the source
+ * coin in-PTB and pass the split result, matching the R36
+ * parlay::create_parlay fix.
  */
 export function buildFundParlayPoolTx(
   poolId: string,
   coinId: string,
+  amountAtoms: number | bigint,
   coinType: string,
 ): Transaction {
+  const amount = BigInt(amountAtoms);
+  if (amount <= 0n) {
+    throw new Error(
+      `buildFundParlayPoolTx: amountAtoms must be > 0 (got ${amountAtoms})`,
+    );
+  }
   const tx = new Transaction();
+  const [fundCoin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
   tx.moveCall({
     target: `${PKG()}::parlay::fund_pool`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.object(coinId)],
+    arguments: [tx.object(poolId), tx.object(fundCoin)],
   });
   return tx;
 }

@@ -19,8 +19,14 @@ import {
 // and the web client. Falling back to testnet preserves the
 // pre-R34 default for local dev; a production deploy is expected
 // to set NEXT_PUBLIC_SUI_NETWORK explicitly.
+//
+// R38 audit fix: the previous code also read `process.env.SUI_NETWORK`
+// (no NEXT_PUBLIC_ prefix) as a fallback. Only NEXT_PUBLIC_* vars
+// are inlined into the browser bundle by Next.js — the bare
+// `SUI_NETWORK` would always be `undefined` in the web runtime, so
+// the fallback was dead code that gave the false impression of
+// supporting a non-prefixed env. Drop it.
 const SUI_NETWORK = (process.env.NEXT_PUBLIC_SUI_NETWORK ??
-  process.env.SUI_NETWORK ??
   "testnet") as "testnet" | "mainnet" | "devnet";
 const FULLNODE_URL =
   process.env.NEXT_PUBLIC_SUI_RPC_URL ??

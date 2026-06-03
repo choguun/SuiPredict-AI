@@ -148,6 +148,47 @@ async function main() {
   console.log(`\n  DUSDC type: ${DUSDC_TYPE}`);
 
   console.log(`\n=== ${passed} passed, ${failed} failed, ${missing} missing ===\n`);
+
+  // R38 audit fix: surface PrizeAdmin threshold warnings that the
+  // on-chain checks above can't catch. The PrizeAdmin agent reads
+  // PRIZE_FUND_AMOUNT and PRIZE_POOL_MIN_BALANCE from env on every
+  // tick — when the value is "0" (the default for
+  // PRIZE_POOL_MIN_BALANCE) or the env is unset, the agent's
+  // "no DUSDC >= amount" check short-circuits and the pool
+  // silently never refills. A green `passed` count above would
+  // otherwise give the operator a false sense of safety.
+  const prizeFundAmount = process.env.PRIZE_FUND_AMOUNT ?? "";
+  const prizePoolMinBalance = process.env.PRIZE_POOL_MIN_BALANCE ?? "";
+  const weeklyAmount = process.env.PRIZE_WEEKLY_AMOUNT ?? "";
+  let thresholdWarn = 0;
+  if (!prizeFundAmount || prizeFundAmount === "0") {
+    if (weeklyAmount && weeklyAmount !== "0") {
+      console.log(
+        `  [warn]  PRIZE_FUND_AMOUNT unset/0 — PrizeAdmin will skip every cycle. ` +
+          `Set it to at least PRIZE_WEEKLY_AMOUNT (${weeklyAmount}).`,
+      );
+    } else {
+      console.log(
+        `  [warn]  PRIZE_FUND_AMOUNT unset/0 and PRIZE_WEEKLY_AMOUNT unset/0 — ` +
+          "PrizeAdmin will skip every cycle (no auto top-up).",
+      );
+    }
+    thresholdWarn++;
+  }
+  if (!prizePoolMinBalance) {
+    console.log(
+      `  [warn]  PRIZE_POOL_MIN_BALANCE unset — defaults to 0, which means the ` +
+        "PrizeAdmin will fund on every cycle (potentially draining the agent wallet).",
+    );
+    thresholdWarn++;
+  }
+  if (thresholdWarn > 0) {
+    console.log(
+      `  (${thresholdWarn} PrizeAdmin threshold warning${thresholdWarn === 1 ? "" : "s"} — ` +
+        "these are advisory, not failures.)",
+    );
+  }
+
   if (failed > 0) process.exit(1);
 }
 

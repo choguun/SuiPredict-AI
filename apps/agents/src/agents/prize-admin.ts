@@ -74,7 +74,16 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
         .filter((c) => BigInt(c.balance) >= PRIZE_FUND_AMOUNT)
         .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
       if (eligible) {
-        const fundTx = buildFundPoolTx(PRIZE_POOL_ID, eligible.objectId);
+        // R38 audit fix: pass PRIZE_FUND_AMOUNT explicitly so the
+        // builder splits exactly that many atoms off the source
+        // coin in-PTB. The previous call would have drained the
+        // entire eligible coin (the R36 parlay::create_parlay fix
+        // applied here for the prize pool).
+        const fundTx = buildFundPoolTx(
+          PRIZE_POOL_ID,
+          eligible.objectId,
+          PRIZE_FUND_AMOUNT,
+        );
         const r = await executeTransaction(client, fundTx, ctx.signer);
         fundedAmount = PRIZE_FUND_AMOUNT;
         notes.push(

@@ -153,10 +153,15 @@ export default function SettingsPage() {
     try {
       const tx = buildRevokePolicyTx(policyId);
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R38 audit fix: same R30/R32/R37 pattern — bail with an
+      // explicit error rather than rendering "Revoked! Tx: unknown…"
+      // on a Failed/EffectsCert result. The previous code fell
+      // through to the literal "unknown" digest.
+      if (result.$kind !== "Transaction") {
+        setStatus("Revoke failed on-chain");
+        return;
+      }
+      const digest = result.Transaction.digest;
       setStatus(`Revoked! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
     } catch (e) {
@@ -178,10 +183,16 @@ export default function SettingsPage() {
         ? buildPausePolicyTx(policyId)
         : buildUnpausePolicyTx(policyId);
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : "unknown";
+      // R38 audit fix: same R30/R32/R37 pattern. Bail on a
+      // non-Transaction result rather than rendering
+      // "Paused! Tx: unknown…" / "Unpaused! Tx: unknown…".
+      if (result.$kind !== "Transaction") {
+        setStatus(
+          `${pause ? "Pause" : "Unpause"} failed on-chain`,
+        );
+        return;
+      }
+      const digest = result.Transaction.digest;
       setStatus(`${pause ? "Paused" : "Unpaused"}! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
     } catch (e) {

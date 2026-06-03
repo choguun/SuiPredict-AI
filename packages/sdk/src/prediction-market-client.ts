@@ -886,14 +886,30 @@ export function createMarketDeepBookClient(
 export function buildVaultDepositTx(
   vaultId: string,
   coinId: string,
+  amountAtoms: number | bigint,
   quoteType: string = DUSDC_TYPE,
   recipient?: string,
 ): Transaction {
+  // R38 audit fix: the on-chain `vault::deposit` takes a
+  // `Coin<QuoteCoin>` BY VALUE and absorbs the entire balance
+  // into the vault. The previous builder passed `tx.object(coinId)`
+  // directly, which would have drained the user's full deposit
+  // coin. Split `amountAtoms` off the source coin in-PTB and pass
+  // the split result, matching the R36 parlay::create_parlay fix.
+  const amount = BigInt(amountAtoms);
+  if (amount <= 0n) {
+    throw new Error(
+      `buildVaultDepositTx: amountAtoms must be > 0 (got ${amountAtoms})`,
+    );
+  }
   const tx = new Transaction();
+  const [depositCoin] = tx.splitCoins(tx.object(coinId), [
+    tx.pure.u64(amount),
+  ]);
   const vlp = tx.moveCall({
     target: `${PKG()}::vault::deposit`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vaultId), tx.object(coinId)],
+    arguments: [tx.object(vaultId), tx.object(depositCoin)],
   });
   tx.transferObjects([vlp], tx.pure.address(recipient ?? "@{sender}"));
   return tx;

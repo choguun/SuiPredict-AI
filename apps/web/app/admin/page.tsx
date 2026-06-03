@@ -95,9 +95,13 @@ const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(raw
   : "testnet";
 const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 
-function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
-  return r.$kind === "Transaction" ? r.Transaction!.digest : "submitted";
-}
+// R38 audit fix: the local `txDigest` helper that returned
+// "submitted" on Failed/EffectsCert has been removed. All 9
+// signAndExecuteTransaction call sites in the admin cards now
+// do an explicit `r.$kind !== "Transaction"` early-return and
+// read `r.Transaction.digest` directly. The previous helper
+// also made it trivial for new call sites to silently swallow
+// the "submitted" fallback and not surface real errors.
 
 function shortAddr(a: string | null | undefined): string {
   if (!a) return "—";
@@ -543,7 +547,17 @@ function WithdrawFeesCard(props: {
     try {
       const tx = buildWithdrawFeesTx(FEE_VAULT_ID, amount);
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. On a Failed/EffectsCert return
+      // (insufficient balance, non-admin caller) `txDigest(r)` is
+      // the literal "unknown" — the user would see
+      // "Withdraw protocol fees: unknown..." in the toast history
+      // and have no idea the withdrawal silently bounced.
+      if (r.$kind !== "Transaction") {
+        setErr("Withdraw fees failed on-chain (insufficient balance or non-admin caller).");
+        setBusy(false);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -661,7 +675,18 @@ function SetDistributionCard(props: {
     try {
       const tx = buildSetDistributionTx(PRIZE_POOL_ID, PRIZE_ADMIN_ID, parsed);
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. EInvalidDistribution (sum !=
+      // 10_000 bps, length mismatch) would surface as a move abort
+      // — the previous code would still surface a fake
+      // "Set prize distribution: unknown..." success and the admin
+      // would have no way to tell the new distribution wasn't
+      // applied.
+      if (r.$kind !== "Transaction") {
+        setErr("Set distribution failed on-chain (vector must sum to 10_000 bps and match rank count).");
+        setBusy(false);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -746,7 +771,16 @@ function ResolveDisputeCard(props: {
     try {
       const tx = buildResolveDisputeTx(marketId.trim(), outcome === "1" ? 1 : 2);
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. Resolving a non-disputed market
+      // is an EInvalidState abort; the previous code would toast
+      // a fake success and the user would be left wondering why
+      // the market still showed "disputed" on the indexer.
+      if (r.$kind !== "Transaction") {
+        setErr("Resolve dispute failed on-chain (market is not in disputed state, or non-creator caller).");
+        setBusy(false);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -860,7 +894,18 @@ function CreateMarketCard(props: {
         category: cat,
       });
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. create_market has the largest
+      // failure surface (bad DEEP coin, expiry in the past, no
+      // admin cap left). A Failed return would previously toast
+      // "Create market: unknown..." and the admin would assume
+      // the market exists, then call resolve_dispute against a
+      // phantom ID.
+      if (r.$kind !== "Transaction") {
+        setErr("Create market failed on-chain (bad DEEP coin, expiry in past, or pool-creation budget exhausted).");
+        setBusy(false);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -1014,7 +1059,20 @@ function SetMaxPayoutBpsCard(props: {
           : DUSDC_TYPE_FALLBACK,
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. The cap must be ≥ 10_000 bps
+      // (1x); below that the move call aborts with EPayoutTooSmall.
+      // A Failed return would previously update `max_payout_bps`
+      // in the local cache (no — actually the cache is read-once
+      // on mount) but more importantly the operator would see a
+      // fake success and the bootstrap-parlay script's
+      // read-then-write idempotency would then try to revert
+      // to the env value on the next tick, causing oscillation.
+      if (r.$kind !== "Transaction") {
+        setErr("Set parlay max payout failed on-chain (cap must be ≥ 10_000 bps and ≤ 1_000_000).");
+        setBusy(false);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -1201,7 +1259,19 @@ function ParlayAdminCard(props: {
         dUSDCType(),
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. Withdrawals can fail on
+      // EInsufficientBalance, ENotAdmin, or EPoolHalted. The
+      // previous "Parlay admin withdraw: unknown..." toast would
+      // make the operator think funds left the pool when they
+      // were actually still there — and the off-chain indexer
+      // reconciliation would then double-count them on the next
+      // pool-stats snapshot.
+      if (r.$kind !== "Transaction") {
+        setErr("Parlay admin withdraw failed on-chain.");
+        setBusy(null);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit("Parlay admin withdraw", d);
     } catch (e) {
@@ -1230,7 +1300,18 @@ function ParlayAdminCard(props: {
         dUSDCType(),
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. rotate_admin is one-way and
+      // caller is the CURRENT admin. A Failed return (e.g.
+      // address-is-zero abort) would previously look like a
+      // success and the new admin's first call would then
+      // bounce with ENotAdmin, leaving the pool in a state where
+      // nobody could admin-withdraw.
+      if (r.$kind !== "Transaction") {
+        setErr("Rotate parlay admin failed on-chain (new admin must be a non-zero address).");
+        setBusy(null);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit("Rotate parlay admin", d);
     } catch (e) {
@@ -1414,7 +1495,19 @@ function VaultAdminCard(props: {
         dUSDCType(),
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. allocate_for_mm aborts with
+      // EInsufficientAvailable on the available→allocated
+      // transfer. A Failed return would previously show
+      // "Allocate for MM: unknown..." and the MM agent would
+      // then believe it had fresh capital to deploy, pulling
+      // orders that the chain would reject one-by-one (more
+      // RPC load per minute than the success path).
+      if (r.$kind !== "Transaction") {
+        setErr("Allocate for MM failed on-chain (insufficient available balance, or non-admin caller).");
+        setBusy(null);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit("Allocate for MM", d);
     } catch (e) {
@@ -1443,7 +1536,18 @@ function VaultAdminCard(props: {
         dUSDCType(),
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const d = txDigest(r);
+      // R38 audit fix: $kind guard. return_from_mm aborts if the
+      // Coin isn't a dUSDC coin (wrong type) or if the coin has
+      // already been consumed by a previous return (object
+      // version). The previous code would toast a fake success
+      // and the operator's "available" balance would not
+      // increase as expected — silently stranded capital.
+      if (r.$kind !== "Transaction") {
+        setErr("Return from MM failed on-chain (wrong coin type, or coin already consumed).");
+        setBusy(null);
+        return;
+      }
+      const d = r.Transaction.digest;
       setDigest(d);
       props.onSubmit("Return from MM", d);
     } catch (e) {

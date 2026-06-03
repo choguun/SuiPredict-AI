@@ -17,6 +17,7 @@ import {
   type VaultSummary,
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
+import { clampNumberString } from "@/lib/forms";
 
 export default function VaultPage() {
   const account = useCurrentAccount();
@@ -207,7 +208,12 @@ export default function VaultPage() {
                 min={1}
                 className="mt-1 block w-32 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={amount}
-                onChange={(e) => setAmount(Number(e.target.value))}
+                // R38 audit fix: regex-bounded parse. The
+                // supply_plp builder takes amount as base atoms
+                // (BigInt(Math.round(amount * 1_000_000))) so a
+                // NaN would TypeError in the render path before
+                // the try/catch in supplyPLP runs.
+                onChange={(e) => setAmount(clampNumberString(e.target.value, 1, 1, 1_000_000))}
               />
             </div>
             <button
@@ -235,7 +241,11 @@ export default function VaultPage() {
                 min={1}
                 className="mt-1 block w-32 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={withdrawAmount}
-                onChange={(e) => setWithdrawAmount(Number(e.target.value))}
+                // R38 audit fix: same regex-bounded parse for
+                // the withdraw amount — symmetry with supply so
+                // both code paths handle malformed input the
+                // same way.
+                onChange={(e) => setWithdrawAmount(clampNumberString(e.target.value, 1, 1, 1_000_000))}
               />
             </div>
             <button

@@ -66,17 +66,33 @@ export interface SignedClaim {
 
 /**
  * Build `fund_pool` transaction. Anyone can add funds.
+ *
+ * R38 audit fix: the on-chain `prize_pool::fund_pool<PrizeCoin>`
+ * takes a `Coin<PrizeCoin>` BY VALUE and absorbs the entire
+ * balance via `coin::into_balance(coin)`. The previous builder
+ * passed `tx.object(coinId)` directly, which would have drained
+ * the user's full DUSDC balance. Split `amountAtoms` off the
+ * source coin in-PTB and pass the split result, matching the
+ * pattern from `buildCreateParlayTx` (R36) and `buildMintSharesTx`.
  */
 export function buildFundPoolTx(
   poolId: string,
   coinId: string,
+  amountAtoms: number | bigint,
   prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
+  const amount = BigInt(amountAtoms);
+  if (amount <= 0n) {
+    throw new Error(
+      `buildFundPoolTx: amountAtoms must be > 0 (got ${amountAtoms})`,
+    );
+  }
   const tx = new Transaction();
+  const [fundCoin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
   tx.moveCall({
     target: `${PKG()}::prize_pool::fund_pool`,
     typeArguments: [prizeCoinType],
-    arguments: [tx.object(poolId), tx.object(coinId)],
+    arguments: [tx.object(poolId), tx.object(fundCoin)],
   });
   return tx;
 }

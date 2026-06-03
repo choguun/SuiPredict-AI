@@ -64,6 +64,18 @@ const INITIAL_WEEK = Math.floor(Date.now() / (7 * 86_400_000));
 const PRIZE_WEEKLY_AMOUNT = BigInt(
   process.env.PRIZE_WEEKLY_AMOUNT ?? "1000000000",
 );
+// R38 audit fix: read the PrizeAdmin's threshold knobs (the per-
+// cycle fund amount and the minimum-balance trigger). Same
+// justification as bootstrap-gamification.ts — without these
+// env writes, a partial resume run would leave the agent with
+// no `PRIZE_FUND_AMOUNT` and the prize pool would never get
+// refilled by the PrizeAdmin weekly cycle.
+const PRIZE_FUND_AMOUNT = BigInt(
+  process.env.PRIZE_FUND_AMOUNT ?? process.env.PRIZE_WEEKLY_AMOUNT ?? "0",
+);
+const PRIZE_POOL_MIN_BALANCE = BigInt(
+  process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
+);
 
 // --only flag: comma-separated step list. Empty = run all.
 const ONLY_FLAG = (() => {
@@ -506,6 +518,13 @@ async function main() {
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
+    // R38 audit fix: mirror the bootstrap-gamification writes for
+    // the PrizeAdmin threshold knobs (PRIZE_FUND_AMOUNT and
+    // PRIZE_POOL_MIN_BALANCE). A partial resume that doesn't
+    // write them leaves the PrizeAdmin's `PRIZE_FUND_AMOUNT
+    // === 0n` skip path live — the pool never refills.
+    PRIZE_FUND_AMOUNT: PRIZE_FUND_AMOUNT.toString(),
+    PRIZE_POOL_MIN_BALANCE: PRIZE_POOL_MIN_BALANCE.toString(),
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
   };
   // Conditional write: only set PRIZE_ADMIN_PUBKEY_B64 when the step

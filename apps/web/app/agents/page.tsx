@@ -25,6 +25,7 @@ interface HealthEnvelope {
   deepbook_registry_id?: string;
   vault_id?: string;
   prize_pool_id?: string;
+  parlay_pool_id?: string;
   streak_registry_id?: string;
   ts_ms?: number;
 }
@@ -56,6 +57,15 @@ const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvel
   { env: "NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID", label: "DEEPBOOK_REGISTRY_ID", runtimeKey: "deepbook_registry_id" },
   { env: "NEXT_PUBLIC_VAULT_OBJECT_ID", label: "VAULT_OBJECT_ID", runtimeKey: "vault_id" },
   { env: "NEXT_PUBLIC_PRIZE_POOL_ID", label: "PRIZE_POOL_ID", runtimeKey: "prize_pool_id" },
+  // R38 audit fix: track the parlay pool id as well. The agents
+  // /health payload now returns `parlay_pool_id`; without this
+  // ENV_IDS entry the drift detector would silently skip
+  // mismatches between the web bundle's
+  // `NEXT_PUBLIC_PARLAY_POOL_ID` and the agents runtime's
+  // `PARLAY_POOL_ID` env, and a deploy that changes only one
+  // would surface as a `parlay pool not found` move abort with
+  // no operator visibility.
+  { env: "NEXT_PUBLIC_PARLAY_POOL_ID", label: "PARLAY_POOL_ID", runtimeKey: "parlay_pool_id" },
   { env: "NEXT_PUBLIC_STREAK_REGISTRY_ID", label: "STREAK_REGISTRY_ID", runtimeKey: "streak_registry_id" },
 ];
 

@@ -61,6 +61,18 @@ const INITIAL_WEEK = Math.floor(Date.now() / (7 * 86_400_000));
 const PRIZE_WEEKLY_AMOUNT = BigInt(
   process.env.PRIZE_WEEKLY_AMOUNT ?? "1000000000",
 );
+// R38 audit fix: read the PrizeAdmin's two threshold knobs (the
+// per-cycle top-up amount and the minimum-balance trigger). Without
+// these env writes the operator would have to set them by hand after
+// bootstrap, and a deployment that omits them leaves PrizeAdmin in
+// a "skip" loop (PRIZE_FUND_AMOUNT === 0n) — the prize pool
+// silently never refills.
+const PRIZE_FUND_AMOUNT = BigInt(
+  process.env.PRIZE_FUND_AMOUNT ?? process.env.PRIZE_WEEKLY_AMOUNT ?? "0",
+);
+const PRIZE_POOL_MIN_BALANCE = BigInt(
+  process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
+);
 
 interface CreatedObject {
   type: string;
@@ -750,6 +762,13 @@ async function main() {
     MARKET_PACKAGE_ID: packageId,
     NEXT_PUBLIC_MARKET_PACKAGE_ID: packageId,
     PRIZE_WEEKLY_AMOUNT: PRIZE_WEEKLY_AMOUNT.toString(),
+    // R38 audit fix: write the two PrizeAdmin threshold knobs so
+    // the agent picks them up on the next process restart. These
+    // are the values the PrizeAdmin reads from env; without these
+    // lines the operator would have to add them by hand or the
+    // prize pool would never get refilled by the agent.
+    PRIZE_FUND_AMOUNT: PRIZE_FUND_AMOUNT.toString(),
+    PRIZE_POOL_MIN_BALANCE: PRIZE_POOL_MIN_BALANCE.toString(),
     DUSDC_PACKAGE_ID: DUSDC_TYPE.split("::")[0],
   };
   // Conditional write: only set PRIZE_ADMIN_PUBKEY_B64 when we have

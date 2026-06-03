@@ -303,6 +303,16 @@ function startHealthServer() {
             process.env.DEEPBOOK_REGISTRY_ID ?? "",
           vault_id: process.env.VAULT_OBJECT_ID ?? "",
           prize_pool_id: process.env.PRIZE_POOL_ID ?? "",
+          // R38 audit fix: include the parlay pool id so the web
+          // `/agents` page can surface drift between its baked
+          // `NEXT_PUBLIC_PARLAY_POOL_ID` and the agents runtime
+          // value. A mismatch would cause parlay::create_parlay
+          // PTBs built from the web bundle to abort with
+          // "parlay pool not found" — the previous /health payload
+          // omitted the field, so the operator dashboard had no
+          // way to detect the drift short of clicking through
+          // the parlay UI and seeing the move abort.
+          parlay_pool_id: process.env.PARLAY_POOL_ID ?? "",
           streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
           ts_ms: Date.now(),
         }),

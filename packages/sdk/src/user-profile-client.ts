@@ -81,7 +81,15 @@ export function buildSetCountryCodeTx(
   tx.moveCall({
     target: `${PKG()}::user_profile::set_country_code`,
     typeArguments: [],
-    arguments: [tx.object(profileId), tx.pure(bcsBytes(bytes))],
+    // R38 audit fix: use the modern `tx.pure.vector("u8", bytes)`
+    // pattern (see predict-client.ts:392 and prize-client.ts:169
+    // for prior art) instead of the local `bcsBytes` helper that
+    // pulled in `@mysten/sui/bcs` via `require()`. The require()
+    // path is a code-smell that breaks strict-ESM bundlers
+    // (e.g. Vite for the web app) and the `tx.pure.vector`
+    // helper is the SDK-blessed escape hatch for `vector<u8>`
+    // arguments that don't need BCS wrapping.
+    arguments: [tx.object(profileId), tx.pure.vector("u8", bytes)],
   });
   return tx;
 }
@@ -178,23 +186,13 @@ export async function readUserProfile(
 // ============================================================
 // Helpers
 // ============================================================
-
-/**
- * Serialise a byte array using BCS so the on-chain
- * `set_country_code` accepts it as `vector<u8>`. The Move function
- * is `public fun set_country_code(profile, country_code: vector<u8>, ctx)`,
- * so we need the raw bytes — `tx.pure(bytes)` would wrap them
- * again. The proper Sui 2024 SDK call is `tx.pure(bcs.vector(bcs.u8()).serialize(bytes).toBytes())`
- * but most of the codebase uses `tx.pure(...)` with the helper that
- * auto-BCS-encodes strings; for `vector<u8>` the safe path is
- * `tx.pure(bcsBytes(bytes))` where `bcsBytes` returns the BCS
- * vector-of-u8 form. We delegate to that helper.
- */
-function bcsBytes(bytes: number[]): Uint8Array {
-  // Lazy import to keep the SDK usable in non-Node runtimes
-  // (the @mysten/sui/bcs module is isomorphic but only needs
-  // loading when we actually serialize).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { bcs } = require("@mysten/sui/bcs") as typeof import("@mysten/sui/bcs");
-  return bcs.vector(bcs.u8()).serialize(bytes).toBytes();
-}
+//
+// R38 audit fix: the `bcsBytes` helper that previously lived here
+// (and serialised a number[] to a BCS-encoded `vector<u8>`) has
+// been removed. The single call site (setCountryCodeTx above) now
+// uses `tx.pure.vector("u8", bytes)` — the SDK-blessed pattern —
+// which avoids the `require("@mysten/sui/bcs")` lazy import that
+// broke under strict-ESM bundlers. The Move function
+// `set_country_code(profile, country_code: vector<u8>, ctx)` is
+// unchanged on the chain side; only the SDK encoding path moved.
+// ============================================================

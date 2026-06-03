@@ -75,9 +75,20 @@ export default function VaultPage() {
       });
       const coin = objects[0];
       if (!coin) throw new Error("No DUSDC");
+      // R38 audit fix: pass the user-supplied `amount` (in dUSDC
+      // units) converted to base atoms so the builder splits that
+      // much off the source coin. The previous call would have
+      // drained the entire DUSDC coin regardless of the amount
+      // field, leaving the user with an empty wallet after every
+      // deposit.
+      const amountAtoms = BigInt(Math.round(amount * 1_000_000));
+      if (amountAtoms <= BigInt(0)) {
+        throw new Error("Amount must be > 0 DUSDC");
+      }
       const tx = buildVaultDepositTx(
         VAULT_ID,
         coin.objectId,
+        amountAtoms,
         DUSDC_TYPE,
         account.address,
       );

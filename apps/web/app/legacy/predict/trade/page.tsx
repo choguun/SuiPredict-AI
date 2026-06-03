@@ -24,6 +24,7 @@ import {
   predict,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { clampNumberString } from "@/lib/forms";
 import { toast } from "sonner";
 
 export default function TradePage() {
@@ -82,19 +83,37 @@ export default function TradePage() {
     try {
       const tx = buildCreateManagerTx();
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : result.FailedTransaction?.digest;
-      if (digest) {
-        await client.waitForTransaction({ digest });
+      // R38 audit fix: the previous code accessed
+      // `result.FailedTransaction?.digest` on the failure path,
+      // but the dAppKit union variant is `Failed` (not
+      // `FailedTransaction`) and carries no `digest` field — so
+      // the `if (digest)` block silently skipped and the code
+      // fell through to a `getManagerForOwner` call that could
+      // return a STALE manager id from a previous user, then
+      // toast a misleading "Manager created: <stale-id>..."
+      // success. The new code requires the result to be a
+      // `Transaction` variant (where the manager has actually
+      // been created and the digest is real) before refetching
+      // the manager id.
+      if (result.$kind !== "Transaction") {
+        toast.error("Manager creation failed on-chain.", { id: toastId });
+        return;
       }
-      if (account) {
-        const id = await getManagerForOwner(account.address);
-        if (id) {
-          setManagerId(id);
-          toast.success(`Manager created: ${id.slice(0, 12)}...`, { id: toastId });
-        }
+      await client.waitForTransaction({ digest: result.Transaction.digest });
+      const id = await getManagerForOwner(account.address);
+      if (id) {
+        setManagerId(id);
+        toast.success(`Manager created: ${id.slice(0, 12)}...`, { id: toastId });
+      } else {
+        // Manager tx succeeded but the indexer hasn't seen the
+        // ownership event yet. Surface this rather than leaving
+        // the user on a "Submitting..." spinner that the previous
+        // code would also have left them on (because no toast
+        // success nor error fires).
+        toast.message(
+          "Manager tx confirmed — refreshing manager id. Try mint in a few seconds.",
+          { id: toastId, duration: 4_000 },
+        );
       }
     } catch (e) {
       toast.error(`Error: ${e instanceof Error ? e.message : String(e)}`, { id: toastId });
@@ -295,7 +314,12 @@ export default function TradePage() {
                 type="number"
                 className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={strike}
-                onChange={(e) => setStrike(Number(e.target.value))}
+                // R38 audit fix: regex-bounded parse. A paste of
+                // "abc" previously left `strike` as NaN, which the
+                // legacy mint_position builder would pass through
+                // to BigInt() and TypeError on (render-path error,
+                // not caught by the try/catch in mintPosition).
+                onChange={(e) => setStrike(clampNumberString(e.target.value, 75000, 1, 10_000_000))}
               />
             </div>
             <div>
@@ -305,7 +329,12 @@ export default function TradePage() {
                 min={1}
                 className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={quantity}
-                onChange={(e) => setQuantity(Number(e.target.value))}
+                // R38 audit fix: same regex-bounded parse for
+                // quantity — quantity is in dollars of face value
+                // and ends up in the PTB as
+                // BigInt(Math.round(quantity * PRICE_SCALE)),
+                // so a NaN would TypeError at submit time.
+                onChange={(e) => setQuantity(clampNumberString(e.target.value, 1, 1, 1_000_000))}
               />
             </div>
             <button

@@ -212,7 +212,12 @@ async function main() {
       );
     } else {
       log(`Funding pool with ${SEED_AMOUNT.toString()} dUSDC…`);
-      const tx = buildFundParlayPoolTx(poolId, coinId, DUSDC_TYPE);
+      // R38 audit fix: pass SEED_AMOUNT so the builder splits
+      // exactly that many atoms off the source coin in-PTB. The
+      // previous call would have drained the whole coin regardless
+      // of SEED_AMOUNT (the R36 parlay::create_parlay fix applied
+      // here for the parlay pool).
+      const tx = buildFundParlayPoolTx(poolId, coinId, SEED_AMOUNT, DUSDC_TYPE);
       const res = await executeTransaction(txClient, tx, signer);
       log(`Funded:         ${res.digest}`);
     }

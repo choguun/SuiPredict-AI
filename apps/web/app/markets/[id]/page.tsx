@@ -38,10 +38,16 @@ import { Badge, Card, Stat } from "@/components/ui";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
+import { clampNumberString } from "@/lib/forms";
 
-function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
-  return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
-}
+// R38 audit fix: the local `txDigest` helper that returned
+// "unknown" on Failed/EffectsCert has been removed. All 5
+// signAndExecuteTransaction call sites now do an explicit
+// `r.$kind !== "Transaction"` early-return and read
+// `r.Transaction.digest` directly. The helper previously
+// obscured whether a digest was real (a real one) or a literal
+// "unknown" string (failure path), which made it easy for new
+// call sites to toast fake successes.
 
 const QUOTE_COIN = DUSDC_TYPE;
 
@@ -360,7 +366,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       const amountAtoms = dollarsToDusdc(qty);
       const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId, amountAtoms);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Minted YES + NO: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      // R38 audit fix: same R30/R32/R37 pattern. The previous
+      // `txDigest(r)` helper returns the literal "unknown" on a
+      // Failed/EffectsCert result and the success toast fired
+      // anyway, lying to the user that a mint succeeded.
+      if (r.$kind !== "Transaction") {
+        toast.error("Mint failed on-chain", { id: toastId });
+        return;
+      }
+      toast.success(`Minted YES + NO: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Mint failed", { id: toastId });
@@ -411,7 +425,18 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         isBid,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest = txDigest(r);
+      // R38 audit fix: dAppKit can return Failed/EffectsCert here
+      // (insufficient gas, paused pool, balance-mgr invariant). On
+      // those paths `txDigest(r)` returns the literal string
+      // "unknown" — toast.loading would then poll an indexer endpoint
+      // for 65s with no real digest to match, hammering the agents
+      // service for no reason. Surface the error early and skip the
+      // indexer poll.
+      if (r.$kind !== "Transaction") {
+        toast.error("Order failed on-chain (insufficient gas, paused pool, or BalanceManager invariant).", { id: toastId });
+        return;
+      }
+      const digest = r.Transaction.digest;
       // Distinguish "submitted" from "placed". The wallet adapter returns
       // once the fullnode accepts the tx — but the position indexer
       // (cron */1) can take up to 60s to record the OrderPlaced event,
@@ -515,7 +540,21 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       });
       const tx = buildDeepBookCreateBalanceManagerTx(dbClient, account.address);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest = txDigest(r);
+      // R38 audit fix: same $kind guard as placeOrder. On a Failed
+      // return, `txDigest(r)` would yield the literal "unknown"
+      // and we would then both (a) toast a fake success and
+      // (b) `extractCreatedObjectId(client, "unknown", ...)` would
+      // RPC-throw on the malformed digest. The "unknown" string is
+      // also a dangerous value to ever persist to localStorage —
+      // a later page load would re-derive the key
+      // `suipredict.deepbook.<addr>.manager = "unknown"` and every
+      // subsequent deposit/place-order call would 404 trying to
+      // fetch a non-existent object.
+      if (r.$kind !== "Transaction") {
+        toast.error("BalanceManager creation failed on-chain.", { id: toastId });
+        return;
+      }
+      const digest = r.Transaction.digest;
       // Discover the new shared BalanceManager ID from the tx effects
       // and persist it so subsequent deposit/place-order calls find it.
       const managerId = await extractCreatedObjectId(
@@ -560,7 +599,17 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         depositAmount,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Deposit OK: ${txDigest(r).slice(0, 16)}...`, { id: toastId });
+      // R38 audit fix: $kind guard for deposit. The deposit path is
+      // the one most likely to silently "succeed" with "unknown" on
+      // a quota-exhausted BalanceManager (the tx would not abort
+      // cleanly at the wallet layer, but the move abort would only
+      // show in effects certs). Surface the error to the user
+      // instead of an "Deposit OK: unknown..." toast.
+      if (r.$kind !== "Transaction") {
+        toast.error("Deposit failed on-chain.", { id: toastId });
+        return;
+      }
+      toast.success(`Deposit OK: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
@@ -585,7 +634,17 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         balanceManagerId,
       );
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Settled balances withdrawn: ${txDigest(r).slice(0, 16)}...`, { id: toastId });
+      // R38 audit fix: $kind guard. If withdraw_settled aborted (no
+      // settled amounts available) we'd previously toast
+      // "Settled balances withdrawn: unknown..." — extremely
+      // misleading because the leaderboard pool_weeks cursor also
+      // would not advance, so the user might wait a full week
+      // before noticing their `SettledEvent` was never emitted.
+      if (r.$kind !== "Transaction") {
+        toast.error("Withdraw settled failed on-chain (no settled amounts, or pool invariant).", { id: toastId });
+        return;
+      }
+      toast.success(`Settled balances withdrawn: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Withdraw settled failed", { id: toastId });
@@ -638,7 +697,16 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             ? buildRedeemNoWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
             : buildRedeemNoTx(market.id, FEE_VAULT_ID, coin.objectId);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      toast.success(`Redeemed: ${txDigest(r).slice(0, 16)}…`, { id: toastId });
+      // R38 audit fix: $kind guard for redeem. Redeem is the most
+      // asymmetric call here — a Failed result means the user
+      // burned gas and lost the streak-attached position proof,
+      // but the previous code path would still toast
+      // "Redeemed: unknown..." which is much worse than no toast.
+      if (r.$kind !== "Transaction") {
+        toast.error("Redeem failed on-chain.", { id: toastId });
+        return;
+      }
+      toast.success(`Redeemed: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Redeem failed", { id: toastId });
@@ -907,7 +975,13 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             step="0.01"
             min="0.01"
             value={qty}
-            onChange={(e) => setQty(Math.max(0.01, Number(e.target.value)))}
+            // R38 audit fix: route through clampNumberString so a
+            // paste of "1.2.3", "abc", or "1e9" can't land in state
+            // as `NaN` — the downstream BigInt(Math.round(...))
+            // would then TypeError in the render path, leaving
+            // the user with a stuck "Submitting..." spinner and
+            // no error toast.
+            onChange={(e) => setQty(clampNumberString(e.target.value, 0.01, 0.01, 1_000_000))}
             className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
           />
           <div className="mb-4 rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
@@ -1008,7 +1082,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                       step="0.01"
                       min="0"
                       value={depositAmount}
-                      onChange={(e) => setDepositAmount(Math.max(0, Number(e.target.value)))}
+                      // R38 audit fix: regex-bounded parse so a
+                      // paste of "abc" can't leave depositAmount in
+                      // a NaN state and silently submit a 0-coin
+                      // deposit (which the chain rejects with
+                      // EZeroAmount — confusing for the user
+                      // because the input still shows the typed
+                      // text but the deposit silently bounced).
+                      onChange={(e) => setDepositAmount(clampNumberString(e.target.value, 0, 0, 1_000_000))}
                       className="rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/50"
                     />
                     <select
