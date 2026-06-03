@@ -55,10 +55,6 @@ interface Props {
   alreadyClaimed?: boolean;
 }
 
-function txDigest(r: { $kind: string; Transaction?: { digest: string } }): string {
-  return r.$kind === "Transaction" ? r.Transaction!.digest : "unknown";
-}
-
 export function ClaimPrizeButton(props: Props) {
   const {
     poolId,
@@ -153,7 +149,19 @@ export function ClaimPrizeButton(props: Props) {
         poolIdForSig: poolId,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest = txDigest(r);
+      // $kind guard — Failed / EffectsCert variants carry no digest.
+      // Previously this code called a `txDigest()` helper that
+      // returned the literal string "unknown" on non-Transaction
+      // results, then unconditionally toasted "Claimed X DUSDC:
+      // unknown…" and POSTed `txDigest: "unknown"` to /prize/claims,
+      // polluting the off-chain mirror with phantom claims. R30
+      // closed the same pattern in DailyPredictionCard / VaultPage;
+      // R32 closes it here.
+      if (r.$kind !== "Transaction") {
+        toast.error("Claim failed on-chain", { id: toastId });
+        return;
+      }
+      const digest = r.Transaction.digest;
       toast.success(
         `Claimed ${amountUsdc} DUSDC: ${digest.slice(0, 16)}…`,
         { id: toastId },

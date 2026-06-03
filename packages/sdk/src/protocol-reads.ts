@@ -76,21 +76,6 @@ export async function readPrizePoolWeeklyPrize(
   return asBig(await readObject(client, poolId), "weekly_prize");
 }
 
-/** Read `admin` (address) for a `PrizePool<PrizeCoin>`.
- *  NOTE: this is the per-pool `admin` field, which is informational
- *  only; the on-chain authorization for `set_distribution` /
- *  `settle_week` / `rotate_pubkey` is the shared `PrizeAdmin`
- *  capability. The web admin UI shows the per-pool admin as a
- *  reference; gating admin actions is done via `PrizeAdmin` checks
- *  in the contract.
- */
-export async function readPrizePoolAdmin(
-  client: SuiClient,
-  poolId: string,
-): Promise<string> {
-  return asStr(await readObject(client, poolId), "admin");
-}
-
 /** Read `distribution_bps` (vector<u64>) for a `PrizePool<PrizeCoin>`.
  *  The values are the share of the weekly prize paid to each rank
  *  1..N, summing to 10_000 (1.0). The on-chain default is a

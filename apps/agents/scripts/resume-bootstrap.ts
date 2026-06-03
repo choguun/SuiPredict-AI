@@ -256,9 +256,20 @@ async function main() {
   const streakAdminId = process.env.STREAK_ADMIN_ID ?? "";
   const streakRegistryId = process.env.STREAK_REGISTRY_ID ?? "";
   const prizeAdminId = process.env.PRIZE_ADMIN_ID ?? "";
+  // ProfileRegistry is shared by `user_profile::init` at publish time
+  // (no per-coin parameter, unlike FeeVault). Reading the env value
+  // suffices because the operator is meant to copy the publish
+  // effects into .env before resuming — same flow as
+  // STREAK_REGISTRY_ID / PRIZE_ADMIN_ID. Without this resume the
+  // env writes below would skip ProfileRegistry, leaving the web
+  // /settings page disabled and the agents /profile/:addr returning
+  // 404 (bootstrap-gamification.ts populates these; resume must
+  // mirror the writes or partial-resume flows silently regress).
+  const profileRegistryId = process.env.NEXT_PUBLIC_PROFILE_REGISTRY_ID ?? "";
   log(`  StreakAdmin:    ${streakAdminId || "(unset — needed only for prize_pubkey / env writes)"}`);
   log(`  StreakRegistry: ${streakRegistryId || "(unset — needed only for env writes)"}`);
   log(`  PrizeAdmin:     ${prizeAdminId || "(unset — needed only for prize_pubkey)"}`);
+  log(`  ProfileReg:     ${profileRegistryId || "(unset — /settings + /profile route disabled until set)"}`);
 
   // 3) Set PrizeAdmin pubkey (idempotent — re-rotate if you rotate
   //    keys, but normally skip).
@@ -505,6 +516,10 @@ async function main() {
   if (protocolVaultId) agentsUpdates.VAULT_OBJECT_ID = protocolVaultId;
   if (feeVaultId) agentsUpdates.FEE_VAULT_ID = feeVaultId;
   if (agentPolicyId) agentsUpdates.AGENT_POLICY_ID = agentPolicyId;
+  // ProfileRegistry — mirrors bootstrap-gamification.ts so the agents
+  // /profile/:addr handler (which gates on this env) doesn't go dark
+  // after a resume.
+  if (profileRegistryId) agentsUpdates.NEXT_PUBLIC_PROFILE_REGISTRY_ID = profileRegistryId;
   if (process.env.DUSDC_TREASURY_CAP_ID) {
     agentsUpdates.DUSDC_TREASURY_CAP_ID = process.env.DUSDC_TREASURY_CAP_ID;
   }
@@ -555,6 +570,10 @@ async function main() {
   if (feeVaultId) webUpdates.NEXT_PUBLIC_FEE_VAULT_ID = feeVaultId;
   if (protocolVaultId) webUpdates.NEXT_PUBLIC_VAULT_OBJECT_ID = protocolVaultId;
   if (agentPolicyId) webUpdates.NEXT_PUBLIC_AGENT_POLICY_ID = agentPolicyId;
+  // ProfileRegistry — paired with the agents-side write above so the
+  // /settings page can build create_profile / set_country_code PTBs
+  // after a resume.
+  if (profileRegistryId) webUpdates.NEXT_PUBLIC_PROFILE_REGISTRY_ID = profileRegistryId;
   updateEnv(WEB_ENV, webUpdates);
 
   log("\n=== Resume complete ===");

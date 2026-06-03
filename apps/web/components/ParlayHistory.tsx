@@ -39,6 +39,15 @@ export interface ParlayRow {
   payout_bps: number;
   collateral: number;
   finalized: number;
+  // Populated on `ParlayFinalized` by the position-indexer.
+  // `won` is the authoritative outcome from the on-chain event
+  // (the locally-derived `finalized && legs_lost === 0` is the same
+  // logic the contract applies, but trusting the wire value avoids
+  // duplicating the rule). `payout` is the actual DUSDC the user
+  // received in base units (0 for a lost parlay). Both stay null
+  // until finalized.
+  won: number | null;
+  payout: number | null;
   created_at_ms: number;
   updated_at_ms: number;
 }
@@ -145,8 +154,13 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
       <ul className="divide-y divide-white/5">
         {rows.map((p) => {
           const finalized = p.finalized === 1;
-          const won = finalized && p.legs_lost === 0;
-          const lost = finalized && p.legs_lost > 0;
+          // Use the wire-level `won` field when finalized — it's the
+          // on-chain event value, not derived from local legs_lost.
+          // Fall back to the local rule if the backend has not yet
+          // populated `won` (e.g. older indexer rows from before the
+          // column was added).
+          const won = finalized && (p.won === 1 || (p.won === null && p.legs_lost === 0));
+          const lost = finalized && !won;
           const accent = won
             ? "text-emerald-300"
             : lost
@@ -182,7 +196,9 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
                   {(p.collateral / 1_000_000).toFixed(2)} DUSDC
                   {finalized ? (
                     <span className={`ml-2 ${accent}`}>
-                      {won ? "won" : "lost"}
+                      {won
+                        ? `won${p.payout != null ? ` ${(p.payout / 1_000_000).toFixed(2)} DUSDC` : ""}`
+                        : "lost"}
                     </span>
                   ) : (
                     <span className="ml-2 text-zinc-500">in progress</span>
