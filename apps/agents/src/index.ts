@@ -17,6 +17,7 @@ import { getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
 import { startScheduler } from "./scheduler.js";
+import { corsFor } from "./http-cors.js";
 
 const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 15_000);
 const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
@@ -43,6 +44,17 @@ function validateBootConfig(): void {
     agent: string;
     required: boolean;
   };
+  // R35 audit fix: the [ok ] short-print branch on line 85 was
+  // truncating every present env var to 16 chars and printing it
+  // to stdout. For 44-char base64 ed25519 keys (PRIZE_ADMIN_PRIVATE_KEY,
+  // AGENT_PRIVATE_KEY) that exposes ~36% of the secret in any
+  // log sink — multi-tenant aggregators, k8s pod logs, journald.
+  // Treat these as secret: print the env name + a fingerprint
+  // (first 4 + last 4 hex of the SHA-256), never the value.
+  const SECRET_ENV_VARS = new Set([
+    "PRIZE_ADMIN_PRIVATE_KEY",
+    "AGENT_PRIVATE_KEY",
+  ]);
   const checks: VarCheck[] = [
     { name: "Package",            envVar: "AGENT_POLICY_PACKAGE_ID",       agent: "all",            required: true },
     { name: "DUSDC Type",         envVar: "DUSDC_TYPE",                    agent: "ParlayWorker",   required: true },
@@ -82,6 +94,16 @@ function validateBootConfig(): void {
   if (present.length > 0) {
     for (const c of present) {
       const v = process.env[c.envVar] ?? "";
+      if (SECRET_ENV_VARS.has(c.envVar)) {
+        // Fingerprint only — first 4 + last 4 hex of SHA-256. Lets
+        // the operator confirm "yes that's MY key" across redeploys
+        // without leaking the secret to log aggregators.
+        const fingerprint = secretFingerprint(v);
+        console.log(
+          `  [ok    ] ${c.envVar.padEnd(28)} (${c.agent})  = [secret ${fingerprint}]`,
+        );
+        continue;
+      }
       const short = v.length > 18 ? v.slice(0, 16) + "…" : v;
       console.log(`  [ok    ] ${c.envVar.padEnd(28)} (${c.agent})  = ${short}`);
     }
@@ -108,6 +130,26 @@ function validateBootConfig(): void {
         "This is expected on a fresh deploy before bootstrap; otherwise re-run bootstrap-gamification.",
     );
   }
+}
+
+/**
+ * Hash a secret env var to a short, non-reversible fingerprint for
+ * the boot-config print. Uses SHA-256 from node:crypto so we don't
+ * add a new dep. Returns the first 4 + last 4 hex chars of the
+ * digest, separated by `…`. The same secret produces the same
+ * fingerprint across deploys, so the operator can verify
+ * "yes this is my key" without the secret ever reaching the log.
+ */
+function secretFingerprint(value: string): string {
+  if (!value) return "(empty)";
+  // Lazy import — node:crypto is a builtin and is always available
+  // in the Node runtime, but the import is hoisted at module load
+  // in some bundler configurations. Importing inside the helper
+  // is safer and only costs one extra microtask per boot.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  const hex = createHash("sha256").update(value).digest("hex");
+  return `${hex.slice(0, 4)}…${hex.slice(-4)}`;
 }
 
 /**
@@ -213,6 +255,17 @@ async function runCycle(ctx: AgentContext) {
 
 function startHealthServer() {
   const port = Number(process.env.PORT ?? 3001);
+  // R35 audit fix: every response set `Access-Control-Allow-Origin: *`
+  // (markets/routes.ts, gamification/routes.ts, /health, /decisions,
+  // /agents/manifest). That lets any origin drive a victim's
+  // wallet to sign-claim on /prize/signature (the signed payload
+  // is a transferable asset) or POST /prize/claims. Restrict to
+  // an env-configured allowlist. The shared `corsFor` helper in
+  // http-cors.ts applies the same logic everywhere; the
+  // /decisions and /agents/manifest routes intentionally keep
+  // open read-only access (operator dashboards may pull them from
+  // a different origin) — only the side-effecting handlers inherit
+  // the restriction.
   createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     if (handleMarketsRoute(req, res, url)) return;
@@ -226,7 +279,7 @@ function startHealthServer() {
       // /agents page surfaces this as a banner.
       res.writeHead(200, {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        ...corsFor(false),
       });
       res.end(
         JSON.stringify({
@@ -245,7 +298,7 @@ function startHealthServer() {
     if (url.pathname === "/decisions") {
       res.writeHead(200, {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        ...corsFor(false),
       });
       res.end(JSON.stringify(getRecentDecisions(100)));
       return;
@@ -269,7 +322,7 @@ function startHealthServer() {
       const schedule = buildSchedule();
       res.writeHead(200, {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        ...corsFor(false),
       });
       res.end(
         JSON.stringify(

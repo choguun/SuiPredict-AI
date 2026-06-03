@@ -26,6 +26,31 @@ async function readObject(
   return (object.json as Record<string, unknown> | null) ?? null;
 }
 
+// Sui's gRPC JSON view renders `Balance<T>` as a struct with a `value`
+// field (`{"value": "..."}`), not a scalar. The legacy JSON-RPC
+// renderer sometimes returned a raw string. Mirror
+// `parlay-client.ts:248-272` which already handles both shapes so
+// the same shared object (FeeVault, PrizePool, ProtocolVault) reads
+// correctly under either client.
+//
+// R35 audit fix: previously every reader here assumed the scalar
+// shape and threw on the gRPC `{value: "..."}` form, so the admin
+// page's "—" fallback hid every shared-object balance and disabled
+// the pre-flight checks.
+function asBalance(
+  fields: Record<string, unknown> | null,
+  key: string,
+): bigint {
+  if (!fields) return 0n;
+  const v = fields[key];
+  if (typeof v === "string" || typeof v === "number") return BigInt(v);
+  if (v && typeof v === "object" && "value" in v) {
+    const inner = (v as { value?: string | number }).value;
+    if (inner != null) return BigInt(inner);
+  }
+  return 0n;
+}
+
 function asBig(fields: Record<string, unknown> | null, key: string): bigint {
   if (!fields) return 0n;
   return BigInt((fields[key] as string | number | undefined) ?? 0);
@@ -41,7 +66,7 @@ export async function readFeeVaultBalance(
   client: SuiClient,
   vaultId: string,
 ): Promise<bigint> {
-  return asBig(await readObject(client, vaultId), "fee_balance");
+  return asBalance(await readObject(client, vaultId), "fee_balance");
 }
 
 /** Read `admin` (address) for a `FeeVault<Q>`. */
@@ -57,7 +82,7 @@ export async function readPrizePoolBalance(
   client: SuiClient,
   poolId: string,
 ): Promise<bigint> {
-  return asBig(await readObject(client, poolId), "balance");
+  return asBalance(await readObject(client, poolId), "balance");
 }
 
 /** Read `current_week` (u64) for a `PrizePool<PrizeCoin>`. */
@@ -103,7 +128,15 @@ export async function readProtocolVaultTotalBalance(
   client: SuiClient,
   vaultId: string,
 ): Promise<bigint> {
-  return asBig(await readObject(client, vaultId), "balance");
+  // R35 audit fix: previously the total reader returned the same
+  // value as the available reader (both called `asBig(fields, "balance")`).
+  // The on-chain `total_balance` view is `balance::value(&vault.balance) + vault.allocated`
+  // (vault.move:144-146), so add the `allocated` u64 to the
+  // available-balance read.
+  const fields = await readObject(client, vaultId);
+  const avail = asBalance(fields, "balance");
+  const allocated = asBig(fields, "allocated");
+  return avail + allocated;
 }
 
 /** Read `balance` (u64, base units) for a `ProtocolVault<QuoteCoin>` —
@@ -117,8 +150,9 @@ export async function readProtocolVaultAvailableBalance(
   // The `ProtocolVault` struct stores `balance: Balance<QuoteCoin>`
   // and `allocated: u64`. The on-chain `available_balance` view
   // function returns `balance::value(&vault.balance)`. Sui's JSON
-  // renderer folds the Balance into its inner `value` u64.
-  return asBig(await readObject(client, vaultId), "balance");
+  // renderer wraps the `Balance<T>` in a `{value: "..."}` struct;
+  // `asBalance` above handles both shapes.
+  return asBalance(await readObject(client, vaultId), "balance");
 }
 
 /** Read `allocated` (u64, base units) for a `ProtocolVault<QuoteCoin>` —

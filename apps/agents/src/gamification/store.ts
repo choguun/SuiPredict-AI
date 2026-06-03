@@ -900,14 +900,22 @@ export function listUnfinalizedParlays(): ParlayRow[] {
  * `listUnfinalizedParlays()` instead — both are O(small) so the
  * extra filter pass is free.
  */
-export function listAllParlaysForUser(user: string): ParlayRow[] {
+export function listAllParlaysForUser(user: string, limit = 200): ParlayRow[] {
+  // R35 audit fix: previously this returned every parlay for the
+  // user with no SQL `LIMIT`. A user with 10k parlays would force
+  // the /parlay/user/:addr handler to materialise the entire result
+  // set in memory before the caller-side `limit` slice — a 10k-row
+  // DoS for the indexer + the web. Bound the SQL itself; the caller
+  // can still pass a smaller `limit` for tighter pages. The 200-row
+  // default matches the `Math.min(..., 200)` cap the route enforces.
   return getDb()
     .prepare(
       `SELECT * FROM parlays
         WHERE user = ?
-        ORDER BY created_at_ms DESC`,
+        ORDER BY created_at_ms DESC
+        LIMIT ?`,
     )
-    .all(user) as ParlayRow[];
+    .all(user, limit) as ParlayRow[];
 }
 
 /**

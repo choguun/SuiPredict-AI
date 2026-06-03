@@ -7,11 +7,18 @@ import {
   listChainOrders,
   listMarkets,
 } from "./store.js";
+import { corsFor } from "../http-cors.js";
 
-function json(res: ServerResponse, status: number, body: unknown) {
+function json(res: ServerResponse, status: number, body: unknown, sideEffecting = false) {
+  // R35 audit fix: every markets response previously set "*" CORS.
+  // The markets routes are read-only (list / detail / order book /
+  // portfolio / vault summary), so the side-effecting flag is
+  // false by default. Pass `sideEffecting=true` from any future
+  // mutation endpoint. The shared helper applies the same
+  // env-driven allowlist as gamification/routes.ts.
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    ...corsFor(sideEffecting),
   });
   res.end(JSON.stringify(body));
 }
@@ -22,10 +29,14 @@ export function handleMarketsRoute(
   url: URL,
 ): boolean {
   if (req.method === "OPTIONS") {
+    // Markets routes are read-only, so the preflight response uses
+    // the open CORS. The shared helper still applies the allowlist
+    // when ALLOWED_ORIGIN is set; this matches the no-side-effects
+    // policy for /health, /decisions, /agents/manifest in
+    // index.ts.
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
+      ...corsFor(false),
       "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end();
     return true;

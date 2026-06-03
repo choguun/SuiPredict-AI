@@ -57,6 +57,7 @@ import {
   readParlayMaxPayoutBps,
   readParlayTotalVolume,
   readParlayTotalPaidOut,
+  DUSDC_TYPE,
 } from "@suipredict/sdk";
 import { useCurrentClient } from "@mysten/dapp-kit-react";
 import { Card, Stat, Badge } from "@/components/ui";
@@ -1082,10 +1083,13 @@ function SetMaxPayoutBpsCard(props: {
 
 // Fallback used when NEXT_PUBLIC_DUSDC_PACKAGE_ID is not set in
 // `apps/web/.env.local`. The production default in the SDK is the
-// Mysten testnet dUSDC at 0xe9a73…a705; the literal here mirrors
-// SDK/src/constants.ts so the admin card works on a fresh deploy
-// without a fully configured env.
-const DUSDC_TYPE_FALLBACK = "0xe9a73ee16dabd84dad0a0638a8d4c7d5bf09b76f50a705a705::dusdc::DUSDC";
+// Mysten testnet dUSDC at 0xe9a73…a705. R35 audit fix: previously
+// this local literal was a malformed 50-char hex
+// (`0xe9a73ee16dabd84dad0a0638a8d4c7d5bf09b76f50a705a705::dusdc::DUSDC`)
+// that the Sui runtime rejected on every move call. Use the SDK's
+// `DUSDC_TYPE` constant (imported above) instead, which already
+// resolves to the canonical 64-char hex on a fresh deploy.
+const DUSDC_TYPE_FALLBACK = DUSDC_TYPE;
 
 // Resolved once at module load. Used by every parlay admin card to
 // pass the pool's generic type argument. Same fallback pattern as

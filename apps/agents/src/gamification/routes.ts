@@ -43,6 +43,28 @@ import {
   type ParlayRow,
 } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
+import { corsFor } from "../http-cors.js";
+
+/**
+ * R35 audit fix: log an unexpected route error server-side and
+ * return a short correlation id. The id is a 12-char hex prefix
+ * of a SHA-256 over the route + the error message + a millisecond
+ * timestamp, so the operator can grep the server log for the
+ * matching entry when a user reports a problem. The full error
+ * never reaches the response body.
+ */
+function logAndCorrelate(route: string, err: unknown): string {
+  const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+  // Use keccak_256 (already imported above for the prize-signing
+  // payload hash) so we don't add a new crypto dep just for
+  // correlation ids. The digest space is plenty for non-secret
+  // log correlation.
+  const ts = Date.now().toString();
+  const digest = keccak_256(new TextEncoder().encode(`${route}|${ts}|${msg}`));
+  const errorId = Buffer.from(digest).toString("hex").slice(0, 12);
+  console.error(`[agents] ${route} errorId=${errorId} ${msg}`);
+  return errorId;
+}
 
 /**
  * Wire shape for a single parlay as returned by /parlay/user/:addr.
@@ -89,10 +111,16 @@ function serializeParlay(p: ParlayRow): {
   };
 }
 
-function json(res: ServerResponse, status: number, body: unknown) {
+function json(res: ServerResponse, status: number, body: unknown, sideEffecting = true) {
+  // R35 audit fix: every response previously set "*" regardless of
+  // whether the endpoint was side-effecting. Use the shared helper
+  // (env-driven allowlist) for everything in this file — the routes
+  // here are prize signing, prize claim recording, parlay reads, and
+  // leaderboard reads, all of which we want restricted to the
+  // configured web origin in production.
   res.writeHead(status, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    ...corsFor(sideEffecting),
   });
   res.end(JSON.stringify(body));
 }
@@ -124,11 +152,7 @@ export async function handleGamificationRoute(
   url: URL,
 ): Promise<boolean> {
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    });
+    res.writeHead(204, corsFor(true));
     res.end();
     return true;
   }
@@ -325,9 +349,22 @@ export async function handleGamificationRoute(
           amountSource,
         });
       })
-      .catch((err) =>
-        json(res, 500, { error: err instanceof Error ? err.message : String(err) }),
-      );
+      .catch((err) => {
+        // R35 audit fix: returning the raw SDK error to the web
+        // client leaks the on-chain contract layout — module path,
+        // abort code, command index, file/function name. Sui SDK
+        // errors include `MoveAbort(Package { id: ... }, Identifier(
+        // ... ), 4, ...)` strings that an attacker can use to
+        // fingerprint contract internals. Log the full error
+        // server-side and return a static string + a correlation
+        // id so the operator can trace a user's report to the
+        // matching server log.
+        const errorId = logAndCorrelate("/prize/signature", err);
+        json(res, 500, {
+          error: "internal error signing claim",
+          errorId,
+        });
+      });
     return true;
   }
 
@@ -458,7 +495,13 @@ export async function handleGamificationRoute(
       });
       json(res, 200, { ok: true });
     } catch (err) {
-      json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      // R35 audit fix: same leak as /prize/signature above. The
+      // raw `err.message` from the SQLite write or the gRPC indexer
+      // can include SQL fragments and Sui abort text. Return a
+      // static string + correlation id; log the full error
+      // server-side.
+      const errorId = logAndCorrelate("POST /prize/claims", err);
+      json(res, 500, { error: "internal error recording claim", errorId });
     }
     return true;
   }
