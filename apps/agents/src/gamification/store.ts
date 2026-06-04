@@ -1175,6 +1175,35 @@ export function listUnfinalizedParlays(): ParlayRow[] {
 }
 
 /**
+ * List a single user's unfinalized parlays — the active-parlays
+ * view for the /parlay page's per-user list. R46 audit fix:
+ * the previous route handler at routes.ts:676 called the
+ * global `listUnfinalizedParlays()` and then `.filter((p) =>
+ * p.user === addr)` in JS, which is O(N over all unfinalized
+ * parlays in the system). At a busy market time (an AI
+ * category settles, hundreds of parlays finalize, the
+ * system briefly holds several thousand unfinalized rows
+ * before the worker drains them) the /parlay/user/:addr
+ * endpoint did an N×M scan per request, and the /parlay
+ * page polls every 5s. Use a SQL-side WHERE on `user` to
+ * keep this O(N over the user's parlays); the
+ * `idx_parlays_user` index covers the lookup.
+ */
+export function listUnfinalizedParlaysForUser(
+  user: string,
+  limit = 200,
+): ParlayRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM parlays
+        WHERE user = ? AND finalized = 0
+        ORDER BY created_at_ms DESC
+        LIMIT ?`,
+    )
+    .all(user, limit) as ParlayRow[];
+}
+
+/**
  * Read the per-leg `market_id` mapping for a parlay from the
  * off-chain `parlay_legs` mirror. The on-chain `ParlayLegRecorded`
  * event carries the market id; the position-indexer (R37) persists

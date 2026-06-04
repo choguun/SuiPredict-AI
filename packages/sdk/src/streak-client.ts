@@ -17,7 +17,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -151,17 +151,47 @@ export async function getStreakInfo(
       return null;
     }
     const claimedTiers = (fields.claimed_tiers as boolean[]) ?? [];
-    const currentStreak = Number(fields.current_streak ?? 0);
-    const tier = Number(fields.multiplier_tier ?? 0);
+    // R46 audit fix: route the u64 fields through the
+    // shared `u64ToSafeNumber` helper so a value above
+    // 2^53-1 logs a warning instead of silently
+    // truncating. `streak_id` is the parent object id,
+    // the on-call reporter gets the same trail the
+    // indexer's write path already produces.
+    const currentStreak = u64ToSafeNumber(
+      (fields.current_streak as bigint | string | number | undefined) ?? 0n,
+      "current_streak",
+      streakId,
+    );
+    const tier = u64ToSafeNumber(
+      (fields.multiplier_tier as bigint | string | number | undefined) ?? 0n,
+      "multiplier_tier",
+      streakId,
+    );
     const multiplierBps = computeMultiplierBps(tier);
     return {
       streak_id: streakId,
       owner: fields.owner as string,
       current_streak: currentStreak,
-      longest_streak: Number(fields.longest_streak ?? 0),
-      last_participation_day: Number(fields.last_participation_day ?? 0),
-      total_participated: Number(fields.total_participated ?? 0),
-      total_correct: Number(fields.total_correct ?? 0),
+      longest_streak: u64ToSafeNumber(
+        (fields.longest_streak as bigint | string | number | undefined) ?? 0n,
+        "longest_streak",
+        streakId,
+      ),
+      last_participation_day: u64ToSafeNumber(
+        (fields.last_participation_day as bigint | string | number | undefined) ?? 0n,
+        "last_participation_day",
+        streakId,
+      ),
+      total_participated: u64ToSafeNumber(
+        (fields.total_participated as bigint | string | number | undefined) ?? 0n,
+        "total_participated",
+        streakId,
+      ),
+      total_correct: u64ToSafeNumber(
+        (fields.total_correct as bigint | string | number | undefined) ?? 0n,
+        "total_correct",
+        streakId,
+      ),
       multiplier_tier: tier,
       multiplier_bps: multiplierBps,
       claimed_tiers: claimedTiers,

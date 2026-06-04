@@ -38,7 +38,7 @@ import {
   getParlay,
   getUserWeekRank,
   listAllParlaysForUser,
-  listUnfinalizedParlays,
+  listUnfinalizedParlaysForUser,
   listPrizeClaims,
   type ParlayRow,
 } from "./store.js";
@@ -435,6 +435,18 @@ export async function handleGamificationRoute(
       rank?: number;
       amount?: number | string;
       txDigest?: string;
+      // R46 audit fix: accept an optional `poolId` so a
+      // multi-pool deploy (one prize pool per market
+      // category, say) can attribute the claim to the
+      // correct pool without the server having to
+      // hardcode `process.env.PRIZE_POOL_ID`. The web
+      // currently doesn't send this — it's an
+      // additive, opt-in field — but the operator-
+      // dashboard view of prize claims should not be
+      // silently corrupting the (pool_id, user, week)
+      // PK by attributing every claim to whichever
+      // pool the server happened to boot with.
+      poolId?: string;
     }>(req);
     if (
       !body ||
@@ -447,6 +459,19 @@ export async function handleGamificationRoute(
       json(res, 400, { error: "missing or invalid fields" });
       return true;
     }
+    // R46 audit fix: validate the client-supplied poolId
+    // (if any) against the same strict object-id regex
+    // we apply to `user`. An unvalidated poolId would
+    // have written arbitrary text into the `prize_claims`
+    // row and corrupted the (pool_id, user, week_index)
+    // PK lookups the indexer runs on the next poll.
+    // Fall back to `process.env.PRIZE_POOL_ID` when the
+    // client omits the field (the current single-pool
+    // case).
+    const clientPoolId = typeof body.poolId === "string"
+      && /^0x[a-fA-F0-9]{64}$/.test(body.poolId)
+      ? body.poolId
+      : null;
     const weekIndex =
       typeof body.weekIndex === "string" ? Number(body.weekIndex) : body.weekIndex;
     if (!Number.isFinite(weekIndex) || weekIndex < 0) {
@@ -498,10 +523,19 @@ export async function handleGamificationRoute(
     // a duplicate of an existing claim from pool A — but a
     // claim from pool B (same user, same week) would still
     // pass the check.
+    //
+    // R46 audit fix: prefer a client-supplied `poolId` (if
+    // any) over the server-side env var. The client wins
+    // because the on-chain tx the user just signed was
+    // already attributed to a specific pool object, and the
+    // server should not be silently re-routing the off-chain
+    // mirror to a different pool. Fall back to the env var
+    // when the client omits the field.
+    const claimPoolId = clientPoolId ?? process.env.PRIZE_POOL_ID ?? "";
     const existing = getPrizeClaim(
       body.user,
       weekIndex,
-      process.env.PRIZE_POOL_ID ?? "",
+      claimPoolId,
     );
     if (existing) {
       json(res, 409, {
@@ -547,7 +581,13 @@ export async function handleGamificationRoute(
         // single source of truth for `amount`). Use the configured
         // prize pool id as the attribution; the indexer will
         // overwrite if a multi-pool deploy sends a different id.
-        pool_id: process.env.PRIZE_POOL_ID ?? null,
+        //
+        // R46 audit fix: prefer the client-supplied `poolId`
+        // (when present and well-formed) so the off-chain mirror
+        // row carries the same pool id the on-chain tx targeted.
+        // Fall back to the env var for clients that haven't been
+        // updated to send `poolId`.
+        pool_id: claimPoolId || null,
       });
       json(res, 200, { ok: true });
     } catch (err) {
@@ -628,12 +668,19 @@ export async function handleGamificationRoute(
     const includeFinalized =
       url.searchParams.get("include_finalized") === "1";
     // Bounded scan: the per-user `idx_parlays_user` index keeps this
-    // O(N over the user's parlays). The "all unfinalized" query is
-    // used as a fallback in case the per-user filter is missing the
-    // index — it is itself indexed via the partial `idx_parlays_unfinalized`.
+    // O(N over the user's parlays).
+    //
+    // R46 audit fix: the previous "unfinalized" branch called the
+    // global `listUnfinalizedParlays()` and then `.filter((p) =>
+    // p.user === addr)` in JS, which is O(N over all unfinalized
+    // parlays in the system) on every poll. At a busy settle
+    // window the /parlay page (which polls every 5s) was
+    // effectively N×M per request. Push the user filter into
+    // SQL so the indexer path stays O(N over the user's
+    // parlays).
     const allRows: ParlayRow[] = includeFinalized
       ? listAllParlaysForUser(addr)
-      : listUnfinalizedParlays().filter((p) => p.user === addr);
+      : listUnfinalizedParlaysForUser(addr);
     const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
     // Map the SQL row shape to the wire shape the web's ParlayHistory
     // component expects. The on-chain / DB column names diverge from

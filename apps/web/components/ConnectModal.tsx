@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWallets, useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
 import { toast } from "sonner";
@@ -68,6 +68,29 @@ export function ConnectModal() {
   };
 
   const handleDisconnect = async () => {
+    // R46 audit fix: confirm before disconnecting. The
+    // previous flow went straight from the "Disconnect"
+    // button click to `dappKit.disconnectWallet()` /
+    // `enokiFlow.logout()`, which clears the session,
+    // drops the wallet cookie, and re-renders the
+    // ConnectWallet button. A user who mis-clicked the
+    // button (it's the only rose-coloured CTA in the
+    // modal, easy to fat-finger) would have to redo
+    // the full Google OAuth / wallet extension flow
+    // to reconnect. The R45 admin-page pattern
+    // (window.confirm on submit) is the right shape
+    // — quick, no extra UI surface, hard to bypass
+    // accidentally. We only confirm when there's
+    // actually a session to lose (the button is only
+    // rendered in the connected view) so this is
+    // one confirm per accidental click.
+    if (
+      !window.confirm(
+        "Disconnect your wallet? You'll need to reconnect to sign transactions.",
+      )
+    ) {
+      return;
+    }
     // R44 audit fix: mirror the R42 `connectWallet` try/catch
     // pattern. `enokiFlow.logout()` and `dappKit.disconnectWallet()`
     // both reject (Enoki on cookie-clearing failures, dapp-kit on a
@@ -95,6 +118,23 @@ export function ConnectModal() {
   const shortenAddress = (addr: string) => {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   };
+
+  // R46 audit fix: close the modal on Escape. The modal is
+  // keyboard-focusable (the close X button has focus when the
+  // user tabs in) but a sighted power user hitting Escape
+  // expects the modal to close — the previous build ignored
+  // Escape and required a click on the X or backdrop. The
+  // handler binds on `keydown` only while the modal is open
+  // and removes itself on close so we don't leak listeners
+  // across opens.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen]);
 
   return (
     <>

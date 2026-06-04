@@ -118,8 +118,19 @@ function isTransientError(err: unknown): boolean {
   // Catch-all: any other Move abort is also permanent.
   if (err instanceof Error && /MoveAbort/.test(err.message)) return false;
   // RPC / network signatures worth retrying.
+  // R46 audit fix: extend the regex to cover 408 (Request
+  // Timeout) and 502 (Bad Gateway). 408 is the HTTP code
+  // gRPC sends when the upstream is slow to respond
+  // (the SDK's fetch wrapper stringifies the status code
+  // into the error message as "408"); 502 is what Cloudflare
+  // and the Sui gRPC LB return when the upstream backend is
+  // in the middle of a rolling restart. Both are
+  // retryable but the previous regex missed them, so a
+  // single transient blip would have marked the leg
+  // permanently failed and the streak-sweeper would have
+  // skipped it for the rest of the day.
   const msg = err instanceof Error ? err.message : String(err);
-  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
+  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|408|429|502|503|504|TooManyRequests|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout)/i.test(msg);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AGENT_POLICY_PACKAGE_ID } from "@suipredict/sdk";
 import { Badge, Card } from "@/components/ui";
 
@@ -46,6 +46,22 @@ interface HealthEnvelope {
   network?: string;
   grpc_url?: string;
   referral_treasury_address?: string;
+  // R46 audit fix: the agents /health payload now echoes
+  // six more env-driven ids the web bundle consumes
+  // (PRIZE_ADMIN_ID, PROFILE_REGISTRY_ID, ADMIN_ADDRESS,
+  // PARLAY_ADMIN_ID, DEEPBOOK_POOL_ID, DEEPBOOK_POOL_KEY).
+  // Without these on the envelope the drift detector
+  // can't see a mismatch — a mainnet web bundle that
+  // baked one NEXT_PUBLIC_* value but whose agents
+  // service was deployed with a different runtime env
+  // would silently break the corresponding PTB and the
+  // operator dashboard would have no signal.
+  prize_admin_id?: string;
+  profile_registry_id?: string;
+  admin_address?: string;
+  parlay_admin_id?: string;
+  deepbook_pool_id?: string;
+  deepbook_pool_key?: string;
   ts_ms?: number;
 }
 
@@ -111,6 +127,18 @@ const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvel
   // `process.env.NEXT_PUBLIC_SUI_NETWORK` directly into the
   // dAppKit config (see `lib/dapp-kit.ts`).
   { env: "NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS", label: "REFERRAL_TREASURY_ADDRESS", runtimeKey: "referral_treasury_address" },
+  // R46 audit fix: track the prize admin id (used by
+  // `prize_pool::claim_with_signature` PTBs the
+  // ClaimPrizeButton builds) and the profile registry id
+  // (used by every `user_profile::*` PTB the settings
+  // page builds). The agents /health payload now returns
+  // both — without these ENV_IDS entries the drift
+  // detector would silently skip a mismatch and a
+  // deploy that changed one env but not the other
+  // would surface as `object not found` move aborts
+  // with no operator visibility.
+  { env: "NEXT_PUBLIC_PRIZE_ADMIN_ID", label: "PRIZE_ADMIN_ID", runtimeKey: "prize_admin_id" },
+  { env: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", label: "PROFILE_REGISTRY_ID", runtimeKey: "profile_registry_id" },
 ];
 
 function driftLinesFor(h: HealthEnvelope): string[] {
@@ -122,8 +150,41 @@ function driftLinesFor(h: HealthEnvelope): string[] {
     // a raw env read because the SDK normalizes it across web/agents
     // (see packages/sdk/src/constants.ts).
     const localVal = label === "AGENT_POLICY_PACKAGE_ID" ? AGENT_POLICY_PACKAGE_ID : envVal;
-    if (!runtimeVal || !localVal) continue;
-    if (runtimeVal !== localVal) {
+    // R46 audit fix: don't silently skip rows where one
+    // side is empty. The previous "skip on empty" guard
+    // meant a missing runtime value (the agents service
+    // crashed mid-`/health` write and emitted a partial
+    // payload) would never surface as a drift — the
+    // operator would just see "no drift detected" on
+    // the dashboard while the web bundle submitted PTBs
+    // against a runtime pool that no longer existed.
+    // Surface an explicit "runtime value missing" line
+    // so the operator can chase the agents service's
+    // crashed boot.
+    if (!runtimeVal) {
+      lines.push(`${label}: runtime value missing from /health`);
+      continue;
+    }
+    if (!localVal) {
+      // Local-empty is a dev / mis-configured bundle,
+      // not a runtime crash, but still worth surfacing
+      // because it means the corresponding PTB is going
+      // to a zero-id sentinel.
+      lines.push(`${label}: web bundle has no ${env} set`);
+      continue;
+    }
+    // R46 audit fix: case-insensitive comparison. Sui
+    // addresses / object ids are case-sensitive on the
+    // wire, but the on-chain runtime is happy to accept
+    // any case mix when BCS-decoding. A web bundle
+    // that baked `NEXT_PUBLIC_PRIZE_POOL_ID=0xAbC…` and
+    // an agents runtime that read `PRIZE_POOL_ID=0xabc…`
+    // from .env would have appeared as "drift detected"
+    // here even though the on-chain PTB would have
+    // succeeded. Normalize to lowercase before the
+    // equality check so the dashboard only surfaces
+    // *real* drift.
+    if (runtimeVal.toLowerCase() !== localVal.toLowerCase()) {
       lines.push(
         `${label}: web=${localVal.slice(0, 10)}… runtime=${runtimeVal.slice(0, 10)}…`,
       );
@@ -200,10 +261,10 @@ export default function AgentsPage() {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       void load();
       // Adjust the next poll based on what the just-finished
-      // load() saw. `error` is captured by the closure; the
-      // effect re-binds the closure on every render anyway
-      // because we tear down and re-create the interval below.
-      const next = error ? 30_000 : 8_000;
+      // load() saw. `error` is read via the `errorRef` so the
+      // tick closure observes the latest value without the
+      // effect re-binding on every error change (R46 audit).
+      const next = errorRef.current ? 30_000 : 8_000;
       if (next !== backoffMs) {
         backoffMs = next;
         clearInterval(id);
@@ -221,7 +282,25 @@ export default function AgentsPage() {
     // the next interval restart can pick up the new backoff
     // value. `error` is the only state-derived dependency
     // needed for the tick closure.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    //
+    // R46 audit fix: capture `error` in a ref so the
+    // effect doesn't re-bind the interval on every
+    // `error` change. The previous effect had
+    // `[error]` in its dep array, which meant a
+    // transient 5xx (or a successful response
+    // clearing the error string) would tear down the
+    // interval, clear the backoff, and re-create the
+    // interval from scratch — losing the
+    // already-elapsed time and (worse) clobbering any
+    // in-flight fetch from the previous tick. The
+    // ref-based read lets the effect re-mount exactly
+    // once and the tick closure observe the latest
+    // `error` value via `errorRef.current` without
+    // the interval itself being rebound.
+  }, []);
+  const errorRef = useRef(error);
+  useEffect(() => {
+    errorRef.current = error;
   }, [error]);
 
   const primary = manifest.filter((a) => a.kind === "primary");

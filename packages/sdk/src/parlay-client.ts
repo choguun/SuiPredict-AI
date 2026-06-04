@@ -242,7 +242,14 @@ export function buildCreateParlayTx(args: {
   // `buildMintSharesTx` (prediction-market-client.ts) — without
   // this split, the contract's `coin::value(&coin)` would lock the
   // entire source coin balance as collateral.
-  const [parlayCoin] = tx.splitCoins(tx.object(args.coinId), [
+  // R46 audit fix: normalize the source coin id. R45 normalized
+  // the pool id, market ids, and the four parlay pool admin
+  // builders but missed this one — a coin id with mixed-case
+  // hex (e.g. a Suiscan link with a leading `0xAbc…`) would
+  // resolve to a different BCS object than the canonical
+  // lowercase form and the `splitCoins` would target a
+  // non-existent object, aborting the PTB.
+  const [parlayCoin] = tx.splitCoins(tx.object(normalizeObjectId(args.coinId)), [
     tx.pure.u64(collateral),
   ]);
   // R43 audit fix: normalize every market id in the vector to

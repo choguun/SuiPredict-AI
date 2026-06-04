@@ -142,7 +142,26 @@ export function getDb(): Database.Database {
         ON registered_markets(market_index);
     `);
     migrateMarketColumns();
-    seedDemoMarkets();
+    // R46 audit fix: only seed demo markets in dev / test
+    // environments. The previous code ran on every fresh DB
+    // regardless of `NODE_ENV`, which meant a production
+    // operator (or CI deploy) that wiped the DB for any reason
+    // (disk pressure, schema reset, disaster-recovery) would
+    // see two demo markets — "Will BTC exceed $100k by June
+    // 30?" and "Will SUI hit a new ATH in 2026?" — show up on
+    // the public `/markets` page the moment the agents booted.
+    // The indexer then starts chasing `MarketResolved` events
+    // for these on-chain object ids that don't exist (the
+    // "demo-btc-100k" id is a synthetic local string, not a
+    // 0x… transaction digest), logging "market not found"
+    // warnings forever. Gate on `NODE_ENV !== "production"`
+    // (matching the R41 /agents service's policy of never
+    // running dev-only fixtures in prod) and accept an
+    // explicit `SEED_DEMO_MARKETS=1` override for local
+    // development.
+    if (process.env.NODE_ENV !== "production" || process.env.SEED_DEMO_MARKETS === "1") {
+      seedDemoMarkets();
+    }
   }
   return db;
 }
@@ -222,6 +241,16 @@ function migrateMarketColumns() {
     dispute_count: "INTEGER NOT NULL DEFAULT 0",
     dispute_evidence_uri: "TEXT",
     last_dispute_at_ms: "INTEGER",
+    // R46 audit fix: `category` is in the CREATE TABLE
+    // (line 27) but was never added to this migration
+    // list. A pre-R46 DB that was created before
+    // `category` was added to CREATE TABLE wouldn't
+    // have the column at all; the `ALTER TABLE` would
+    // then error on the rare pre-R35 DB the operator
+    // still has on disk. Add it for symmetry and to
+    // guarantee a consistent shape regardless of when
+    // the DB was first provisioned.
+    category: "TEXT NOT NULL DEFAULT 'general'",
   };
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) {

@@ -14,6 +14,7 @@
  * RPC failure shouldn't crash the page.
  */
 import type { SuiClient } from "./predict-client.js";
+import { u64ToSafeNumber } from "./utils.js";
 
 async function readObject(
   client: SuiClient,
@@ -114,7 +115,16 @@ export async function readPrizePoolDistribution(
   if (!fields) return [];
   const raw = fields.distribution_bps;
   if (Array.isArray(raw)) {
-    return raw.map((v) => Number(v));
+    // R46 audit fix: route each bps through
+    // `u64ToSafeNumber` so a value above 2^53-1
+    // logs a warning instead of silently
+    // truncating. The current default distribution
+    // is a power-law vector in [0, 10_000] so this
+    // is dead code in practice, but the public
+    // read shouldn't bake in a future schema
+    // change that lets an operator set, say, a
+    // 1e18-sat-denominated bps on a custom pool.
+    return raw.map((v) => u64ToSafeNumber(v, "distribution_bps", poolId));
   }
   return [];
 }

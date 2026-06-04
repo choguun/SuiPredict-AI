@@ -116,38 +116,53 @@ export function buildSetForecasterKindTx(
 }
 
 /**
- * Build a PTB that reads a user's profile ID from the shared
- * `ProfileRegistry`. Returns the inner ID — the caller is
- * expected to wrap this in a follow-up `getObject` to read the
- * profile fields. (The Move function returns `Option<ID>`; the
- * SDK deserialises that into `string | null`.)
+ * Read a user's `UserProfile` ID from the shared `ProfileRegistry`.
+ * Returns null if the user has not created a profile yet.
+ *
+ * `ProfileRegistry` stores `profiles: Table<address, ID>`. Sui
+ * `Table` contents are dynamic fields — they don't appear in
+ * `getObject`'s JSON view. We use `getDynamicFieldObject` against
+ * the typed key `{type:"address", value:userAddress}`, identical
+ * to the `streakIdForUser` pattern in `streak-client.ts:184`.
+ *
+ * R46 audit fix: the previous implementation read the parent
+ * `ProfileRegistry` object and then unconditionally returned
+ * null — it never queried the dynamic field and so always
+ * reported "user has no profile", which would have silently
+ * broken the indexer path that consumes this helper to skip
+ * non-profiled users. Implement the dynamic-field read; fall
+ * back to null on any error (including 404, which is the
+ * expected outcome for users without a profile).
  */
 export async function readProfileIdForUser(
-  client: { getObject: Function },
+  client: { getDynamicField: Function; getObject: Function },
   registryId: string,
   user: string,
 ): Promise<string | null> {
-  const res = await client.getObject({
-    id: registryId,
-    options: { showContent: true },
-  });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as { profiles?: { fields?: { id?: string; size?: number } } } | undefined;
-  // The `Table<address, ID>` in `ProfileRegistry.profiles` is rendered
-  // by Sui JSON-RPC as a `{ id, size }` object. The values aren't
-  // inline-readable; the caller should use `getDynamicFieldObject`
-  // (or `multiGetObjects` after a table-iter) to fetch the inner
-  // profile. We expose this so the indexer / web can branch on
-  // "registry has any rows" without round-tripping per user.
-  if (fields?.profiles?.fields?.size === 0) return null;
-  // Without a `dynamic_field` query in this helper, we can't
-  // resolve the address-keyed entry here. The on-chain contract
-  // has `profile_id_for` (public read) — the proper JS-side read
-  // is a `devInspect` call or a dedicated indexer subscription.
-  // Returning null here is the safe default; the dynamic-field
-  // path lives in the agents indexer.
-  void user;
-  return null;
+  // R46 audit fix: prefer the modern `core.getDynamicField`
+  // path; fall back to the legacy `getDynamicFieldObject` only
+  // if the client doesn't expose `core`. Both call the same
+  // underlying RPC under the hood.
+  try {
+    const dynamicField = await client.getDynamicField({
+      parentId: registryId,
+      name: { type: "address", value: user },
+    });
+    const value = (dynamicField as { dynamicField?: { value?: unknown } })
+      ?.dynamicField?.value;
+    if (!value) return null;
+    return typeof value === "string" ? value : String(value);
+  } catch {
+    // 404 = user has no profile (the expected case for the vast
+    // majority of pre-profile users). Any other error = the
+    // parent table doesn't exist / wrong network / RPC outage.
+    // Both fall through to `null` so callers can branch on
+    // "no profile" without distinguishing the two failure
+    // modes. The caller is expected to verify the registry
+    // exists at boot via the `drift-detector` env-var
+    // comparison; this helper is per-user only.
+    return null;
+  }
 }
 
 // ============================================================

@@ -46,8 +46,18 @@ export const PREDICT_PACKAGE_ID =
     "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138"
   ).trim();
 
-export const PREDICT_REGISTRY_ID =
-  "0x43af14fed5480c20ff77e2263d5f794c35b9fab7e2212903127062f4fe2a6e64";
+// R46 audit fix: `PREDICT_REGISTRY_ID` was a hardcoded testnet
+// address with no env override. A mainnet deploy would silently
+// route every legacy `predict::registry` PTB to a non-existent
+// shared object and abort with `shared object not found` at
+// runtime — the R40 mainnet guard didn't know about it.
+// Resolve from `NEXT_PUBLIC_PREDICT_REGISTRY_ID` with a
+// hardcoded testnet default for devnet/testnet/localnet.
+export const PREDICT_REGISTRY_ID = (
+  process.env.NEXT_PUBLIC_PREDICT_REGISTRY_ID ??
+  process.env.PREDICT_REGISTRY_ID ??
+  "0x43af14fed5480c20ff77e2263d5f794c35b9fab7e2212903127062f4fe2a6e64"
+).trim();
 
 export const PREDICT_OBJECT_ID =
   "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a";
@@ -140,14 +150,49 @@ function assertMainnetHasExplicitIds(): void {
       );
     }
   }
+  // R46 audit fix: add the post-R40 mint / registry ids that
+  // the bundles now reference. `DUSDC_TREASURY_CAP_ID` is the
+  // `dusdc::DUSDC` TreasuryCap that the bootstrap mints
+  // against; `PREDICT_REGISTRY_ID` is the `predict::Registry`
+  // shared object the legacy `app/legacy/predict/*` pages read.
+  // A mainnet build that provided everything above but omitted
+  // these would still silently submit against the bundled
+  // testnet default and abort with `object not found` on the
+  // first mint / registry call. Throw at module load.
+  const r46Ids = [
+    "NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID",
+    "DUSDC_TREASURY_CAP_ID",
+    "NEXT_PUBLIC_PREDICT_REGISTRY_ID",
+    "PREDICT_REGISTRY_ID",
+  ];
+  for (const v of r46Ids) {
+    if (!process.env[v]) {
+      throw new Error(
+        `[sdk] SUI_NETWORK=mainnet but ${v} env var is not set. ` +
+          "Refusing to silently use the bundled testnet default. Set " +
+          "the env var and rebuild.",
+      );
+    }
+  }
 }
 
 export const DUSDC_TYPE = `${DUSDC_PACKAGE_ID}::dusdc::DUSDC`;
 
 export const PLP_TYPE = `${PREDICT_PACKAGE_ID}::plp::PLP`;
 
-export const DUSDC_TREASURY_CAP_ID =
-  "0x64f8a47a0af0a3b14db3a7ce89aa206ff77a9c6b5ac0eaef6db2ea46da3ced94";
+// R46 audit fix: `DUSDC_TREASURY_CAP_ID` was a hardcoded testnet
+// address with no env override. The dUSDC `treasury_cap` is a
+// one-time-published object that the bootstrap mints against;
+// a mainnet deploy that only set the package id would silently
+// try to access a non-existent cap and abort with `object not
+// found` on the first mint call. Resolve from
+// `NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID` with a hardcoded testnet
+// default for devnet/testnet/localnet.
+export const DUSDC_TREASURY_CAP_ID = (
+  process.env.NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID ??
+  process.env.DUSDC_TREASURY_CAP_ID ??
+  "0x64f8a47a0af0a3b14db3a7ce89aa206ff77a9c6b5ac0eaef6db2ea46da3ced94"
+).trim();
 
 export const CLOCK_OBJECT_ID = "0x6";
 

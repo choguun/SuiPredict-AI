@@ -29,7 +29,24 @@ function probabilityFromBook(
 }
 
 export default async function MarketsPage() {
-  const markets = await listMarkets().catch(() => []);
+  // R46 audit fix: don't silently swallow `listMarkets()`
+  // failures. The previous `.catch(() => [])` collapsed
+  // every error (RPC outage, SDK build mismatch, network
+  // misconfig) into the same "no markets" empty state as
+  // a healthy-but-empty agents service — a developer
+  // hitting this on a fresh `pnpm dev` would see the
+  // "No Markets Available" hint and conclude that they
+  // needed to "Start the agents service" when the
+  // actual problem was a SUI_NETWORK mismatch. Surface
+  // a distinct error banner so the failure mode is
+  // diagnosable from the page itself.
+  let markets: Awaited<ReturnType<typeof listMarkets>> = [];
+  let marketsError: string | null = null;
+  try {
+    markets = await listMarkets();
+  } catch (err) {
+    marketsError = err instanceof Error ? err.message : String(err);
+  }
   const active = markets.filter((m) => m.status === "active").length;
   const resolved = markets.filter((m) => m.status === "resolved").length;
 
@@ -83,7 +100,20 @@ export default async function MarketsPage() {
       </div>
 
       <div className="grid gap-3">
-        {markets.length === 0 && (
+        {marketsError && (
+          <div
+            role="alert"
+            className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
+          >
+            <p className="font-semibold">Failed to load markets</p>
+            <p className="mt-1 text-rose-300/80">
+              {marketsError}. Check that the agents service is running and that
+              the SUI_NETWORK / AGENT_POLICY_PACKAGE_ID env vars match between
+              the web bundle and the agents runtime.
+            </p>
+          </div>
+        )}
+        {markets.length === 0 && !marketsError && (
           <EmptyState
             title="No Markets Available"
             description="Start the agents service to seed demo markets or connect to the live network."

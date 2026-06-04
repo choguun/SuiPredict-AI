@@ -357,6 +357,33 @@ function startHealthServer() {
           // existing parlay/vault entries.
           fee_vault_id: process.env.FEE_VAULT_ID ?? "",
           streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
+          // R46 audit fix: the drift detector on the web
+          // `/agents` page compares the `NEXT_PUBLIC_*` env
+          // vars baked into the bundle against the values
+          // returned here. The previous payload was missing
+          // six env-driven ids the bundle now consumes —
+          // PRIZE_ADMIN_ID (used by prize-claim tx), the
+          // profile registry (used by every
+          // `user_profile::*` PTB), ADMIN_ADDRESS
+          // (parlay-claim fallback), PARLAY_ADMIN_ID
+          // (parlay admin rotate), and the deepbook
+          // pool id / key (every market_maker PTB).
+          // A drift on any of these would silently break
+          // the relevant call with `object not found` /
+          // `EPackageObjectNotFound` and the operator
+          // dashboard had no signal short of a
+          // user-reported move abort. Adding them to the
+          // payload closes the loop; the web side already
+          // reads them.
+          prize_admin_id: process.env.PRIZE_ADMIN_ID ?? "",
+          profile_registry_id:
+            process.env.PROFILE_REGISTRY_ID ?? "",
+          admin_address: process.env.ADMIN_ADDRESS ?? "",
+          parlay_admin_id: process.env.PARLAY_ADMIN_ID ?? "",
+          deepbook_pool_id:
+            process.env.DEEPBOOK_POOL_ID ?? "",
+          deepbook_pool_key:
+            process.env.DEEPBOOK_POOL_KEY ?? "",
           // R39 audit fix: expose the resolved network + RPC URL
           // so the operator can confirm the agents service is
           // talking to the cluster they expect. R34 fixed the

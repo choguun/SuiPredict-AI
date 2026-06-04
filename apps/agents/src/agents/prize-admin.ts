@@ -45,11 +45,19 @@ import {
 // have permanently disabled funding.
 const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
-const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
-  | "testnet"
-  | "mainnet"
-  | "devnet"
-  | "localnet";
+// R46 audit fix: drop the dead `SUI_NETWORK` constant. The
+// previous module-level const was typed as a discriminated
+// union (testnet/mainnet/devnet/localnet) but never read
+// anywhere in this file — the createClient() call at line
+// 80 picks its RPC URL from the SDK's `SUI_GRPC_URL`
+// resolver, which is the right place for the network-aware
+// logic. Carrying the value here implied a per-worker
+// override that the code didn't actually use, which a
+// future reader might "fix" by branching on it (e.g. "use
+// a different settle admin on mainnet"), introducing a
+// new bug class. If a per-prize-admin network switch is
+// ever needed, do it at the SDK layer where the rest of
+// the network plumbing lives.
 
 export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   // R43 audit fix: re-read the runtime-tunable knobs at the top

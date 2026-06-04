@@ -88,3 +88,48 @@ export function normalizeObjectId(id: string | null | undefined): string {
   }
   return stripped;
 }
+
+/**
+ * Convert a u64 BigInt (or string, as the gRPC / indexer
+ * sometimes hands us) to a JavaScript number, logging a
+ * warning if the value exceeds `Number.MAX_SAFE_INTEGER`
+ * (2^53-1). R46 audit fix: the previous `Number(...)` /
+ * `parseInt(...)` calls in `streak-client.ts` and
+ * `protocol-reads.ts` would silently lose precision above
+ * 2^53 before the caller's number-typed field ever saw
+ * the value. Today's streak counters and the prize-pool
+ * `distribution_bps` vector all fit comfortably below 2^53
+ * (a streak counter of 2^53 days is 285 billion years), but
+ * `total_participated` / `total_correct` on a long-running
+ * `UserStreak` could in principle grow unbounded, and a
+ * future `distribution_bps` schema change (e.g. an additional
+ * rank entry) is a silent-corruption trap. Centralize the
+ * conversion here so the read paths get the same warning the
+ * indexer's write path already emits.
+ *
+ * `fieldName` and `objectId` are used only in the warning
+ * message so an operator chasing a "this value looks wrong"
+ * report can map the truncated number back to the on-chain
+ * object it came from.
+ */
+export function u64ToSafeNumber(
+  value: bigint | string | number,
+  fieldName: string,
+  objectId: string,
+): number {
+  const asBig =
+    typeof value === "bigint"
+      ? value
+      : BigInt(typeof value === "string" ? value : String(value));
+  const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+  if (asBig > MAX_SAFE) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[sdk] ${fieldName} for ${objectId} (${asBig}) exceeds ` +
+        "Number.MAX_SAFE_INTEGER; truncating. The on-chain field is u64; " +
+        "if you need exact precision, surface this as a BigInt and " +
+        "render with a custom formatter.",
+    );
+  }
+  return Number(asBig);
+}

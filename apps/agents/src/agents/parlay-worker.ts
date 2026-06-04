@@ -110,7 +110,12 @@ function isTransientError(err: unknown): boolean {
   // would return false, so we use a stricter check here.
   const msg = err instanceof Error ? err.message : String(err);
   if (/module:\s*"[a-z_]+"[\s\S]*MoveAbort/.test(msg)) return false;
-  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
+  // R46 audit fix: extend the regex to cover 408 (Request
+  // Timeout) and 502 (Bad Gateway) — see streak-sweeper.ts
+  // for the full rationale. The parlay-worker per-leg
+  // retry loop previously bailed on a single 408/502 and
+  // marked the leg permanently failed.
+  return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|408|429|502|503|504|TooManyRequests|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout)/i.test(msg);
 }
 
 function sleep(ms: number): Promise<void> {
