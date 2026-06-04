@@ -16,6 +16,7 @@ import {
   FORECASTER_BOT,
   FORECASTER_HUMAN,
   getPolicyState,
+  isValidSuiAddress,
   MAX_COUNTRY_BYTES,
   dusdcToDollars,
   type AgentPolicyState,
@@ -115,6 +116,28 @@ export default function SettingsPage() {
 
   async function createPolicy() {
     if (!account || !client || !agentAddress) return;
+    // R44 audit fix: validate the agent address before submitting
+    // the create-policy PTB. The previous code accepted any
+    // non-empty string; a typo (truncation, wrong network,
+    // accidental 0x prefix or, most commonly, a paste from a
+    // different chain like Ethereum) would have:
+    //   - produced a `tx.pure.address(badAddr)` that Move parsed
+    //     into a Sui address (zero-padded) on the way to the
+    //     signature check, where the on-chain
+    //     `agent_policy::create_policy` aborts with
+    //     `EInvalidAgentAddress` and burns the gas fee, or
+    //   - succeeded and created a policy whose `agent` field is
+    //     a non-existent address — the policy is then orphaned
+    //     forever (no one can `pause` it, the budget is locked).
+    // Match the same validator the agents-side
+    // `bootstrap-env.ts` and `referral-keeper.ts` use (R42 audit
+    // surfaced the same `isValidSuiAddress` helper in utils.ts).
+    if (!isValidSuiAddress(agentAddress)) {
+      setStatus(
+        "Agent address is not a valid Sui address (expected 0x + 64 hex chars, not the 0x0…0 placeholder).",
+      );
+      return;
+    }
     setLoading(true);
     setStatus("Creating agent policy...");
     try {
@@ -279,11 +302,30 @@ export default function SettingsPage() {
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Agent Address</label>
               <input
-                className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:border-cyan-500/50 focus:outline-none transition-colors"
                 value={agentAddress}
                 onChange={(e) => setAgentAddress(e.target.value)}
                 placeholder="0x..."
+                // R44 audit fix: surface the validator inline
+                // (red ring when invalid) so the user can fix a
+                // typo before clicking Create Policy, instead of
+                // seeing the failure in the bottom status line.
+                // `isValidSuiAddress` is the same helper used
+                // server-side; running it twice (here + at submit
+                // time) is cheap.
+                aria-invalid={
+                  agentAddress.length > 0 && !isValidSuiAddress(agentAddress)
+                }
+                className={`w-full rounded-lg border bg-black/20 px-3 py-2.5 text-sm font-mono text-white focus:outline-none transition-colors ${
+                  agentAddress.length > 0 && !isValidSuiAddress(agentAddress)
+                    ? "border-rose-500/50 focus:border-rose-500/70"
+                    : "border-white/10 focus:border-cyan-500/50"
+                }`}
               />
+              {agentAddress.length > 0 && !isValidSuiAddress(agentAddress) && (
+                <p className="mt-1 text-[10px] text-rose-400">
+                  Must be 0x + 64 hex characters (Sui address, not the 0x0…0 placeholder).
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Max Budget (dUSDC)</label>
@@ -308,7 +350,15 @@ export default function SettingsPage() {
             </div>
             <button
               onClick={createPolicy}
-              disabled={loading || !agentAddress}
+              // R44 audit fix: also block submit when the
+              // typed agent address is syntactically invalid.
+              // The submit-time guard above surfaces a status
+              // message, but disabling the button up-front
+              // matches the visual cue (red border + helper
+              // text) and avoids the click → reject loop.
+              disabled={
+                loading || !agentAddress || !isValidSuiAddress(agentAddress)
+              }
               className="mt-2 w-full rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-3 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
             >
               Create Policy

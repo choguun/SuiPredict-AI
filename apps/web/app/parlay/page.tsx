@@ -328,8 +328,23 @@ export default function ParlayPage() {
       // stale for 8s without an explicit invalidation. Use
       // `type: "active"` to match the tuple form used by
       // `app/portfolio/page.tsx:32`.
-      queryClient.invalidateQueries({ queryKey: ["marketsList"] });
-      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
+      //
+      // R44 audit fix: the first two invalidations were
+      // missing the `type: "active"` filter. Without it, the
+      // `queryKey: ["marketsList"]` call only matched
+      // *exact*-key subscribers — TanStack Query v5 default
+      // is `type: "all"`, which matches active and inactive,
+      // but the new "active" project-wide convention
+      // (introduced R43 in DailyPredictionCard.tsx) uses
+      // `type: "active"` to be explicit. The DailyPredictionCard
+      // code was the only place honoring the new convention;
+      // this was the survivor. Apply the same here so a
+      // parlay create drops the active `["marketsList"]` and
+      // `["dailyMarkets"]` subscribers without
+      // touching inactive ones (e.g. preloaded server-state
+      // in a still-mounting child route).
+      queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
+      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"], type: "active" });
       queryClient.invalidateQueries({ queryKey: ["portfolio"], type: "active" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");

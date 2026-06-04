@@ -68,12 +68,28 @@ export function ConnectModal() {
   };
 
   const handleDisconnect = async () => {
-    if (isZkLogin) {
-      await enokiFlow.logout();
-    } else {
-      await dappKit.disconnectWallet();
+    // R44 audit fix: mirror the R42 `connectWallet` try/catch
+    // pattern. `enokiFlow.logout()` and `dappKit.disconnectWallet()`
+    // both reject (Enoki on cookie-clearing failures, dapp-kit on a
+    // wallet extension that hangs during the disconnect handshake),
+    // and the previous code awaited them bare — a rejection
+    // surfaced as a silent unhandled promise rejection in the
+    // console and the modal stayed open with no visible feedback.
+    // Wrap each call, surface a toast on failure, and always close
+    // the modal in `finally` so the user can retry.
+    try {
+      if (isZkLogin) {
+        await enokiFlow.logout();
+      } else {
+        await dappKit.disconnectWallet();
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "unknown error";
+      toast.error(`Failed to disconnect: ${message}`);
+    } finally {
+      setIsOpen(false);
     }
-    setIsOpen(false);
   };
 
   const shortenAddress = (addr: string) => {

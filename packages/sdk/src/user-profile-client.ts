@@ -172,16 +172,86 @@ export async function readUserProfile(
   const fields = (res.data?.content as { fields?: Record<string, unknown> })
     ?.fields as Partial<UserProfileFields> | undefined;
   if (!fields) return null;
-  // country_code comes back as a base64-encoded `vector<u8>` from
-  // the JSON-RPC. The web/agents path can decode via `atob`; here
-  // we expose it raw (it'll render as base64) and let callers
-  // decode with their preferred helper.
+  // R44 audit fix: `country_code` is a `vector<u8>` on-chain, and
+  // Sui JSON-RPC renders it in two shapes depending on the codec:
+  //   - the gRPC / indexer path (`@mysten/sui/client/getFullnodeObject`)
+  //     emits a `number[]` byte array (e.g. `[117, 115]` for "us"),
+  //   - the legacy JSON-RPC `getObject` path (used by the
+  //     web/settings page and the agents /profile/:addr route
+  //     before R44) emits a base64 string.
+  // The previous `String(fields.country_code ?? "")` returned:
+  //   - "117,115" for the number[] shape (joined by `Array#toString`),
+  //     which the settings page then tried to `.toLowerCase()` and
+  //     submit as a country code, producing a "117,115" country
+  //     that `set_country_code` later rejected with
+  //     `EInvalidCountry` (non-ASCII), or
+  //   - "dXM=" for the base64 shape, which `set_country_code`
+  //     would also reject (non-ASCII) on re-save.
+  // Decode both shapes here so the same `country_code` string
+  // round-trips through `set_country_code` without an
+  // `EInvalidCountry` abort.
   return {
     owner: String(fields.owner ?? ""),
-    country_code: String(fields.country_code ?? ""),
+    country_code: decodeCountryCodeField(fields.country_code),
     forecaster_kind: Number(fields.forecaster_kind ?? 0),
     created_at_ms: Number(fields.created_at_ms ?? 0),
   };
+}
+
+/**
+ * Decode the `country_code` `vector<u8>` field as returned by
+ * Sui JSON-RPC. Two valid shapes:
+ *   - `number[]` (gRPC codec): the byte array rendered directly;
+ *     decode via `Uint8Array.from` + `TextDecoder`.
+ *   - `string` (legacy JSON-RPC): base64-encoded; decode via
+ *     `Buffer.from(..., "base64")`.
+ * Returns the empty string for an unset/empty country code so the
+ * settings page's `value={country}` shows a blank input rather
+ * than the raw base64 of "empty bytes".
+ */
+function decodeCountryCodeField(raw: unknown): string {
+  if (raw == null) return "";
+  if (Array.isArray(raw)) {
+    // gRPC / indexer path. An empty `vector<u8>` is `[]`.
+    if (raw.length === 0) return "";
+    if (!raw.every((b) => typeof b === "number" && b >= 0 && b <= 255)) {
+      return "";
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        Uint8Array.from(raw as number[]),
+      );
+    } catch {
+      // Not valid UTF-8 — the on-chain state shouldn't allow
+      // this, but if a future Move change stores binary data
+      // here the helper should not throw. Fall through to the
+      // base64 fallback in case the array was base64-encoded
+      // by some intermediate (uncommon).
+      try {
+        return Buffer.from(
+          Uint8Array.from(raw as number[]),
+        ).toString("base64");
+      } catch {
+        return "";
+      }
+    }
+  }
+  if (typeof raw === "string") {
+    if (raw.length === 0) return "";
+    // Legacy JSON-RPC returns a base64 string. Decode it the same
+    // way the gRPC number[] path does, then UTF-8 decode the
+    // bytes. We attempt the strict TextDecoder path first and
+    // fall back to a string copy (the field is supposed to be
+    // 0..=8 ASCII letters, so a raw copy is the safe last
+    // resort).
+    try {
+      const bytes = Buffer.from(raw, "base64");
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return raw;
+    }
+  }
+  return "";
 }
 
 // ============================================================

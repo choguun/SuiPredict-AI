@@ -150,7 +150,21 @@ export function buildClaimPrizeTx(params: {
   // than the one the backend signed over, the signature verifies against
   // a pool that doesn't exist and the funds go nowhere useful. Abort here
   // so the caller fixes the wiring rather than burning gas.
-  if (params.poolId !== params.poolIdForSig) {
+  //
+  // R44 audit fix: compare the *normalized* ids (trim + lowercase +
+  // canonical 0x prefix), not the raw strings. The web settings page
+  // hands `poolId` directly to the SDK from a `useReadAdminConfig`
+  // hook that doesn't normalize; an env var picked up via
+  // `process.env.PRIZE_POOL_ID` is sometimes mixed-case (the
+  // bootstrap-env script reads it from `.env` files copied across
+  // machines). The previous `params.poolId !== params.poolIdForSig`
+  // would fire on a case-only difference and refuse to build a valid
+  // PTB. Run both through `normalizeObjectId` and compare, then use
+  // the normalized form for the actual `tx.object` / `tx.pure.id`
+  // calls below (which is what the chain resolves against).
+  const normalizedPoolId = normalizeObjectId(params.poolId);
+  const normalizedPoolIdForSig = normalizeObjectId(params.poolIdForSig);
+  if (normalizedPoolId !== normalizedPoolIdForSig) {
     throw new Error(
       `buildClaimPrizeTx: poolId (${params.poolId}) !== poolIdForSig (${params.poolIdForSig}); ` +
         "the signature was generated against a different pool. Pass the same id for both.",
@@ -161,14 +175,14 @@ export function buildClaimPrizeTx(params: {
     target: `${PKG()}::prize_pool::claim_prize`,
     typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
     arguments: [
-      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizedPoolId),
       tx.object(normalizeObjectId(params.prizeAdminId)),
       tx.object(normalizeObjectId(params.userStreakId)),
       tx.pure.u64(params.weekIndex),
       tx.pure.u64(params.rank),
       tx.pure.u64(params.amount),
       tx.pure.vector("u8", Array.from(fromBase64(params.signatureB64))),
-      tx.pure.id(normalizeObjectId(params.poolIdForSig)),
+      tx.pure.id(normalizedPoolIdForSig),
     ],
   });
   return tx;

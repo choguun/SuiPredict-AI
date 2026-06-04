@@ -11,9 +11,23 @@ import { getVaultSummaryFromEnv } from "../markets/store.js";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 
-const PAUSE_UTILIZATION = Number(process.env.RISK_PAUSE_UTILIZATION ?? 0.80);
+// R44 audit fix: `RISK_PAUSE_UTILIZATION` is a runtime-tunable
+// knob that an operator might hot-patch via `bootstrap-env.ts`
+// (e.g. to drop the threshold from 0.80 to 0.95 after a
+// liquidity event, or raise it to 0.50 during a stress test).
+// Reading it at module load (the previous behavior) froze the
+// value at boot time; a hot-patch landed via
+// `bootstrap-env.ts` would update `process.env` but the agent
+// would still compare against the old constant. Move the read
+// inside `runRiskMonitor` so a hot-patch takes effect on the
+// next cron tick. This matches the R43 fix in prize-admin.ts
+// and market-creator.ts.
+const DEFAULT_PAUSE_UTILIZATION = 0.80;
 
 export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
+  const pauseUtilization = Number(
+    process.env.RISK_PAUSE_UTILIZATION ?? DEFAULT_PAUSE_UTILIZATION,
+  );
   // Read the suipredict ProtocolVault utilization from the agents'
   // own /vault/summary source (backed by VAULT_TOTAL_BALANCE and
   // VAULT_ALLOCATED env vars). The legacy `getVaultSummary()` from
@@ -34,7 +48,7 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   }
   const budgetPct = policyBudget > 0 ? policySpent / policyBudget : 0;
 
-  if (utilization >= PAUSE_UTILIZATION) {
+  if (utilization >= pauseUtilization) {
     // R42 audit fix: explicitly distinguish the "high utilization
     // but no policy id configured" case from the routine monitor
     // path. The previous code combined the two into a single
@@ -49,7 +63,7 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
         action: "pause_skipped_no_policy",
         reasoning:
           `Vault utilization ${(utilization * 100).toFixed(2)}% ` +
-          `>= ${(PAUSE_UTILIZATION * 100).toFixed(0)}% threshold but ` +
+          `>= ${(pauseUtilization * 100).toFixed(0)}% threshold but ` +
           `AGENT_POLICY_ID is not configured; cannot pause. Set the ` +
           `env var and restart the agents service.`,
         confidence: 95,

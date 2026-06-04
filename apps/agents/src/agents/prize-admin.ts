@@ -24,7 +24,7 @@ import {
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
-import { weekIndexFor } from "../gamification/store.js";
+import { isPoolWeekSettled, weekIndexFor } from "../gamification/store.js";
 
 // R43 audit fix: read the runtime-tunable knobs (`PRIZE_FUND_AMOUNT`,
 // `PRIZE_POOL_MIN_BALANCE`) at the top of `runPrizeAdmin` rather
@@ -159,17 +159,39 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
           `settle skipped: prior week ${priorWeek} has 0 weekly_prize.`,
         );
       } else if (priorWeeklyPrize > 0n) {
-        const settleTx = buildSettleWeekTx(
-          PRIZE_POOL_ID,
-          PRIZE_ADMIN_ID,
-          BigInt(priorWeek),
-        );
-        const r = await executeTransaction(client, settleTx, ctx.signer);
-        settledWeek = priorWeek;
-        notes.push(
-          `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +
-            `${r.digest.slice(0, 12)}…`,
-        );
+        // R44 audit fix: skip when the off-chain mirror already
+        // shows this (pool, week) as settled. The on-chain
+        // `prize_pool::settle_week` is *not* idempotent — a
+        // second call from the admin (e.g. cron caught up
+        // after a restart, or a manual settle) aborts with
+        // `EAlreadySettled`, which the worker treats as a
+        // generic failure and would log at warn level forever
+        // (the position-indexer would never observe the
+        // `PoolSettled` event because the tx was never
+        // submitted, so the mirror stays in the
+        // "settle_failed" state indefinitely). The mirror
+        // path (R33) wrote the row from the indexer's
+        // `PoolSettled` event poll, so a `true` here is the
+        // chain's own confirmation. If the mirror was wiped
+        // (operator disaster-recovery), we'd re-settle and
+        // burn gas once — acceptable, not a permanent loop.
+        if (isPoolWeekSettled(PRIZE_POOL_ID, priorWeek)) {
+          notes.push(
+            `settle skipped: prior week ${priorWeek} already settled (mirror).`,
+          );
+        } else {
+          const settleTx = buildSettleWeekTx(
+            PRIZE_POOL_ID,
+            PRIZE_ADMIN_ID,
+            BigInt(priorWeek),
+          );
+          const r = await executeTransaction(client, settleTx, ctx.signer);
+          settledWeek = priorWeek;
+          notes.push(
+            `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +
+              `${r.digest.slice(0, 12)}…`,
+          );
+        }
       }
     }
   } catch (err) {

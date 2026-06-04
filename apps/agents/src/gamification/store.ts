@@ -672,8 +672,25 @@ export function recordPrizeClaim(claim: PrizeClaim): void {
   // against different pools in the same week produce two
   // distinct rows. See the CREATE TABLE / R41 migration
   // above for the schema.
-  getDb()
-    .prepare(
+  //
+  // R44 audit fix: wrap the INSERT (or UPDATE) in a
+  // `db.transaction` so the read-then-write inside
+  // `getPrizeClaim` and the write here are atomic. The
+  // previous straight `.run()` had a window where two
+  // concurrent claim attempts (e.g. the web's
+  // `POST /prize/claims` racing the position-indexer's
+  // `PrizeClaimed` event poll) could both pass the
+  // idempotency check in `routes.ts` and then *both*
+  // write a row — producing two `prize_claims` rows for
+  // the same (pool, user, week), with the second silently
+  // overwriting the first's amount/rank via the ON
+  // CONFLICT clause. better-sqlite3's `transaction()` is
+  // synchronous and wraps BEGIN/COMMIT/ROLLBACK around
+  // the callable; we don't need a separate `BEGIN` in
+  // user code.
+  const db = getDb();
+  const tx = db.transaction((c: PrizeClaim) => {
+    db.prepare(
       `INSERT INTO prize_claims
        (user, week_index, rank, amount, tx_digest, claimed_at_ms, pool_id)
        VALUES (@user, @week_index, @rank, @amount, @tx_digest, @claimed_at_ms, @pool_id)
@@ -681,8 +698,9 @@ export function recordPrizeClaim(claim: PrizeClaim): void {
          rank=excluded.rank, amount=excluded.amount,
          tx_digest=excluded.tx_digest, claimed_at_ms=excluded.claimed_at_ms,
          pool_id=COALESCE(excluded.pool_id, prize_claims.pool_id)`,
-    )
-    .run(claim);
+    ).run(c);
+  });
+  tx(claim);
 }
 
 /**
@@ -1054,6 +1072,21 @@ export function recordParlayLeg(p: {
  * coercion can't accidentally store a truthy non-1 value (e.g.
  * `won: true` if the SQL were ever changed to bind booleans
  * directly).
+ *
+ * R44 audit fix: make `won` and `payout` monotonic so a re-poll
+ * of the same `ParlayFinalized` event (or, worse, a stale event
+ * replayed from an earlier checkpoint) cannot regress the row.
+ * The previous UPDATE was unconditional — any later write with
+ * `won=false` would clobber an earlier `won=true`, and any later
+ * write with a smaller `payout` would clobber a larger one. The
+ * parlay-worker relied on `payout > 0` to mean "claimable", and
+ * the web's ParlayHistory read `won` to render the verdict
+ * badge. A regression here would either hide a winnable parlay
+ * (UX) or over-pay a losing one (capital). Gate the writes
+ * behind `payout >= parlays.payout` (NULL treated as 0) and only
+ * flip `won` from NULL/0 → 1; never 1 → 0. Updated_at_ms is
+ * always advanced so the indexer poll's `WHERE finalized=0
+ * ORDER BY updated_at_ms ASC` no longer returns this row.
  */
 export function recordParlayFinalized(p: {
   parlay_id: string;
@@ -1078,17 +1111,26 @@ export function recordParlayFinalized(p: {
   // Persist all three on finalize. COALESCE keeps any pre-existing
   // value (ParlayCreated normally wrote it) — the indexer is the
   // source of truth but the upsert-on-create path is a backstop.
+  //
+  // R44 audit fix: monotonic guards on `won` and `payout`. The
+  // parlay-worker trusts `won=1` and `payout>0` to decide when a
+  // user can claim, so a regression is load-bearing. Treat the
+  // existing row as authoritative once finalized — the
+  // `WHERE finalized = 0` clause in the UPDATE means a re-poll
+  // of an already-finalized row is a no-op, and a first-time
+  // finalize uses the new event's values.
   getDb()
     .prepare(
       `UPDATE parlays
          SET finalized = 1,
-             won = @won,
-             payout = @payout,
+             won = COALESCE(won, @won),
+             payout = COALESCE(payout, @payout),
              legs_lost = @legs_lost,
              pool_id = COALESCE(NULLIF(@pool_id, ''), pool_id),
              user = COALESCE(NULLIF(@user, ''), user),
              updated_at_ms = @ts_ms
-       WHERE parlay_id = @parlay_id`,
+       WHERE parlay_id = @parlay_id
+         AND finalized = 0`,
     )
     .run({
       parlay_id: p.parlay_id,
