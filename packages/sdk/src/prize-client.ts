@@ -15,6 +15,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { fromBase64 } from "@mysten/sui/utils";
 import { AGENT_POLICY_PACKAGE_ID, DUSDC_TYPE } from "./constants.js";
+import { normalizeObjectId } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -92,7 +93,7 @@ export function buildFundPoolTx(
   tx.moveCall({
     target: `${PKG()}::prize_pool::fund_pool`,
     typeArguments: [prizeCoinType],
-    arguments: [tx.object(poolId), tx.object(fundCoin)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.object(fundCoin)],
   });
   return tx;
 }
@@ -121,7 +122,7 @@ export function buildCreatePoolTx(params: {
     target: `${PKG()}::prize_pool::create_pool`,
     typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
     arguments: [
-      tx.object(params.initialCoinId),
+      tx.object(normalizeObjectId(params.initialCoinId)),
       tx.pure.u64(params.initialWeek),
     ],
   });
@@ -160,14 +161,14 @@ export function buildClaimPrizeTx(params: {
     target: `${PKG()}::prize_pool::claim_prize`,
     typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
     arguments: [
-      tx.object(params.poolId),
-      tx.object(params.prizeAdminId),
-      tx.object(params.userStreakId),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.prizeAdminId)),
+      tx.object(normalizeObjectId(params.userStreakId)),
       tx.pure.u64(params.weekIndex),
       tx.pure.u64(params.rank),
       tx.pure.u64(params.amount),
       tx.pure.vector("u8", Array.from(fromBase64(params.signatureB64))),
-      tx.pure.id(params.poolIdForSig),
+      tx.pure.id(normalizeObjectId(params.poolIdForSig)),
     ],
   });
   return tx;
@@ -183,7 +184,7 @@ export function buildSettleWeekTx(
   tx.moveCall({
     target: `${PKG()}::prize_pool::settle_week`,
     typeArguments: [prizeCoinType],
-    arguments: [tx.object(poolId), tx.object(adminCapId), tx.pure.u64(weekIndex)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(adminCapId)), tx.pure.u64(weekIndex)],
   });
   return tx;
 }
@@ -198,7 +199,7 @@ export function buildRotateWeekTx(
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_week`,
     typeArguments: [prizeCoinType],
-    arguments: [tx.object(poolId), tx.object(adminCapId), tx.pure.u64(newWeek)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(adminCapId)), tx.pure.u64(newWeek)],
   });
   return tx;
 }
@@ -211,7 +212,7 @@ export function buildRotatePubkeyTx(
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_pubkey`,
     arguments: [
-      tx.object(prizeAdminId),
+      tx.object(normalizeObjectId(prizeAdminId)),
       tx.pure.vector("u8", Array.from(newPubkey)),
     ],
   });
@@ -234,7 +235,7 @@ export function buildRotateAdminTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_admin`,
-    arguments: [tx.object(prizeAdminId), tx.pure.address(newAdmin)],
+    arguments: [tx.object(normalizeObjectId(prizeAdminId)), tx.pure.address(newAdmin)],
   });
   return tx;
 }
@@ -250,8 +251,8 @@ export function buildSetDistributionTx(
     target: `${PKG()}::prize_pool::set_distribution`,
     typeArguments: [prizeCoinType],
     arguments: [
-      tx.object(poolId),
-      tx.object(adminCapId),
+      tx.object(normalizeObjectId(poolId)),
+      tx.object(normalizeObjectId(adminCapId)),
       tx.pure.vector("u64", bps.map((b) => BigInt(b))),
     ],
   });

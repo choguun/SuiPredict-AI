@@ -1002,34 +1002,49 @@ export function recordParlayLeg(p: {
   // longer needs a per-parlay `getObject` RPC call to recover the
   // leg→market mapping — it can read the mirror instead.
   const market_id = p.market_id ?? "";
+  // R43 audit fix: wrap the INSERT + UPDATE in a single
+  // `db.transaction` so the parlay-leg mirror and the
+  // `parlays.legs_recorded` cursor advance atomically. The
+  // previous two-statement path was vulnerable to a
+  // crash-between-statements scenario (SIGTERM, OOM, machine
+  // reboot): a process that wrote the new `parlay_legs` row
+  // but not the `UPDATE parlays` left the cursor under-counted,
+  // so the parlay-worker's `legs_recorded >= leg_count` gate
+  // re-emitted a finalize PTB the on-chain contract then
+  // aborted. Wrapping in `getDb().transaction()` makes the two
+  // writes atomic in SQLite (better-sqlite3's transactions
+  // are synchronous and commit/rollback as a single unit).
   const db = getDb();
-  const insert = db
-    .prepare(
-      `INSERT OR IGNORE INTO parlay_legs
-         (parlay_id, leg_index, market_id, won, ts_ms)
-       VALUES
-         (@parlay_id, @leg_index, @market_id, @won, @ts_ms)`,
-    )
-    .run({
+  const tx = db.transaction(() => {
+    const insert = db
+      .prepare(
+        `INSERT OR IGNORE INTO parlay_legs
+           (parlay_id, leg_index, market_id, won, ts_ms)
+         VALUES
+           (@parlay_id, @leg_index, @market_id, @won, @ts_ms)`,
+      )
+      .run({
+        parlay_id: p.parlay_id,
+        leg_index: p.leg_index,
+        market_id,
+        won,
+        ts_ms: p.ts_ms,
+      });
+    if (insert.changes === 0) return; // re-poll, already recorded
+    db.prepare(
+      `UPDATE parlays
+         SET legs_recorded = MAX(legs_recorded, @leg_index + 1),
+             legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
+             updated_at_ms = @ts_ms
+       WHERE parlay_id = @parlay_id`,
+    ).run({
       parlay_id: p.parlay_id,
       leg_index: p.leg_index,
-      market_id,
       won,
       ts_ms: p.ts_ms,
     });
-  if (insert.changes === 0) return; // re-poll, already recorded
-  db.prepare(
-    `UPDATE parlays
-       SET legs_recorded = MAX(legs_recorded, @leg_index + 1),
-           legs_lost     = legs_lost + CASE WHEN @won = 0 THEN 1 ELSE 0 END,
-           updated_at_ms = @ts_ms
-     WHERE parlay_id = @parlay_id`,
-  ).run({
-    parlay_id: p.parlay_id,
-    leg_index: p.leg_index,
-    won,
-    ts_ms: p.ts_ms,
   });
+  tx();
 }
 
 /**

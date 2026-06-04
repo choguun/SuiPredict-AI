@@ -1021,11 +1021,20 @@ function SetMaxPayoutBpsCard(props: {
   // Mirror the on-chain guard: `new_max_bps >= BPS` (10_000). 50_000 =
   // 5x is the production default. We render the multiplier in x for
   // human readability but submit bps.
+  //
+  // R43 audit fix: hard-cap at 1_000_000 bps (100x). The on-chain
+  // `set_max_payout_bps` itself has no upper bound — a typo of
+  // `999_999_999` (9 digits, fits the regex) would be accepted by
+  // the contract and would let a single leg-payout drain the pool
+  // in one tx. Cap pre-flight so the operator gets a synchronous
+  // error and the SDK never even builds the PTB. The 100x ceiling
+  // matches the practical limit discussed in the original R7 audit.
   const parsedBps = Number(bps);
   const isValid =
     Number.isFinite(parsedBps) &&
     Number.isInteger(parsedBps) &&
-    parsedBps >= 10_000;
+    parsedBps >= 10_000 &&
+    parsedBps <= 1_000_000;
   // The contract has no upper bound, but a 100x cap is a footgun:
   // a single bad tick can drain the pool. Surface a soft warning at
   // > 10x so the operator has to look at the input before clicking
@@ -1041,7 +1050,9 @@ function SetMaxPayoutBpsCard(props: {
       return;
     }
     if (!isValid) {
-      setErr("Max payout must be an integer >= 10_000 bps (1.0x).");
+      setErr(
+        "Max payout must be an integer between 10_000 bps (1.0x) and 1_000_000 bps (100x).",
+      );
       return;
     }
     setBusy(true);
@@ -1051,12 +1062,20 @@ function SetMaxPayoutBpsCard(props: {
       // generic to DUSDC_TYPE on the parlay helpers, which matches the
       // pool bootstrap-parlay creates. If a non-dUSDC pool is ever
       // added the on-chain call would need a different type argument.
+      //
+      // R43 audit fix: trim the env value to match the R41 SDK
+      // guard on DUSDC_PACKAGE_ID. A `.env` line with trailing
+      // whitespace (common when a value is pasted from a docs
+      // page) silently produces a type tag like
+      // `<0x…::dusdc::DUSDC >` with a space, which Sui runtime
+      // rejects with "type argument not found" on every set
+      // call. Trim once at the read site so the type tag is
+      // always well-formed.
+      const dusdcPkgId = (process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ?? "").trim();
       const tx = buildSetMaxPayoutBpsTx(
         PARLAY_POOL_ID,
         parsedBps,
-        process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID
-          ? `${process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID}::dusdc::DUSDC`
-          : DUSDC_TYPE_FALLBACK,
+        dusdcPkgId ? `${dusdcPkgId}::dusdc::DUSDC` : DUSDC_TYPE_FALLBACK,
       );
       const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
       // R38 audit fix: $kind guard. The cap must be ≥ 10_000 bps

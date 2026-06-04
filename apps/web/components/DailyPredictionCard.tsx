@@ -184,10 +184,21 @@ export function DailyPredictionCard() {
       // TanStack's prefix-match means a typo (e.g. "streak" vs
       // "streakInfo") silently no-ops the invalidation — the previous
       // round shipped a ["streak"] invalidation that did nothing.
-      queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
-      queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
-      queryClient.invalidateQueries({ queryKey: ["portfolio", account.address] });
-      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
+      //
+      // R43 audit fix: pass `type: "active"` so the prefix-only
+      // keys `["userStreakId"]` and `["streakInfo"]` match the
+      // hook-registered 3-tuple / 2-tuple keys. Without
+      // `type: "active"`, the invalidation is exact-match against
+      // the prefix-less key and matches zero registered queries
+      // — the success path then re-renders with stale streak
+      // data. R40 added the same guard to StreakProfile.tsx;
+      // DailyPredictionCard was the survivor. `["portfolio", …]`
+      // and `["dailyMarkets"]` are already prefix-exact so they
+      // can stay; the `type` arg is harmless there.
+      queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+      queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
+      queryClient.invalidateQueries({ queryKey: ["portfolio", account.address], type: "active" });
+      queryClient.invalidateQueries({ queryKey: ["dailyMarkets"], type: "active" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

@@ -26,14 +26,20 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { weekIndexFor } from "../gamification/store.js";
 
+// R43 audit fix: read the runtime-tunable knobs (`PRIZE_FUND_AMOUNT`,
+// `PRIZE_POOL_MIN_BALANCE`) at the top of `runPrizeAdmin` rather
+// than at module load. The module-level `const`s below for the
+// operational ids (`PRIZE_POOL_ID`, `PRIZE_ADMIN_ID`) stay —
+// they are deployment-time configuration that does not change
+// at runtime, and freezing them at module load is the right
+// behavior (re-binding them mid-cycle would race the in-flight
+// tx). The fund-amount and min-balance can be hot-patched via
+// `bootstrap-env.ts` after the agents process is already
+// running; the previous module-level read kept the boot-time
+// snapshot forever, so a stale `PRIZE_FUND_AMOUNT=0` would
+// have permanently disabled funding.
 const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
 const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
-const PRIZE_FUND_AMOUNT = BigInt(
-  process.env.PRIZE_FUND_AMOUNT ?? process.env.PRIZE_WEEKLY_AMOUNT ?? "0",
-);
-const PRIZE_POOL_MIN_BALANCE = BigInt(
-  process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
-);
 const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "testnet"
   | "mainnet"
@@ -41,13 +47,26 @@ const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
   | "localnet";
 
 export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
+  // R43 audit fix: re-read the runtime-tunable knobs at the top
+  // of the run function. See the comment at the module-level
+  // constants for the rationale; the short version is that a
+  // hot-patch of PRIZE_FUND_AMOUNT or PRIZE_POOL_MIN_BALANCE
+  // via `bootstrap-env.ts` would otherwise be ignored.
+  const prizeFundAmount = BigInt(
+    process.env.PRIZE_FUND_AMOUNT ??
+      process.env.PRIZE_WEEKLY_AMOUNT ??
+      "0",
+  );
+  const prizePoolMinBalance = BigInt(
+    process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
+  );
   if (!PRIZE_POOL_ID) {
     return recordResult("PrizeAdmin", {
       action: "skip",
       reasoning: "PRIZE_POOL_ID not configured.",
     });
   }
-  if (PRIZE_FUND_AMOUNT === 0n) {
+  if (prizeFundAmount === 0n) {
     return recordResult("PrizeAdmin", {
       action: "skip",
       reasoning: "PRIZE_FUND_AMOUNT is 0; nothing to fund.",
@@ -70,12 +89,12 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
       (acc, c) => acc + BigInt(c.balance),
       0n,
     );
-    if (totalDusdc < PRIZE_POOL_MIN_BALANCE) {
+    if (totalDusdc < prizePoolMinBalance) {
       const eligible = dusdcCoins
-        .filter((c) => BigInt(c.balance) >= PRIZE_FUND_AMOUNT)
+        .filter((c) => BigInt(c.balance) >= prizeFundAmount)
         .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
       if (eligible) {
-        // R38 audit fix: pass PRIZE_FUND_AMOUNT explicitly so the
+        // R38 audit fix: pass prizeFundAmount explicitly so the
         // builder splits exactly that many atoms off the source
         // coin in-PTB. The previous call would have drained the
         // entire eligible coin (the R36 parlay::create_parlay fix
@@ -83,20 +102,20 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
         const fundTx = buildFundPoolTx(
           PRIZE_POOL_ID,
           eligible.objectId,
-          PRIZE_FUND_AMOUNT,
+          prizeFundAmount,
         );
         const r = await executeTransaction(client, fundTx, ctx.signer);
-        fundedAmount = PRIZE_FUND_AMOUNT;
+        fundedAmount = prizeFundAmount;
         notes.push(
-          `funded ${PRIZE_FUND_AMOUNT} DUSDC: ${r.digest.slice(0, 12)}…`,
+          `funded ${prizeFundAmount} DUSDC: ${r.digest.slice(0, 12)}…`,
         );
       } else {
         notes.push(
-          `no DUSDC coin >= ${PRIZE_FUND_AMOUNT} — agent balance ${totalDusdc}`,
+          `no DUSDC coin >= ${prizeFundAmount} — agent balance ${totalDusdc}`,
         );
       }
     } else {
-      notes.push(`pool balance ${totalDusdc} >= min ${PRIZE_POOL_MIN_BALANCE}`);
+      notes.push(`pool balance ${totalDusdc} >= min ${prizePoolMinBalance}`);
     }
   } catch (err) {
     notes.push(

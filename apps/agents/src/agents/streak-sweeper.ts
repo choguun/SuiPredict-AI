@@ -30,6 +30,7 @@ import {
   createClient,
   executeTransaction,
   isMoveAbortCode,
+  isMoveAbortSymbol,
   streakIdForUser,
   type SuiClient,
 } from "@suipredict/sdk";
@@ -98,11 +99,26 @@ function isAlreadyRecordedError(err: unknown): boolean {
  * fail the same way.
  */
 function isTransientError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  // Move aborts are always permanent — retrying just wastes gas.
-  if (/MoveAbort/.test(msg)) return false;
-  if (/EWrongStreakOwner|ENotAdmin|EInvalidOutcome|EStreakBroken/.test(msg)) return false;
+  // R43 audit fix: replace the substring match on
+  // `EWrongStreakOwner|ENotAdmin|EInvalidOutcome|EStreakBroken`
+  // with the structured `isMoveAbortSymbol` helper. The
+  // previous regex matched the literal substring anywhere
+  // in the error message — a custom Move abort with a name
+  // like `EWrongStreakOwnerForAdmin` would have been
+  // classified as permanent, and a non-abort error that
+  // happened to contain the string "WrongStreakOwner" in
+  // its message would have been treated as an on-chain
+  // abort. The `isMoveAbortSymbol` helper parses the
+  // structured `MoveLocation` field Sui embeds in SDK
+  // errors and matches the exact symbol name.
+  if (isMoveAbortSymbol(err, "EWrongStreakOwner")) return false;
+  if (isMoveAbortSymbol(err, "ENotAdmin")) return false;
+  if (isMoveAbortSymbol(err, "EInvalidOutcome")) return false;
+  if (isMoveAbortSymbol(err, "EStreakBroken")) return false;
+  // Catch-all: any other Move abort is also permanent.
+  if (err instanceof Error && /MoveAbort/.test(err.message)) return false;
   // RPC / network signatures worth retrying.
+  const msg = err instanceof Error ? err.message : String(err);
   return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
 }
 

@@ -59,7 +59,19 @@ export function LeaderboardTable({
     queryKey: ["leaderboard", "week", limit, category],
     queryFn: () => fetchLeaderboard(limit, category),
     initialData: initialData ?? undefined,
-    refetchInterval: 30_000,
+    // R43 audit fix: pause the 30s refetch while the tab is
+    // hidden. A 1h backgrounded tab previously fired 120
+    // `fetchLeaderboard` calls per hour against the agents
+    // service. Returning `false` from the interval function
+    // is TanStack's canonical "pause polling" signal;
+    // `refetchOnWindowFocus: true` below ensures a single
+    // catch-up refetch fires when the user returns. R42
+    // added the same guard to the markets/[id], vault, and
+    // parlay pages; LeaderboardTable was the survivor.
+    refetchInterval: () => {
+      if (typeof document === "undefined") return 30_000;
+      return document.visibilityState === "visible" ? 30_000 : false;
+    },
     refetchOnWindowFocus: true,
     staleTime: 15_000,
   });

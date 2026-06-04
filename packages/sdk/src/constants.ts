@@ -2,8 +2,30 @@
 
 export const NETWORK = "testnet" as const;
 
-export const PREDICT_SERVER_URL =
-  "https://predict-server.testnet.mystenlabs.com";
+// R43 audit fix: `PREDICT_SERVER_URL` was hardcoded to the
+// testnet URL. A mainnet deploy of the agents service (or the
+// web's `app/legacy/predict/*` pages) would still hit the
+// testnet predict-server for every spot-price / oracle read,
+// returning testnet spot prices that don't match the on-chain
+// mainnet state. Resolve the URL from `SUI_NETWORK` at module
+// load, parallel to `resolveSuiGrpcUrl`, with an explicit env
+// override (`NEXT_PUBLIC_PREDICT_SERVER_URL` /
+// `PREDICT_SERVER_URL`) for the rare case where Mysten moves
+// the URL. The web's dapp-kit inlines NEXT_PUBLIC_* at build
+// time so the resolve also pulls from the bare
+// `PREDICT_SERVER_URL` for the agents service.
+function resolvePredictServerUrl(): string {
+  const explicit =
+    process.env.NEXT_PUBLIC_PREDICT_SERVER_URL ??
+    process.env.PREDICT_SERVER_URL;
+  if (explicit) return explicit.trim();
+  const network = (process.env.SUI_NETWORK ?? "testnet").toLowerCase();
+  if (network === "mainnet") return "https://predict-server.mainnet.mystenlabs.com";
+  if (network === "devnet") return "https://predict-server.devnet.mystenlabs.com";
+  return "https://predict-server.testnet.mystenlabs.com";
+}
+
+export const PREDICT_SERVER_URL = resolvePredictServerUrl();
 
 // R42 audit fix: `PREDICT_PACKAGE_ID` is the DeepBook Predict
 // upstream package — it lives on a Mysten-managed testnet
@@ -87,6 +109,36 @@ function assertMainnetHasExplicitIds(): void {
         "Refusing to silently mint against the bundled testnet dUSDC type. " +
         "Set the env var and rebuild.",
     );
+  }
+  // R43 audit fix: the post-R40 stack added several env-driven
+  // object ids (`FEE_VAULT_ID`, `REFERRAL_TREASURY_ADDRESS`,
+  // `STREAK_REGISTRY_ID`, `PROFILE_REGISTRY_ID`) that the
+  // bundles now require on mainnet. A mainnet build that
+  // provided `AGENT_POLICY_PACKAGE_ID` and `DUSDC_PACKAGE_ID`
+  // but omitted these would still silently route every
+  // mint/redeem to the zero-id sentinel and abort with
+  // `EPackageObjectNotFound` (the SDK falls back to
+  // `0x000…000` for unset ids, see FEE_VAULT_ID /
+  // REFERRAL_TREASURY_ADDRESS). Refuse to load on mainnet
+  // unless the operator wires the full set.
+  const additionalIds = [
+    "NEXT_PUBLIC_FEE_VAULT_ID",
+    "FEE_VAULT_ID",
+    "NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS",
+    "REFERRAL_TREASURY_ADDRESS",
+    "NEXT_PUBLIC_STREAK_REGISTRY_ID",
+    "STREAK_REGISTRY_ID",
+    "NEXT_PUBLIC_PROFILE_REGISTRY_ID",
+    "PROFILE_REGISTRY_ID",
+  ];
+  for (const v of additionalIds) {
+    if (!process.env[v]) {
+      throw new Error(
+        `[sdk] SUI_NETWORK=mainnet but ${v} env var is not set. ` +
+          "Refusing to silently use a zero-id fallback. Set the env " +
+          "var and rebuild.",
+      );
+    }
   }
 }
 

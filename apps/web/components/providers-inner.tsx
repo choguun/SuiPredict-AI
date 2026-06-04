@@ -22,6 +22,35 @@ export function ProvidersInner({ children }: { children: React.ReactNode }) {
     }
   }, [enokiKey]);
 
+  // R43 audit fix: unregister the legacy Workbox service
+  // worker (`apps/web/public/sw.js`) on first mount. The SW
+  // was a hand-rolled PWA cache that used `NetworkFirst` with
+  // a 32-entry, 24h-max-age cache for the `pages` route
+  // (HTML navigations). A user who visited /markets, went
+  // offline, and then returned to /markets would see the
+  // last cached HTML — including a hard-coded `active market
+  // count` in the SSR header that had no live revalidation.
+  // The SW also conflicted with TanStack Query's
+  // `refetchOnWindowFocus` and the per-page polling cadence:
+  // the SW served stale HTML, the page mounted, and the
+  // TanStack polls fired only for on-chain data, leaving
+  // the SSR-time-static parts (page chrome, header counts)
+  // stale for up to 24h. Unregister + delete all caches
+  // from the SW's caches.open() namespace. Idempotent — if
+  // the SW was never registered, `getRegistration` returns
+  // undefined and the effect is a no-op.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const r of regs) void r.unregister();
+    });
+    if ("caches" in window) {
+      void caches.keys().then((keys) => {
+        for (const k of keys) void caches.delete(k);
+      });
+    }
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <DAppKitProvider dAppKit={dAppKit}>

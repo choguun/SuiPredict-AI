@@ -17,6 +17,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
+import { normalizeObjectId } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -50,7 +51,7 @@ export function buildCreateStreakTx(registryId: string): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::streak_system::create_streak`,
-    arguments: [tx.object(registryId)],
+    arguments: [tx.object(normalizeObjectId(registryId))],
   });
   return tx;
 }
@@ -78,9 +79,9 @@ export function buildRecordParticipationTx(params: {
   tx.moveCall({
     target: `${PKG()}::streak_system::record_participation`,
     arguments: [
-      tx.object(params.adminId),
-      tx.object(params.registryId),
-      tx.object(params.streakId),
+      tx.object(normalizeObjectId(params.adminId)),
+      tx.object(normalizeObjectId(params.registryId)),
+      tx.object(normalizeObjectId(params.streakId)),
       tx.pure.u64(params.dayIndex),
       tx.pure.u8(params.outcome),
       tx.pure.u8(params.category),
@@ -114,7 +115,7 @@ export function buildRotateStreakAdminTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::streak_system::rotate_admin`,
-    arguments: [tx.object(adminCapId), tx.pure.address(newAdmin)],
+    arguments: [tx.object(normalizeObjectId(adminCapId)), tx.pure.address(newAdmin)],
   });
   return tx;
 }

@@ -28,10 +28,23 @@ export default function PortfolioPage() {
   // this query and the user sees fresh positions without a refresh.
   // Background refetch every 8s preserves the previous setInterval
   // behaviour without a raw effect.
+  //
+  // R43 audit fix: pause the 8s refetch when the tab is hidden.
+  // `refetchInterval` accepts a function that returns ms or
+  // `false` (TanStack Query ≥4); returning `false` is the
+  // canonical "pause the polling" signal. The query stays
+  // mounted and `refetchOnWindowFocus` (the default) fires a
+  // single `getPortfolio` when the user returns, so the data
+  // catches up without a 450-call resume burst. R42 added the
+  // same guard to markets/[id], vault, and parlay; portfolio
+  // was the survivor.
   const { data: positions = [] } = useQuery<PortfolioPosition[]>({
     queryKey: ["portfolio", account?.address],
     enabled: !!account,
-    refetchInterval: 8_000,
+    refetchInterval: () => {
+      if (typeof document === "undefined") return 8_000;
+      return document.visibilityState === "visible" ? 8_000 : false;
+    },
     queryFn: async () => {
       if (!account) return [];
       return getPortfolio(account.address).catch(() => []);

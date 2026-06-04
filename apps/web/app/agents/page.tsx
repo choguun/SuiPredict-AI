@@ -185,9 +185,19 @@ export default function AgentsPage() {
     // competes with the indexer's own recovery once the service
     // comes back. After a 5xx we slow the next poll to 30s; on
     // a successful response we resume 8s polling.
+    //
+    // R43 audit fix: pause the tick entirely when the tab is
+    // hidden. A backgrounded tab previously fired an 8s poll
+    // per `tick()` against the agents service (the visibility
+    // guard that R42 added to markets/[id], vault, and parlay
+    // was not applied to this setInterval). Skipping the load
+    // when the tab is hidden means a 1h backgrounded tab fires
+    // zero agents requests, and the next `load()` runs the
+    // instant the user switches back.
     let backoffMs = 8000;
     const tick = () => {
       if (cancelled) return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       void load();
       // Adjust the next poll based on what the just-finished
       // load() saw. `error` is captured by the closure; the

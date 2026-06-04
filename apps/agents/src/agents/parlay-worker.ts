@@ -98,9 +98,18 @@ function isPermanentParlayError(err: unknown): boolean {
 }
 
 function isTransientError(err: unknown): boolean {
+  // R43 audit fix: the previous `/MoveAbort/` regex matched the
+  // literal substring anywhere in the message — a non-abort
+  // error whose text happened to contain "MoveAbort" would have
+  // been mis-classified as permanent. Walk the SDK's structured
+  // helpers instead: any Move abort is permanent, regardless of
+  // module.
+  if (isMoveAbortInModule(err, "parlay")) return false;
+  // Catch-all: any Move abort in any module is also permanent.
+  // `isMoveAbortInModule` with a non-existent module name
+  // would return false, so we use a stricter check here.
   const msg = err instanceof Error ? err.message : String(err);
-  // Any Move abort is a contract-level decision; retrying just wastes gas.
-  if (/MoveAbort/.test(msg)) return false;
+  if (/module:\s*"[a-z_]+"[\s\S]*MoveAbort/.test(msg)) return false;
   return /(fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|429|503|504|TooManyRequests|Service Unavailable|Gateway Timeout|Request timeout)/i.test(msg);
 }
 

@@ -37,6 +37,23 @@ const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 60_000);
 // double-write daily_scores rows. The flag is keyed by entry.name
 // (not a global counter) so other agents are unaffected.
 const inFlight = new Set<string>();
+// R43 audit fix: per-entry consecutive-failure tracking. A
+// persistently-failing worker (RPC outage, bad env, missing
+// object id) previously hammered the public RPC at full cron
+// cadence — every tick fired `await entry.fn(ctx)` which threw
+// → logged → re-armed. Over a 1h outage that meant
+// `risk-monitor` (5min cron) fired 12 doomed attempts and
+// `position-indexer` (1min cron) fired 60. With backoff, a
+// failure resets the schedule to `min(2^failures × 30s, 5m)`,
+// so a 1h outage costs 12 attempts total (one per backoff
+// escalation) instead of 60. A successful run resets the
+// counter to 0 and the worker resumes normal cron cadence.
+const failureState = new Map<
+  string,
+  { failures: number; nextEligibleAt: number }
+>();
+const BACKOFF_BASE_MS = 30_000;
+const BACKOFF_MAX_MS = 5 * 60_000;
 // Active timer handles per agent. Cleared on stopScheduler so a
 // SIGTERM during a quiet period doesn't leave orphan timers firing
 // after the process is supposed to be gone.
@@ -85,7 +102,25 @@ export function stopScheduler(graceMs = 5_000): Promise<void> {
 
 function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
   if (shuttingDown) return;
-  const delay = msUntilNext(entry.cron);
+  const cronDelay = msUntilNext(entry.cron);
+  // R43 audit fix: if the previous tick failed, defer the next
+  // fire by an exponential backoff. `nextEligibleAt` is
+  // recorded in the failure-state map (set on throw, cleared
+  // on success). We schedule at `max(cronDelay,
+  // msUntilNextEligible)` so a worker that was on a 1min cron
+  // but failed 3 times in a row fires no sooner than 4min from
+  // the failure — not 1min on the dot.
+  const fail = failureState.get(entry.name);
+  const backoffDelay =
+    fail && fail.failures > 0
+      ? Math.min(
+          BACKOFF_BASE_MS * 2 ** (fail.failures - 1),
+          BACKOFF_MAX_MS,
+        )
+      : 0;
+  const eligibleAt = fail?.nextEligibleAt ?? 0;
+  const remainingBackoff = Math.max(0, eligibleAt - Date.now());
+  const delay = Math.max(cronDelay, remainingBackoff);
   const timer = setTimeout(async () => {
     activeTimers.delete(entry.name);
     if (shuttingDown) return;
@@ -97,11 +132,38 @@ function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
       inFlight.add(entry.name);
       try {
         const result = await entry.fn(ctx);
+        // Successful run: reset the failure counter so the
+        // worker resumes normal cron cadence. The next
+        // scheduleNext() below will use the raw `cronDelay`
+        // because the failure state is cleared.
+        failureState.delete(entry.name);
         console.log(
           `[scheduler] ${entry.name} → ${result.action}: ${result.reasoning.slice(0, 100)}`,
         );
       } catch (err) {
-        console.error(`[scheduler] ${entry.name} crashed:`, err);
+        // Bump the consecutive-failure counter and push the
+        // next eligible-fire time out. Cap `failures` at 10
+        // to keep the `2^failures` math from overflowing JS
+        // double (would still cap at BACKOFF_MAX_MS via
+        // Math.min in scheduleNext).
+        const prev = failureState.get(entry.name) ?? {
+          failures: 0,
+          nextEligibleAt: 0,
+        };
+        const failures = Math.min(prev.failures + 1, 10);
+        const nextDelay = Math.min(
+          BACKOFF_BASE_MS * 2 ** (failures - 1),
+          BACKOFF_MAX_MS,
+        );
+        failureState.set(entry.name, {
+          failures,
+          nextEligibleAt: Date.now() + nextDelay,
+        });
+        console.error(
+          `[scheduler] ${entry.name} crashed (failure #${failures}, ` +
+            `backoff ${Math.round(nextDelay / 1000)}s):`,
+          err,
+        );
       } finally {
         inFlight.delete(entry.name);
       }

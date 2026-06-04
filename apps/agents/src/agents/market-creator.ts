@@ -12,13 +12,17 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, recordResult } from "../lib.js";
 import { listMarkets, upsertMarket } from "../markets/store.js";
 
-const MAX_ACTIVE = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
+// R43 audit fix: removed the module-level MAX_ACTIVE and
+// INITIAL_MINT_ATOMS constants. Both are re-read at the top of
+// `runMarketCreator` so an env-var hot-patch (e.g. via
+// `bootstrap-env.ts`) is honored without a process restart. The
+// operational ids (DEEPBOOK_REGISTRY_ID / MARKET_REGISTRY_ID /
+// FEE_VAULT_ID) stay module-level because they're deployment
+// configuration that doesn't change at runtime — surfacing them
+// as module-level constants keeps the call sites readable.
 const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
 const MARKET_REGISTRY_ID = process.env.MARKET_REGISTRY_ID ?? "";
 const FEE_VAULT_ID = process.env.FEE_VAULT_ID ?? "";
-const INITIAL_MINT_ATOMS = BigInt(
-  process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
-); // 10 DBUSDC default — seeds the order book with an initial position
 
 /** Map the LLM's free-form category string to the gamification
  *  enum emitted on `MarketCreatedEvent.category`. The leaderboard
@@ -111,11 +115,27 @@ function pickFallback(reason: string): {
 }
 
 export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> {
+  // R43 audit fix: re-read the env-driven knobs at the top of
+  // the run function rather than relying on the module-level
+  // snapshot above. The bootstrap script
+  // (`scripts/bootstrap-env.ts`) can rewrite
+  // `MAX_ACTIVE_MARKETS` and `MARKET_CREATOR_INITIAL_MINT_ATOMS`
+  // after the agents process has already imported this module
+  // — a hot-restart-style update where the file is patched
+  // while the worker is still running. With the previous
+  // module-level `const`s, the worker kept the boot-time
+  // value forever, so a 1 → 10 cap increase would have
+  // required a full `pnpm --filter @suipredict/agents
+  // restart` instead of just rewriting the env file.
+  const maxActive = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
+  const initialMintAtoms = BigInt(
+    process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
+  );
   const active = listMarkets().filter((m) => m.status === "active");
-  if (active.length >= MAX_ACTIVE) {
+  if (active.length >= maxActive) {
     return recordResult("MarketCreator", {
       action: "skip",
-      reasoning: `${active.length} active markets — at cap of ${MAX_ACTIVE}.`,
+      reasoning: `${active.length} active markets — at cap of ${maxActive}.`,
       confidence: 90,
     });
   }
@@ -265,14 +285,14 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     // minted from the VLP TreasuryCap. Skipped silently if the agent
     // has no DUSDC >= INITIAL_MINT_ATOMS.
     let initialMintDigest: string | null = null;
-    if (INITIAL_MINT_ATOMS > 0n) {
+    if (initialMintAtoms > 0n) {
       try {
         const { objects: dusdcCoins } = await client.core.listCoins({
           owner: agentAddr,
           coinType: DUSDC_TYPE,
         });
         const dusdcCoin = dusdcCoins
-          .filter((c) => BigInt(c.balance) >= INITIAL_MINT_ATOMS)
+          .filter((c) => BigInt(c.balance) >= initialMintAtoms)
           .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
         if (dusdcCoin) {
           if (!FEE_VAULT_ID) {
@@ -284,14 +304,14 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               marketId,
               FEE_VAULT_ID,
               dusdcCoin.objectId,
-              INITIAL_MINT_ATOMS,
+              initialMintAtoms,
             );
             const mintResult = await executeTransaction(client, mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;
           }
         } else {
           console.warn(
-            `[market-creator] no DUSDC coin with >= ${INITIAL_MINT_ATOMS} atoms — skipping initial mint for ${marketId}`,
+            `[market-creator] no DUSDC coin with >= ${initialMintAtoms} atoms — skipping initial mint for ${marketId}`,
           );
         }
       } catch (mintErr) {

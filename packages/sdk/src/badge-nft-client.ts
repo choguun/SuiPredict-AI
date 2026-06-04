@@ -17,6 +17,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import { normalizeObjectId } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -68,7 +69,7 @@ export function buildMintBadgeTx(args: {
     target: `${PKG()}::badge_nft::mint_badge`,
     typeArguments: [],
     arguments: [
-      tx.object(args.streakId),
+      tx.object(normalizeObjectId(args.streakId)),
       tx.pure.u8(args.tier),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -105,10 +106,10 @@ export function buildMintBadgeToKioskTx(args: {
     target: `${PKG()}::badge_nft::mint_badge_to_kiosk`,
     typeArguments: [],
     arguments: [
-      tx.object(args.streakId),
+      tx.object(normalizeObjectId(args.streakId)),
       tx.pure.u8(args.tier),
-      tx.object(args.kioskId),
-      tx.object(args.kioskCapId),
+      tx.object(normalizeObjectId(args.kioskId)),
+      tx.object(normalizeObjectId(args.kioskCapId)),
       tx.object(CLOCK_OBJECT_ID),
     ],
   });

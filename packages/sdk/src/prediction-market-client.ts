@@ -58,18 +58,33 @@ const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 /** FeeVault<DUSDC> object ID — set after contract deployment. The
  *  NEXT_PUBLIC_ variant is read first so Next.js inlines it into the
  *  client bundle; the bare `FEE_VAULT_ID` is the server/agents variant.
+ *
+ *  R43 audit fix: apply `.trim()` to the env chain to match the
+ *  R41 pattern on `DUSDC_PACKAGE_ID` / `AGENT_POLICY_PACKAGE_ID`.
+ *  A `.env` line with trailing whitespace (common when a value
+ *  is pasted from a docs page or terminal copy) silently produces
+ *  an id like `0x…0000 ` with a trailing space; the BCS object
+ *  resolver treats the trimmed and untrimmed forms as different
+ *  inputs and the PTB aborts with "invalid input object".
  */
-export const FEE_VAULT_ID =
+export const FEE_VAULT_ID = (
   process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
   process.env.FEE_VAULT_ID ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000";
+  "0x0000000000000000000000000000000000000000000000000000000000000000"
+).trim();
 
-/** Protocol treasury address for withdrawing accumulated fees and claiming referral rewards */
-export const REFERRAL_TREASURY_ADDRESS =
+/** Protocol treasury address for withdrawing accumulated fees and claiming referral rewards.
+ *
+ *  R43 audit fix: same `.trim()` as FEE_VAULT_ID above. A
+ *  whitespace-suffixed address would route the
+ *  `referral_keeper` sweep to a non-existent recipient.
+ */
+export const REFERRAL_TREASURY_ADDRESS = (
   process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
   process.env.REFERRAL_TREASURY_ADDRESS ??
   process.env.PROTOCOL_TREASURY_ADDRESS ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000";
+  "0x0000000000000000000000000000000000000000000000000000000000000000"
+).trim();
 
 // ─── Transaction builders ─────────────────────────────────────────────────────
 
@@ -116,7 +131,7 @@ export function buildCreateMarketTx(params: {
       tx.pure.u64(params.tickSize ?? 1_000_000n),       // 0.001 DUSDC tick
       tx.pure.u64(params.lotSize ?? 1_000_000n),        // 1 YES minimum
       tx.pure.u64(params.minSize ?? 1_000_000n),        // 1 YES minimum
-      tx.object(params.deepCoinId),
+      tx.object(normalizeObjectId(params.deepCoinId)),
       tx.pure.u8(params.category ?? 0),
     ],
   });
@@ -166,11 +181,11 @@ export function buildMintSharesTx(
   // which deposited the user's entire balance. The batch variant
   // (`buildMintSharesBatchTx`) already splits correctly; this single-
   // market variant now matches.
-  const [mintCoin] = tx.splitCoins(tx.object(quoteIn), [tx.pure.u64(amountAtoms)]);
+  const [mintCoin] = tx.splitCoins(tx.object(normalizeObjectId(quoteIn)), [tx.pure.u64(amountAtoms)]);
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(vaultId), mintCoin],
+    arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), mintCoin],
   });
   return tx;
 }
@@ -221,7 +236,7 @@ export function buildMintSharesBatchTx(params: {
   // and indexes into the same-length `coins` array.
   const amounts = params.marketIds.map(() => tx.pure.u64(params.amountPerMarket));
   const [primaryCoin, ...splitCoins] = tx.splitCoins(
-    tx.object(params.quoteIn),
+    tx.object(normalizeObjectId(params.quoteIn)),
     amounts,
   );
   const coins = [primaryCoin, ...splitCoins];
@@ -234,7 +249,7 @@ export function buildMintSharesBatchTx(params: {
     tx.moveCall({
       target: `${PKG()}::prediction_market::mint_shares`,
       typeArguments: [DUSDC_TYPE],
-      arguments: [tx.object(marketId), tx.object(params.vaultId), coins[i]!],
+      arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(params.vaultId)), coins[i]!],
     });
   });
   return tx;
@@ -361,7 +376,7 @@ export function buildResolveDisputeTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_dispute`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.pure.u8(finalOutcome)],
+    arguments: [tx.object(normalizeObjectId(marketId)), tx.pure.u8(finalOutcome)],
   });
   return tx;
 }
@@ -382,7 +397,7 @@ export function buildRedeemNoTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_no`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
+    arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), tx.object(normalizeObjectId(winningCoin))],
   });
   return tx;
 }
@@ -409,10 +424,10 @@ export function buildRedeemWithStreakTx(
     target: `${PKG()}::prediction_market::redeem_with_streak`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
-      tx.object(vaultId),
-      tx.object(winningCoinId),
-      tx.object(streakId),
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(vaultId)),
+      tx.object(normalizeObjectId(winningCoinId)),
+      tx.object(normalizeObjectId(streakId)),
     ],
   });
   return tx;
@@ -430,10 +445,10 @@ export function buildRedeemNoWithStreakTx(
     target: `${PKG()}::prediction_market::redeem_no_with_streak`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
-      tx.object(vaultId),
-      tx.object(winningCoinId),
-      tx.object(streakId),
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(vaultId)),
+      tx.object(normalizeObjectId(winningCoinId)),
+      tx.object(normalizeObjectId(streakId)),
     ],
   });
   return tx;
@@ -459,8 +474,8 @@ export function buildSetupReferralTx(
     target: `${PKG()}::prediction_market::setup_referral`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
-      tx.object(poolId),
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(poolId)),
       tx.pure.u64(multiplier),
     ],
   });
@@ -484,7 +499,7 @@ export function buildClaimReferralRewardsTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(poolId), tx.object(referralId)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(referralId))],
   });
   return tx;
 }
@@ -503,7 +518,7 @@ export function buildWithdrawFeesTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::withdraw_fees`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(vaultId), tx.pure.u64(amount)],
+    arguments: [tx.object(normalizeObjectId(vaultId)), tx.pure.u64(amount)],
   });
   return tx;
 }
@@ -525,7 +540,7 @@ export function buildInitFeeVaultTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::init_fee_vault`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(adminCapId), tx.pure.address(vaultAdmin)],
+    arguments: [tx.object(normalizeObjectId(adminCapId)), tx.pure.address(vaultAdmin)],
   });
   return tx;
 }
@@ -603,7 +618,7 @@ export function buildDepositIntoBalanceManagerTx(
   tx.moveCall({
     target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::deposit_into_manager`,
     arguments: [
-      tx.object(managerId),
+      tx.object(normalizeObjectId(managerId)),
       tx.pure.string(coinKey),
       tx.pure.u64(BigInt(amount)),
     ],
@@ -692,9 +707,9 @@ export function buildMarketWithdrawSettledTx(
     target: `${PKG()}::prediction_market::withdraw_settled`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
-      tx.object(poolId),
-      tx.object(balanceManagerId),
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(poolId)),
+      tx.object(normalizeObjectId(balanceManagerId)),
     ],
   });
   return tx;
@@ -739,9 +754,9 @@ export function buildPlaceMarketOrderTx(params: {
     target: `${PKG()}::prediction_market::place_market_order`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(params.marketId),
-      tx.object(params.poolId),
-      tx.object(params.balanceManagerId),
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
       tx.pure.u64(params.clientOrderId),
       tx.pure.u64(params.quantity),
       tx.pure.bool(params.isBid),
@@ -769,9 +784,9 @@ export function buildCancelOrderTx(params: {
     target: `${PKG()}::prediction_market::cancel_order`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(params.marketId),
-      tx.object(params.poolId),
-      tx.object(params.balanceManagerId),
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
       tx.pure.u128(params.orderId),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -796,9 +811,9 @@ export function buildCancelOrdersTx(params: {
     target: `${PKG()}::prediction_market::cancel_orders`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(params.marketId),
-      tx.object(params.poolId),
-      tx.object(params.balanceManagerId),
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
       tx.pure.vector("u128", params.orderIds),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -822,9 +837,9 @@ export function buildCancelAllOrdersTx(params: {
     target: `${PKG()}::prediction_market::cancel_all_orders`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(params.marketId),
-      tx.object(params.poolId),
-      tx.object(params.balanceManagerId),
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
       tx.object(CLOCK_OBJECT_ID),
     ],
   });
@@ -863,11 +878,11 @@ export function buildDepositForTradingTx(params: {
     target: `${PKG()}::prediction_market::deposit_for_trading`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(params.marketId),
-      tx.object(params.balanceManagerId),
-      tx.object(params.baseCoinId),
-      tx.object(params.quoteCoinId),
-      tx.object(params.deepCoinId),
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
+      tx.object(normalizeObjectId(params.baseCoinId)),
+      tx.object(normalizeObjectId(params.quoteCoinId)),
+      tx.object(normalizeObjectId(params.deepCoinId)),
     ],
   });
   return tx;
@@ -929,7 +944,7 @@ export function buildVaultDepositTx(
 ): Transaction {
   // R38 audit fix: the on-chain `vault::deposit` takes a
   // `Coin<QuoteCoin>` BY VALUE and absorbs the entire balance
-  // into the vault. The previous builder passed `tx.object(coinId)`
+  // into the vault. The previous builder passed `tx.object(normalizeObjectId(coinId))`
   // directly, which would have drained the user's full deposit
   // coin. Split `amountAtoms` off the source coin in-PTB and pass
   // the split result, matching the R36 parlay::create_parlay fix.
@@ -940,13 +955,13 @@ export function buildVaultDepositTx(
     );
   }
   const tx = new Transaction();
-  const [depositCoin] = tx.splitCoins(tx.object(coinId), [
+  const [depositCoin] = tx.splitCoins(tx.object(normalizeObjectId(coinId)), [
     tx.pure.u64(amount),
   ]);
   const vlp = tx.moveCall({
     target: `${PKG()}::vault::deposit`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vaultId), tx.object(depositCoin)],
+    arguments: [tx.object(normalizeObjectId(vaultId)), tx.object(depositCoin)],
   });
   tx.transferObjects([vlp], tx.pure.address(recipient ?? "@{sender}"));
   return tx;
@@ -966,7 +981,7 @@ export function buildVaultWithdrawTx(
   const out = tx.moveCall({
     target: `${PKG()}::vault::withdraw`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vaultId), tx.object(vlpCoinId)],
+    arguments: [tx.object(normalizeObjectId(vaultId)), tx.object(vlpCoinId)],
   });
   tx.transferObjects([out], tx.pure.address("@{sender}"));
   return tx;
@@ -996,7 +1011,7 @@ export function buildCreateVaultTx(
   tx.moveCall({
     target: `${PKG()}::vault::create_vault`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vlpTreasuryCapId)],
+    arguments: [tx.object(normalizeObjectId(vlpTreasuryCapId))],
   });
   return tx;
 }
@@ -1024,7 +1039,7 @@ export function buildAllocateForMmTx(
   const coin = tx.moveCall({
     target: `${PKG()}::vault::allocate_for_mm`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vaultId), tx.pure.u64(amount)],
+    arguments: [tx.object(normalizeObjectId(vaultId)), tx.pure.u64(amount)],
   });
   // The Coin<QuoteCoin> is sent to the sender so the market-maker
   // can deposit it into the DeepBook balance manager in a follow-up
@@ -1061,7 +1076,7 @@ export function buildReturnFromMmTx(
   tx.moveCall({
     target: `${PKG()}::vault::return_from_mm`,
     typeArguments: [quoteType],
-    arguments: [tx.object(vaultId), tx.object(coinId)],
+    arguments: [tx.object(normalizeObjectId(vaultId)), tx.object(normalizeObjectId(coinId))],
   });
   return tx;
 }
@@ -1093,7 +1108,7 @@ export function buildRegisterMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::registry::register_market`,
-    arguments: [tx.object(registryId), tx.pure.id(marketObjectId)],
+    arguments: [tx.object(normalizeObjectId(registryId)), tx.pure.id(marketObjectId)],
   });
   return tx;
 }

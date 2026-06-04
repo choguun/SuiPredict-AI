@@ -22,6 +22,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { TransactionObjectInput } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import { normalizeObjectId } from "./utils.js";
 import type { SuiClient } from "./predict-client.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
@@ -231,13 +232,21 @@ export function buildCreateParlayTx(args: {
   const [parlayCoin] = tx.splitCoins(tx.object(args.coinId), [
     tx.pure.u64(collateral),
   ]);
+  // R43 audit fix: normalize every market id in the vector to
+  // the canonical 0x + 64 hex form before serializing. The
+  // on-chain `parlay::create_parlay<Q>` rejects the PTB at BCS
+  // resolution if any vector element is mixed-case (the BCS
+  // decoder is case-sensitive; `0xAbc…` and `0xabc…` are
+  // distinct bytes). A single bad entry in a 5-leg parlay
+  // bricks the entire PTB.
+  const normalizedMarketIds = args.marketIds.map((id) => normalizeObjectId(id));
   tx.moveCall({
     target: `${PKG()}::parlay::create_parlay`,
     typeArguments: [args.coinType],
     arguments: [
-      tx.object(args.poolId),
+      tx.object(normalizeObjectId(args.poolId)),
       tx.object(parlayCoin),
-      tx.pure.vector("id", args.marketIds),
+      tx.pure.vector("id", normalizedMarketIds),
       tx.pure.vector("u8", args.predictions),
       tx.pure.u64(args.payoutBps),
       tx.object(CLOCK_OBJECT_ID),

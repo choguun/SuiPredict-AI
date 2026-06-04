@@ -20,6 +20,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID } from "./constants.js";
+import { normalizeObjectId } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -52,7 +53,7 @@ export function buildCreateProfileTx(registryId: string): Transaction {
   tx.moveCall({
     target: `${PKG()}::user_profile::create_profile`,
     typeArguments: [],
-    arguments: [tx.object(registryId)],
+    arguments: [tx.object(normalizeObjectId(registryId))],
   });
   return tx;
 }
@@ -89,7 +90,7 @@ export function buildSetCountryCodeTx(
     // (e.g. Vite for the web app) and the `tx.pure.vector`
     // helper is the SDK-blessed escape hatch for `vector<u8>`
     // arguments that don't need BCS wrapping.
-    arguments: [tx.object(profileId), tx.pure.vector("u8", bytes)],
+    arguments: [tx.object(normalizeObjectId(profileId)), tx.pure.vector("u8", bytes)],
   });
   return tx;
 }
@@ -109,7 +110,7 @@ export function buildSetForecasterKindTx(
   tx.moveCall({
     target: `${PKG()}::user_profile::set_forecaster_kind`,
     typeArguments: [],
-    arguments: [tx.object(profileId), tx.pure.u8(kind)],
+    arguments: [tx.object(normalizeObjectId(profileId)), tx.pure.u8(kind)],
   });
   return tx;
 }
