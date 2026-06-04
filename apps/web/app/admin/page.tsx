@@ -1270,6 +1270,24 @@ function ParlayAdminCard(props: {
       );
       return;
     }
+    // R45 audit fix: confirm before submitting. The submit button
+    // is a single click with no second-chance prompt — a
+    // misclick (or an explorer/tab copy-paste of a stale value)
+    // would withdraw the entire pool balance to the operator's
+    // wallet and only the operator could put it back. Adding a
+    // `window.confirm` with the human-readable amount + DUSDC
+    // unit reduces the false-positive rate to near zero. The
+    // R44 audit flagged the same gap on the disconnect button
+    // and on the other admin cards (rotate, allocate, return);
+    // see submitRotate, submitAllocate, submitReturn below for
+    // the matching pattern.
+    const humanAmount = formatDusdc(BigInt(parsedAmount));
+    if (!window.confirm(
+      `Withdraw ${humanAmount} DUSDC from the parlay pool to your connected wallet? ` +
+        `This is irreversible on-chain.`,
+    )) {
+      return;
+    }
     setBusy("withdraw");
     try {
       const tx = buildParlayAdminWithdrawTx(
@@ -1309,6 +1327,24 @@ function ParlayAdminCard(props: {
     }
     if (!isRotateValid) {
       setErr("New admin must be a 0x-prefixed 64-char hex address.");
+      return;
+    }
+    // R45 audit fix: confirm before submitting. rotate_admin is
+    // a one-way change — the new admin can immediately sweep
+    // the pool with `admin_withdraw`, and there is no path back
+    // to the prior admin (who would then see ENotAdmin on
+    // every subsequent call). A misclick on the input (a
+    // hand-paste of the wrong hex) would brick the operator's
+    // own admin access. Show the truncated addresses in the
+    // confirm prompt so a mis-typed value is visible.
+    const oldAdminShort = props.currentAdmin
+      ? `${props.currentAdmin.slice(0, 6)}…${props.currentAdmin.slice(-4)}`
+      : "(unknown)";
+    const newAdminShort = `${newAdmin.slice(0, 6)}…${newAdmin.trim().slice(-4)}`;
+    if (!window.confirm(
+      `Rotate parlay pool admin from ${oldAdminShort} to ${newAdminShort}? ` +
+        `This is one-way — the new admin takes over immediately.`,
+    )) {
       return;
     }
     setBusy("rotate");
@@ -1485,7 +1521,16 @@ function VaultAdminCard(props: {
   // deposit back into the vault. The on-chain guard rejects zero-
   // value coins with EZeroAmount; the Sui runtime will surface a
   // clear "coin not found" error for a bad id.
-  const isReturnValid = returnCoinId.trim().length > 0;
+  //
+  // R45 audit fix: also require the id be a syntactically valid
+  // Sui object id (0x + 64 hex chars). A typo (truncation,
+  // wrong chain, accidental 0X prefix) would otherwise burn
+  // gas on a doomed PTB and surface as a cryptic
+  // `invalid input object` move-abort — same class of bug R44
+  // caught on the create-market and settings agent-address
+  // forms. Use the same `isValidSuiAddress` helper.
+  const isReturnValid =
+    returnCoinId.trim().length > 0 && isValidSuiAddress(returnCoinId);
 
   async function submitAllocate() {
     setErr(null);
@@ -1504,6 +1549,21 @@ function VaultAdminCard(props: {
           props.available,
         )} DUSDC). Refresh Live state and try a smaller amount.`,
       );
+      return;
+    }
+    // R45 audit fix: confirm before submitting. allocate_for_mm
+    // moves DUSDC from `available` to `allocated` — the funds
+    // stay on-chain but become unavailable for general
+    // withdrawals until the MM returns them via `return_from_mm`.
+    // A misclick on the input (e.g. transposed digits, leading
+    // zero) would lock the wrong amount for the duration of the
+    // MM session with no automatic recovery path. Show the
+    // human-readable amount in the confirm prompt so a typo is
+    // visible.
+    if (!window.confirm(
+      `Allocate ${formatDusdc(BigInt(parsedAllocate))} DUSDC from the vault to the market-maker? ` +
+        `Funds stay in the vault's "allocated" balance until the MM returns them.`,
+    )) {
       return;
     }
     setBusy("allocate");
@@ -1544,7 +1604,30 @@ function VaultAdminCard(props: {
       return;
     }
     if (!isReturnValid) {
-      setErr("Return coin object id is required.");
+      // R45 audit fix: include the shape requirement in the
+      // error message (the isValidSuiAddress check is new in
+      // R45). Without this, a user who typed a malformed id
+      // would see "Return coin object id is required" (the
+      // old, less specific message) and be confused why an
+      // empty-looking form is "required".
+      setErr(
+        "Return coin object id is required and must be a 0x + 64-char hex Sui object id.",
+      );
+      return;
+    }
+    // R45 audit fix: confirm before submitting. return_from_mm
+    // deposits a Coin<dUSDC> into the vault — submitting the
+    // wrong object id (e.g. a SUI coin, a different user's
+    // dUSDC coin, or a `Coin<X>` for a different X) would
+    // either fail with a move-abort or, worse, succeed and
+    // credit the vault with a non-dUSDC asset. Show the
+    // truncated id in the confirm prompt so a mis-paste is
+    // visible.
+    const coinShort = `${returnCoinId.slice(0, 6)}…${returnCoinId.slice(-4)}`;
+    if (!window.confirm(
+      `Return coin ${coinShort} to the vault (deposits the full balance)? ` +
+        `Make sure this is a dUSDC coin owned by your connected wallet.`,
+    )) {
       return;
     }
     setBusy("return");

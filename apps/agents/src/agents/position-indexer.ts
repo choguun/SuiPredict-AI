@@ -502,7 +502,7 @@ export async function runPositionIndexer(
         title: existing?.title ?? j.title ?? "",
         description: existing?.description ?? "",
         category: existing?.category ?? onChainCategory ?? "general",
-        expiry_ms: existing?.expiry_ms ?? Number(j.expiry_ms ?? 0),
+        expiry_ms: existing?.expiry_ms ?? Number(BigInt(j.expiry_ms ?? 0)),
         resolution_source: existing?.resolution_source ?? "",
         status: existing?.status ?? "active",
         pool_id: existing?.pool_id ?? j.pool_id ?? null,

@@ -420,7 +420,15 @@ export async function resolveDayOutcomes(
         category?: string | number;
       };
     };
-    const expiry = Number(ev.parsedJson.expiry_ms ?? 0);
+    // R45 audit fix: route the u64 `expiry_ms` through BigInt
+    // first to avoid Number() truncation above 2^53-1. R37 did
+    // this for `parlay.collateral` and R36 for several vault /
+    // order u64s; the on-chain `MarketCreatedEvent.expiry_ms`
+    // was the survivor. A market created with a far-future
+    // expiry (or a deploy with a non-standard clock base) would
+    // otherwise have a corrupted expiry in the mirror and never
+    // appear in the daily-market window the streak-sweeper uses.
+    const expiry = Number(BigInt(ev.parsedJson.expiry_ms ?? 0));
     const id = ev.parsedJson.market_id;
     if (
       id &&

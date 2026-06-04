@@ -84,11 +84,24 @@ export function buildFundParlayPoolTx(
     );
   }
   const tx = new Transaction();
-  const [fundCoin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
+  // R45 audit fix: normalize the source coin id and pool id. The
+  // R42 audit pass added `normalizeObjectId` to most builder
+  // call sites but the parlay pool admin builders (fund_pool,
+  // admin_withdraw, rotate_admin, set_max_payout_bps) were
+  // survivors. A mixed-case or whitespace-suffixed id silently
+  // fails with `invalid input object` at BCS resolution; the
+  // drift detector on the web side doesn't catch this because
+  // the agents runtime already stores normalized ids in
+  // `process.env.PARLAY_POOL_ID`. Match the prize-client.ts
+  // pattern.
+  const [fundCoin] = tx.splitCoins(
+    tx.object(normalizeObjectId(coinId)),
+    [tx.pure.u64(amount)],
+  );
   tx.moveCall({
     target: `${PKG()}::parlay::fund_pool`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.object(fundCoin)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.object(fundCoin)],
   });
   return tx;
 }
@@ -124,7 +137,7 @@ export function buildParlayAdminWithdrawTx(
   const out = tx.moveCall({
     target: `${PKG()}::parlay::admin_withdraw`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.pure.u64(amt)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.u64(amt)],
   });
   tx.transferObjects([out], tx.pure.address("@{sender}"));
   return tx;
@@ -147,7 +160,7 @@ export function buildRotateParlayAdminTx(
   tx.moveCall({
     target: `${PKG()}::parlay::rotate_admin`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.pure.address(newAdmin)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.address(newAdmin)],
   });
   return tx;
 }
@@ -170,7 +183,7 @@ export function buildSetMaxPayoutBpsTx(
   tx.moveCall({
     target: `${PKG()}::parlay::set_max_payout_bps`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.pure.u64(newMaxBps)],
+    arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.u64(newMaxBps)],
   });
   return tx;
 }

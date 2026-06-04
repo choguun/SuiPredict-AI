@@ -48,7 +48,15 @@ export default async function LeaderboardPage({
 }) {
   const sp = await searchParams;
   const category = sp?.category ?? "";
-  const addr = sp?.addr ?? "";
+  // R45 audit fix: trim whitespace off the user-typed address
+  // before using it in the REST URL or any client-side
+  // rendering. A user who pastes an address from a Suiscan
+  // link (often with trailing whitespace) would otherwise 404
+  // silently against the agents `/leaderboard/user/:addr`
+  // route, which uses a strict `0x[a-fA-F0-9]{64}` regex on
+  // the URL path. Match the same `.trim()` the settings page
+  // applies to the agent-address input.
+  const addr = (sp?.addr ?? "").trim();
   // `view=country` switches the table to the national leaderboard.
   // Default is the global view; the country filter below narrows
   // whichever view is active.

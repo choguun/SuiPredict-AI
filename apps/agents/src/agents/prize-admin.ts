@@ -20,11 +20,16 @@ import {
   DUSDC_TYPE,
   buildFundPoolTx,
   buildSettleWeekTx,
+  isMoveAbortSymbol,
   readPrizePoolWeeklyPrize,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
-import { isPoolWeekSettled, weekIndexFor } from "../gamification/store.js";
+import {
+  isPoolWeekSettled,
+  markPoolWeekSettled,
+  weekIndexFor,
+} from "../gamification/store.js";
 
 // R43 audit fix: read the runtime-tunable knobs (`PRIZE_FUND_AMOUNT`,
 // `PRIZE_POOL_MIN_BALANCE`) at the top of `runPrizeAdmin` rather
@@ -185,12 +190,43 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
             PRIZE_ADMIN_ID,
             BigInt(priorWeek),
           );
-          const r = await executeTransaction(client, settleTx, ctx.signer);
-          settledWeek = priorWeek;
-          notes.push(
-            `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +
-              `${r.digest.slice(0, 12)}…`,
-          );
+          try {
+            const r = await executeTransaction(client, settleTx, ctx.signer);
+            settledWeek = priorWeek;
+            notes.push(
+              `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +
+                `${r.digest.slice(0, 12)}…`,
+            );
+          } catch (settleErr) {
+            // R45 audit fix: catch `EAlreadySettled` on-chain and
+            // converge the mirror. The off-chain `pool_weeks`
+            // short-circuit above only catches settlements the
+            // indexer has already observed via `PoolSettled`
+            // events. If an admin script (or a second agent
+            // instance on a multi-tenant deploy) settled the
+            // week out-of-band, the on-chain `settle_week` aborts
+            // with `EAlreadySettled` and the mirror never gets
+            // updated — every subsequent cron tick re-submits
+            // the doomed PTB. Detect the abort via
+            // `isMoveAbortSymbol` (the SDK's
+            // `move-errors.ts:229`) and call `markPoolWeekSettled`
+            // to bring the mirror in line, then treat the cron
+            // as a successful no-op. Re-throw on any other
+            // failure so the surrounding `catch (err)` records
+            // the error.
+            if (isMoveAbortSymbol(settleErr, "EAlreadySettled")) {
+              markPoolWeekSettled(
+                PRIZE_POOL_ID,
+                priorWeek,
+                Date.now(),
+              );
+              notes.push(
+                `settle skipped: prior week ${priorWeek} already settled (on-chain); mirror converged.`,
+              );
+            } else {
+              throw settleErr;
+            }
+          }
         }
       }
     }

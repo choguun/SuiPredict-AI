@@ -49,7 +49,20 @@ export default function VaultPage() {
 
   useEffect(() => {
     refreshVault().catch(console.error);
-    const id = setInterval(() => refreshVault().catch(console.error), 10000);
+    const id = setInterval(() => {
+      // R45 audit fix: pause the 10s `refreshVault` poll when the
+      // tab is hidden. R42 added this guard to the modern
+      // `apps/web/app/vault/page.tsx`; this legacy PLP vault
+      // page was the survivor. A 1h backgrounded tab previously
+      // fired 360 `getVaultSummary` calls per hour against
+      // Mysten's predict-server, wasting bandwidth and
+      // competing with indexer recovery. The other tick effect
+      // on this page (`refreshPlp` on `[account, client,
+      // refreshPlp]`) only runs on dep change so it doesn't
+      // need the guard.
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      refreshVault().catch(console.error);
+    }, 10000);
     return () => clearInterval(id);
   }, []);
 

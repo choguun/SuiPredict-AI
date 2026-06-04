@@ -89,7 +89,18 @@ export function buildFundPoolTx(
     );
   }
   const tx = new Transaction();
-  const [fundCoin] = tx.splitCoins(tx.object(coinId), [tx.pure.u64(amount)]);
+  // R45 audit fix: normalize the source coin id (the R42 audit
+  // pass added `normalizeObjectId` to `poolId` but skipped the
+  // `coinId` on the splitCoins source). Mixed-case or
+  // whitespace-suffixed coin ids from env-derived values fail
+  // with `invalid input object` at BCS resolution. The
+  // R38 `splitCoins` fix was the right pattern; R42 was the
+  // right idempotency-pattern for the pool id; this is the
+  // matching source-side guard.
+  const [fundCoin] = tx.splitCoins(
+    tx.object(normalizeObjectId(coinId)),
+    [tx.pure.u64(amount)],
+  );
   tx.moveCall({
     target: `${PKG()}::prize_pool::fund_pool`,
     typeArguments: [prizeCoinType],
