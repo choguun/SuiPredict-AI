@@ -201,8 +201,31 @@ export function ConnectModal() {
                         <button
                           key={wallet.name}
                           onClick={async () => {
-                            await dappKit.connectWallet({ wallet });
-                            setIsOpen(false);
+                            // R42 audit fix: `dappKit.connectWallet`
+                            // rejects on user-cancelled prompts
+                            // (wallet popup closed without confirm),
+                            // network mismatch, or a wallet extension
+                            // that fails to inject a `connect`
+                            // handler. The previous code awaited the
+                            // call without a try/catch — a rejected
+                            // promise would surface as a silent
+                            // unhandled rejection in the console
+                            // and leave the modal open with no
+                            // feedback. Wrap and surface a toast so
+                            // the user can retry or pick a different
+                            // wallet.
+                            try {
+                              await dappKit.connectWallet({ wallet });
+                              setIsOpen(false);
+                            } catch (err) {
+                              const message =
+                                err instanceof Error
+                                  ? err.message
+                                  : "unknown error";
+                              toast.error(
+                                `Failed to connect ${wallet.name}: ${message}`,
+                              );
+                            }
                           }}
                           className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-transparent p-3 transition hover:bg-white/[0.04]"
                         >

@@ -227,10 +227,24 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     // navigating away mid-fetch would otherwise keep the request
     // open until the RPC returns. AbortController is plumbed into
     // the fetch in `refresh` via the `signal` arg below.
+    //
+    // R42 audit fix: pause the 4s refresh when the tab is hidden.
+    // Browsers throttle background-tab timers to ~1s minimum and
+    // some do not run them at all; the previous code would still
+    // queue a `refresh()` on every tick, and the on-chain `getObject`
+    // call was being batched with the user's other tabs to
+    // RPC. Skip the refresh when `document.visibilityState !==
+    // "visible"` so a tab that's been backgrounded for an hour
+    // doesn't fire 900 `getObject` requests when the user comes
+    // back. The mount-time `refresh()` call above is the first
+    // data fetch and is intentionally not visibility-gated.
     const ctl = new AbortController();
     abortRef.current = ctl;
     refresh(ctl.signal).catch(console.error);
-    const t = setInterval(() => refresh(ctl.signal).catch(console.error), 4000);
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      refresh(ctl.signal).catch(console.error);
+    }, 4000);
     return () => {
       clearInterval(t);
       ctl.abort();

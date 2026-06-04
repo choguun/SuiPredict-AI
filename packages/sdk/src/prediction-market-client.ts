@@ -36,6 +36,7 @@ import {
 } from "./deepbook/client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
 import type { SuiClient } from "./predict-client.js";
+import { normalizeObjectId } from "./utils.js";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -242,6 +243,14 @@ export function buildMintSharesBatchTx(params: {
 /**
  * Build `resolve_market` transaction.
  *
+ * R42 audit fix: normalize the object id to the canonical
+ * `0x` + 64 hex form. Sui's BCS object resolver is case-
+ * sensitive in some paths and case-insensitive in others, and
+ * the `Input::Pure` / `Input::Object` encoding requires the
+ * canonical form. Wallets and explorers occasionally hand us
+ * mixed-case ids; passing them through raw can fail with
+ * `invalid input object`.
+ *
  * @param marketId - PredictionMarket object ID
  * @param outcome  - 1 = YES won, 2 = NO won
  */
@@ -254,7 +263,7 @@ export function buildResolveMarketTx(
     target: `${PKG()}::prediction_market::resolve_market`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
+      tx.object(normalizeObjectId(marketId)),
       tx.pure.u8(outcome),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -278,7 +287,11 @@ export function buildRedeemTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(marketId), tx.object(vaultId), tx.object(winningCoin)],
+    arguments: [
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(vaultId)),
+      tx.object(normalizeObjectId(winningCoin)),
+    ],
   });
   return tx;
 }
@@ -289,22 +302,46 @@ export function buildRedeemTx(
  * `resolve_market`. The market is frozen (redeem aborts) until
  * `resolve_dispute` is invoked by the creator.
  *
+ * R42 audit fix: the on-chain `dispute_market<Q>` enforces
+ *   - non-empty evidence: `vector::length > 0` (EZeroAmount)
+ *   - upper bound:       `vector::length <= MAX_EVIDENCE_URI_BYTES` (EEvidenceUriTooLong)
+ * (see prediction_market.move:518-522). Previously the builder
+ * silently forwarded the bytes and let the abort surface as a
+ * cryptic move-abort at the wallet. Pre-validate at build time so
+ * callers get a readable error before signing.
+ *
  * @param marketId     - PredictionMarket object ID
  * @param evidenceUri  - String or bytes containing the dispute evidence
- *                       (URL, IPFS hash, or JSON blob). Must be non-empty.
+ *                       (URL, IPFS hash, or JSON blob). Must be non-empty
+ *                       and no longer than MAX_EVIDENCE_URI_BYTES (256) bytes.
  */
+const MAX_EVIDENCE_URI_BYTES = 256;
 export function buildDisputeMarketTx(
   marketId: string,
   evidenceUri: string | Uint8Array,
 ): Transaction {
   const evidence =
     typeof evidenceUri === "string" ? encodeUtf8(evidenceUri) : evidenceUri;
+  if (evidence.length === 0) {
+    throw new Error(
+      "buildDisputeMarketTx: evidenceUri must be non-empty (on-chain " +
+        "check is vector::length > 0, see EZeroAmount in " +
+        "prediction_market.move)",
+    );
+  }
+  if (evidence.length > MAX_EVIDENCE_URI_BYTES) {
+    throw new Error(
+      `buildDisputeMarketTx: evidenceUri is ${evidence.length} bytes; ` +
+        `the on-chain cap is ${MAX_EVIDENCE_URI_BYTES}. Host longer ` +
+        `evidence on IPFS and pass the CID.`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::dispute_market`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
-      tx.object(marketId),
+      tx.object(normalizeObjectId(marketId)),
       tx.pure.vector("u8", Array.from(evidence)),
       tx.object(CLOCK_OBJECT_ID),
     ],

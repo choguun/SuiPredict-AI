@@ -5,8 +5,24 @@ export const NETWORK = "testnet" as const;
 export const PREDICT_SERVER_URL =
   "https://predict-server.testnet.mystenlabs.com";
 
+// R42 audit fix: `PREDICT_PACKAGE_ID` is the DeepBook Predict
+// upstream package — it lives on a Mysten-managed testnet
+// address with no mainnet equivalent. The web/agents bundles
+// had this hardcoded to the testnet address, so on a mainnet
+// deploy every `predict::*` PTB (legacy mint / redeem paths
+// the web falls back to under
+// `apps/web/app/legacy/predict/`) would route to a non-existent
+// package and abort with `package object not found`. The R40
+// `assertMainnetHasExplicitIds` guard catches the related
+// `AGENT_POLICY_PACKAGE_ID` / `DUSDC_PACKAGE_ID` cases but
+// doesn't know about `PREDICT_PACKAGE_ID`. Extend the guard
+// to refuse a mainnet build unless the operator supplies an
+// override env var (`NEXT_PUBLIC_PREDICT_PACKAGE_ID`).
 export const PREDICT_PACKAGE_ID =
-  "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138";
+  (process.env.NEXT_PUBLIC_PREDICT_PACKAGE_ID ??
+    process.env.PREDICT_PACKAGE_ID ??
+    "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138"
+  ).trim();
 
 export const PREDICT_REGISTRY_ID =
   "0x43af14fed5480c20ff77e2263d5f794c35b9fab7e2212903127062f4fe2a6e64";
@@ -47,6 +63,15 @@ function assertMainnetHasExplicitIds(): void {
     "AGENT_POLICY_PACKAGE_ID",
     "NEXT_PUBLIC_MARKET_PACKAGE_ID",
     "MARKET_PACKAGE_ID",
+    // R42 audit fix: the legacy `predict::*` PTB builders
+    // (used by the web's `app/legacy/predict/*` pages) submit
+    // against `PREDICT_PACKAGE_ID`. On mainnet, the bundled
+    // testnet address has no counterpart, so a mainnet build
+    // that only set `AGENT_POLICY_PACKAGE_ID` would still
+    // route legacy mint/redeem calls to a non-existent
+    // package. Require an explicit override on mainnet.
+    "NEXT_PUBLIC_PREDICT_PACKAGE_ID",
+    "PREDICT_PACKAGE_ID",
   ];
   if (!idVars.some((v) => process.env[v])) {
     throw new Error(

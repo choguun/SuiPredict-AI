@@ -34,7 +34,27 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   }
   const budgetPct = policyBudget > 0 ? policySpent / policyBudget : 0;
 
-  if (utilization >= PAUSE_UTILIZATION && ctx.policyId) {
+  if (utilization >= PAUSE_UTILIZATION) {
+    // R42 audit fix: explicitly distinguish the "high utilization
+    // but no policy id configured" case from the routine monitor
+    // path. The previous code combined the two into a single
+    // "&& ctx.policyId" guard and silently returned `monitor` —
+    // a 95% utilization reading with no policyId set would look
+    // identical to a 30% utilization reading in the agents
+    // dashboard. Surface a dedicated `pause_skipped_no_policy` so
+    // the operator sees a red flag in the /agents/decisions feed
+    // and can wire up the policy id env var.
+    if (!ctx.policyId) {
+      return recordResult("RiskMonitor", {
+        action: "pause_skipped_no_policy",
+        reasoning:
+          `Vault utilization ${(utilization * 100).toFixed(2)}% ` +
+          `>= ${(PAUSE_UTILIZATION * 100).toFixed(0)}% threshold but ` +
+          `AGENT_POLICY_ID is not configured; cannot pause. Set the ` +
+          `env var and restart the agents service.`,
+        confidence: 95,
+      });
+    }
     try {
       const tx = buildPausePolicyTx(ctx.policyId, AGENT_POLICY_PACKAGE_ID);
       const result = await executeTransaction(client, tx, ctx.signer);

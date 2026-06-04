@@ -30,6 +30,7 @@ import {
   createClient,
   DUSDC_TYPE,
   executeTransaction,
+  isMoveAbortSymbol,
   isValidSuiAddress,
   REFERRAL_TREASURY_ADDRESS,
 } from "@suipredict/sdk";
@@ -143,11 +144,21 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
           label: `${market.id.slice(0, 12)}... → ${result.digest.slice(0, 8)}`,
         };
       } catch (err) {
-        // Referral rewards may be zero — don't treat as failure
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("zero") || msg.includes("amount") || msg.includes("InsufficientBalance")) {
+        // R42 audit fix: substring matching on the Sui SDK error
+        // message (`"zero"`, `"amount"`, `"InsufficientBalance"`)
+        // is brittle — it matches ANY error whose human-readable
+        // text contains those substrings, including transient
+        // RPC errors and unrelated Move aborts in our own modules.
+        // The DeepBook `pool::claim_pool_referral_rewards` call
+        // is the only Move abort path in this worker, and its
+        // "no rewards accumulated" abort is surfaced as
+        // `EZeroAmount` (a u64 abort code embedded in the SDK
+        // error). Use `isMoveAbortSymbol` to match the symbolic
+        // error name instead of guessing from substrings.
+        if (isMoveAbortSymbol(err, "EZeroAmount")) {
           results[i] = { kind: "noRewards", label: `${market.id.slice(0, 12)}...` };
         } else {
+          const msg = err instanceof Error ? err.message : String(err);
           results[i] = { kind: "error", label: `${market.id.slice(0, 12)}: ${msg}` };
         }
       }

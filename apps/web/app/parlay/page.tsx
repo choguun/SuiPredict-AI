@@ -168,7 +168,16 @@ export default function ParlayPage() {
       }
     };
     refresh();
-    const t = setInterval(refresh, 5000);
+    // R42 audit fix: pause the 5s refresh when the tab is
+    // backgrounded. Browsers throttle background timers and a
+    // user with this tab open for hours would otherwise fire
+    // thousands of `getObject` requests against the indexer.
+    // Skip the tick when the page is hidden; the initial
+    // `refresh()` above is intentionally not gated.
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void refresh();
+    }, 5000);
     return () => {
       cancelled = true;
       clearInterval(t);

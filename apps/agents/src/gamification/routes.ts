@@ -335,7 +335,28 @@ export async function handleGamificationRoute(
       rank,
       amount,
     };
-    const kp = Ed25519Keypair.fromSecretKey(adminPk);
+    // R42 audit fix: `Ed25519Keypair.fromSecretKey` throws
+    // synchronously for malformed `adminPk` (bad base64, wrong
+    // length, not 32 bytes after decoding). The previous code
+    // called it inline and a bad env value (typo in
+    // `PRIZE_ADMIN_PRIVATE_KEY`, leading/trailing whitespace, an
+    // accidental `0x` prefix) would propagate the throw out of
+    // the request handler — turning the route into a 500 with a
+    // raw Sui SDK error message, not the JSON error envelope
+    // the rest of the route returns. Catch the sync throw here
+    // and convert it into the same `errorId`-correlated 500 the
+    // async sign path already returns.
+    let kp: Ed25519Keypair;
+    try {
+      kp = Ed25519Keypair.fromSecretKey(adminPk);
+    } catch (err) {
+      const errorId = logAndCorrelate("/prize/signature", err);
+      json(res, 500, {
+        error: "internal error: server-side admin keypair is misconfigured",
+        errorId,
+      });
+      return true;
+    }
     signClaimPayload(kp, payload, async (b) => keccak_256(b))
       .then((signed) => {
         json(res, 200, {
@@ -490,6 +511,29 @@ export async function handleGamificationRoute(
       return true;
     }
     try {
+      // R42 audit fix: `amount` is a `bigint` from
+      // `expectedAmountForRank`, which multiplies the on-chain
+      // weekly_prize by bps/10_000. For a max-size pool (the
+      // cumulative weekly_prize on mainnet is `u64`) the rank-1
+      // share can easily exceed `Number.MAX_SAFE_INTEGER` (≈9e15
+      // atoms = 9e9 dUSDC). The previous `Number(amount)` would
+      // silently truncate, so the off-chain mirror would disagree
+      // with the on-chain payout the user actually received — and
+      // the dispute would be unresolvable because the off-chain
+      // row is the audit trail. Use the same `u64ToSafeNumber`
+      // guard the position-indexer (R41) uses, with a route-
+      // specific warning that names the prize context. Bumping
+      // the SQLite column to TEXT would be the long-term fix;
+      // for R42 we keep the column type and warn on overflow.
+      const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+      if (amount > MAX_SAFE) {
+        console.warn(
+          `[routes] /prize/claims amount for user=${body.user} ` +
+            `week=${weekIndex} rank=${body.rank} (${amount}) ` +
+            "exceeds Number.MAX_SAFE_INTEGER; truncating. Bump the " +
+            "prize_claims.amount column to TEXT to preserve precision.",
+        );
+      }
       recordPrizeClaim({
         user: body.user,
         week_index: weekIndex,

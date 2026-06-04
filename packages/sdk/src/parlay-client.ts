@@ -95,18 +95,37 @@ export function buildFundParlayPoolTx(
 /**
  * Build a PTB that withdraws `amount` from the pool. Admin only —
  * the on-chain check is `ctx.sender() == pool.admin`.
+ *
+ * R42 audit fix: the Move `parlay::admin_withdraw<Q>` returns a
+ * `Coin<Q>` (see parlay.move:204-214). Sui requires every non-
+ * `Result` Move return to be either consumed by a subsequent
+ * command or explicitly transferred; an unconsumed `Coin` causes
+ * the PTB to abort with "Unused result without the ability to
+ * assign". The previous builder left the returned coin dangling,
+ * so every admin withdrawal silently failed at the wallet. We
+ * now capture the moveCall result and transfer the coin back to
+ * the sender (the only sensible destination for an admin-only
+ * withdraw endpoint). Mirrors the pattern in
+ * `buildVaultWithdrawTx` (prediction-market-client.ts:923).
  */
 export function buildParlayAdminWithdrawTx(
   poolId: string,
   amount: number | bigint,
   coinType: string,
 ): Transaction {
+  const amt = BigInt(amount);
+  if (amt <= 0n) {
+    throw new Error(
+      `buildParlayAdminWithdrawTx: amount must be > 0 (got ${amount})`,
+    );
+  }
   const tx = new Transaction();
-  tx.moveCall({
+  const out = tx.moveCall({
     target: `${PKG()}::parlay::admin_withdraw`,
     typeArguments: [coinType],
-    arguments: [tx.object(poolId), tx.pure.u64(amount)],
+    arguments: [tx.object(poolId), tx.pure.u64(amt)],
   });
+  tx.transferObjects([out], tx.pure.address("@{sender}"));
   return tx;
 }
 

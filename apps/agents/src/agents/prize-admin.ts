@@ -20,6 +20,7 @@ import {
   DUSDC_TYPE,
   buildFundPoolTx,
   buildSettleWeekTx,
+  readPrizePoolWeeklyPrize,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
@@ -109,14 +110,48 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
     if (!PRIZE_ADMIN_ID) {
       notes.push("PRIZE_ADMIN_ID not configured; skipping settle.");
     } else {
-      const settleTx = buildSettleWeekTx(
-        PRIZE_POOL_ID,
-        PRIZE_ADMIN_ID,
-        BigInt(priorWeek),
-      );
-      const r = await executeTransaction(client, settleTx, ctx.signer);
-      settledWeek = priorWeek;
-      notes.push(`settled week ${priorWeek}: ${r.digest.slice(0, 12)}…`);
+      // R42 audit fix: read the on-chain `weekly_prize` for the
+      // prior week before submitting the settle tx. If it's 0 the
+      // pool was never funded for that week (deploy was live for
+      // less than a full week, or funding failed silently) and
+      // there's nothing to distribute — settle would be a no-op
+      // tx that still costs gas and emits a misleading
+      // `PoolSettled` event. The on-chain `settle_week` doesn't
+      // gate on `weekly_prize > 0` (it's a generic
+      // mark-as-settled marker, see prize_pool.move:228), so we
+      // gate it at the worker level.
+      let priorWeeklyPrize: bigint;
+      try {
+        priorWeeklyPrize = await readPrizePoolWeeklyPrize(
+          client,
+          PRIZE_POOL_ID,
+        );
+      } catch (err) {
+        // RPC outage / wrong network / object not found. Don't
+        // crash the whole admin pass — log and skip settle.
+        notes.push(
+          `settle skipped: could not read weekly_prize ` +
+            `(${err instanceof Error ? err.message : String(err)})`,
+        );
+        priorWeeklyPrize = -1n;
+      }
+      if (priorWeeklyPrize === 0n) {
+        notes.push(
+          `settle skipped: prior week ${priorWeek} has 0 weekly_prize.`,
+        );
+      } else if (priorWeeklyPrize > 0n) {
+        const settleTx = buildSettleWeekTx(
+          PRIZE_POOL_ID,
+          PRIZE_ADMIN_ID,
+          BigInt(priorWeek),
+        );
+        const r = await executeTransaction(client, settleTx, ctx.signer);
+        settledWeek = priorWeek;
+        notes.push(
+          `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +
+            `${r.digest.slice(0, 12)}…`,
+        );
+      }
     }
   } catch (err) {
     notes.push(

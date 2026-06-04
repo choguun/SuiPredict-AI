@@ -51,3 +51,40 @@ export function isValidSuiAddress(addr: string | null | undefined): boolean {
   if (/^0x0{64}$/.test(normalized)) return false;
   return true;
 }
+
+/**
+ * Normalize a Sui object id to the canonical form: `0x` + 64 lowercase
+ * hex chars. Sui's BCS / object resolver is case-insensitive in some
+ * paths and case-sensitive in others; the gRPC `ObjectReference` /
+ * `Input` form is strict. Wallets and indexers occasionally hand us
+ * mixed-case ids (e.g. from display copy/paste or BE-encoded JSON), and
+ * passing the raw string into `tx.object()` / `client.getObject()` can
+ * fail with `invalid input object` or `object not found`. Trim
+ * whitespace, strip an optional leading `0X`, and lower-case.
+ *
+ * R42 audit fix: builders across the SDK were forwarding raw `marketId`
+ * / `poolId` / `vaultId` strings. Adding the helper here and applying
+ * it to the public-facing builders (resolve, dispute, redeem, settle,
+ * …) gives callers a single place to fix copy-pasted ids.
+ *
+ * Throws on syntactically invalid input so the build-time error is
+ * readable rather than a cryptic move-abort at the wallet.
+ */
+export function normalizeObjectId(id: string | null | undefined): string {
+  if (id == null) {
+    throw new Error("normalizeObjectId: id is required");
+  }
+  const trimmed = id.trim();
+  if (!trimmed) {
+    throw new Error("normalizeObjectId: id is empty");
+  }
+  const lowered = trimmed.toLowerCase();
+  const stripped = lowered.startsWith("0x") ? lowered : `0x${lowered}`;
+  if (!/^0x[0-9a-f]{64}$/.test(stripped)) {
+    throw new Error(
+      `normalizeObjectId: "${trimmed}" is not a valid Sui object id ` +
+        `(expected 0x + 64 hex chars)`,
+    );
+  }
+  return stripped;
+}

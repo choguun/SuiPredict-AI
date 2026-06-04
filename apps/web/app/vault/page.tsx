@@ -43,7 +43,17 @@ export default function VaultPage() {
 
   useEffect(() => {
     refresh().catch(console.error);
-    const t = setInterval(() => refresh().catch(console.error), 10_000);
+    // R42 audit fix: skip the 10s refresh when the tab is
+    // backgrounded. A 1h+ backgrounded tab would otherwise
+    // fire 360 `getVaultSummaryClob` calls on resume; gating
+    // on `document.visibilityState === "visible"` drops the
+    // resume burst to a single initial fetch when the user
+    // switches back. The initial `refresh()` above is not
+    // gated so the first paint after mount always sees data.
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      refresh().catch(console.error);
+    }, 10_000);
     return () => clearInterval(t);
   }, []);
 
