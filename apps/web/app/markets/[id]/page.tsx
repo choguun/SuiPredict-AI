@@ -964,7 +964,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             min="0.01"
             max="0.99"
             value={price}
-            onChange={(e) => setPrice(clampProbability(Number(e.target.value)))}
+            // R40 audit fix: route through clampNumberString so a
+            // paste of "1.2.3" or "abc" doesn't silently land as
+            // 0.5 (the NaN fallback of clampProbability(Number(...))).
+            // R39 fixed the same class of bug for qty/deposit; the
+            // price input was the only survivor.
+            onChange={(e) => setPrice(clampNumberString(e.target.value, 0.5, 0.01, 0.99))}
             className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
           />
           <label className="mb-1.5 block text-xs font-semibold uppercase text-zinc-500">

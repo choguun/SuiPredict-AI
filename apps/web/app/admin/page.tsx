@@ -1589,7 +1589,18 @@ function VaultAdminCard(props: {
               // BigInt round-trip. The withdraw input already
               // uses `.replace(/[^0-9.]/g, "")`; apply the same
               // here for consistency.
-              onChange={(e) => setAllocateAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+              //
+              // R40 audit fix: the previous regex still
+              // permitted "1.2.3" through (the dot-filter
+              // doesn't reject multiple dots). `Number("1.2.3")`
+              // is NaN, the submit button correctly disables on
+              // `!isAllocateValid`, but the input briefly
+              // displays the malformed text. The allocate
+              // amount is an integer of micro-units (DUSDC has
+              // 6 decimals), so drop the dot entirely and
+              // allow only digits — matching the strict
+              // `withdrawAmount` path.
+              onChange={(e) => setAllocateAmount(e.target.value.replace(/[^0-9]/g, ""))}
               placeholder="1000000 (= 1 DUSDC)"
               className={`w-full rounded-md border bg-white/[0.04] px-3 py-1.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none ${
                 overAvailable

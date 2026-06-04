@@ -70,8 +70,18 @@ export function StreakProfile() {
                   // to refetch — the markets page especially, which
                   // chooses between `redeem_with_streak` and the plain
                   // `redeem` based on this hook's result.
-                  queryClient.invalidateQueries({ queryKey: ["userStreakId"] });
-                  queryClient.invalidateQueries({ queryKey: ["streakInfo"] });
+                  //
+                  // R40 audit fix: TanStack Query's default invalidation
+                  // is exact-match. The actual keys are
+                  // ["userStreakId", REGISTRY_ID, address] and
+                  // ["streakInfo", streakId] (see useUserStreakId.ts:19
+                  // and useStreakInfo.ts:46). Pass type: "active" so
+                  // the prefix matches every concrete key. Without
+                  // this the refetch silently no-ops and the markets
+                  // page keeps showing "redeem" instead of
+                  // "redeem_with_streak".
+                  queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+                  queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
                 } else {
                   toast.error("Streak creation failed", { id: toastId });
                 }

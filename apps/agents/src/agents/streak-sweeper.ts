@@ -868,6 +868,29 @@ export async function runStreakSweeper(
               : String(outcome.err);
           failed++;
           console.error(`[streak-sweeper] per-user ${u.user} failed:`, msg);
+          // R40 audit fix: the on-chain call aborted (typically
+          // EStreakBroken on a multi-day gap, or an
+          // EInvalidOutcome if the resolver disagreed with the
+          // off-chain state). The leaderboard is fed by the
+          // off-chain `daily_scores` table — without a row the
+          // user is silently absent for the day, which
+          // artificially boosts every other user's rank. Write
+          // a best-effort row (participated=0, all_correct=0,
+          // streak_after=0) so the leaderboard reflects the
+          // (broken) state. The on-chain streak id is required
+          // to read the post-call streak, but we don't have a
+          // post-call read here — `streak_after=0` is
+          // conservative (the streak is at least 0 post-break,
+          // the next indexer poll will overwrite with the
+          // on-chain value).
+          recordDailyScoreIfAbsent({
+            user: u.user,
+            day_index: dayIndex,
+            participated: 0,
+            all_correct: 0,
+            streak_after: 0,
+            category: u.category,
+          });
           // If the same error keeps repeating, the RPC is almost
           // certainly broken — stop wasting gas on doomed txs and
           // let the next-day sweep retry from a fresh state.

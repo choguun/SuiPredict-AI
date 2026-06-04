@@ -19,6 +19,41 @@ export const DUSDC_PACKAGE_ID =
   process.env.DUSDC_PACKAGE_ID ??
   "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705";
 
+// R40 audit fix: when `SUI_NETWORK=mainnet` and none of the
+// package-id env vars are set, every PTB built from this SDK
+// would silently submit against the bundled testnet default
+// and abort with `package object not found`. The web's
+// `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID` is inlined at build
+// time, so a misconfigured CI build of the web bundle is
+// indistinguishable from a working one. Throw at module load
+// so a misconfigured mainnet deploy crashes early with a
+// readable error, matching the existing throw in
+// `prize-client.ts:DEFAULT_DISTRIBUTION_BPS`.
+function assertMainnetHasExplicitIds(): void {
+  if (resolveSuiNetwork() !== "mainnet") return;
+  const idVars = [
+    "NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID",
+    "AGENT_POLICY_PACKAGE_ID",
+    "NEXT_PUBLIC_MARKET_PACKAGE_ID",
+    "MARKET_PACKAGE_ID",
+  ];
+  if (!idVars.some((v) => process.env[v])) {
+    throw new Error(
+      "[sdk] SUI_NETWORK=mainnet but no AGENT_POLICY_PACKAGE_ID (or " +
+        "MARKET_PACKAGE_ID) env var is set. Refusing to silently route " +
+        "every PTB to the bundled testnet address. Set the env var and " +
+        "rebuild.",
+    );
+  }
+  if (!process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID && !process.env.DUSDC_PACKAGE_ID) {
+    throw new Error(
+      "[sdk] SUI_NETWORK=mainnet but no DUSDC_PACKAGE_ID env var is set. " +
+        "Refusing to silently mint against the bundled testnet dUSDC type. " +
+        "Set the env var and rebuild.",
+    );
+  }
+}
+
 export const DUSDC_TYPE = `${DUSDC_PACKAGE_ID}::dusdc::DUSDC`;
 
 export const PLP_TYPE = `${PREDICT_PACKAGE_ID}::plp::PLP`;
@@ -95,3 +130,13 @@ export function strikeToDollars(strike: bigint): number {
 export function dusdcToDollars(amount: bigint): number {
   return Number(amount) / Number(DUSDC_SCALE);
 }
+
+// R40 audit fix: invoke the mainnet guard on module load. The
+// guard reads `process.env`, which is fully populated by the
+// time the SDK is imported (the web's Next.js inlines
+// NEXT_PUBLIC_* at build time; the agents service loads .env
+// via `dotenv/config` before importing the SDK). A failure
+// here is loud and crashes the build / agent boot —
+// preferable to silently misrouting mainnet PTBs to a testnet
+// package.
+assertMainnetHasExplicitIds();

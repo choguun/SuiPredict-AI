@@ -304,8 +304,16 @@ export default function ParlayPage() {
       // key is a silent no-op, so the markets list would stay
       // stale until the next 8s `refetchInterval` tick. Match
       // the actual registered keys.
+      //
+      // R40 audit fix: a successful parlay create draws the
+      // user's collateral out of their position pool, so the
+      // portfolio page (key `["portfolio", address]`) goes
+      // stale for 8s without an explicit invalidation. Use
+      // `type: "active"` to match the tuple form used by
+      // `app/portfolio/page.tsx:32`.
       queryClient.invalidateQueries({ queryKey: ["marketsList"] });
       queryClient.invalidateQueries({ queryKey: ["dailyMarkets"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio"], type: "active" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

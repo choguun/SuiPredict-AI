@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { createServer } from "node:http";
-import { keypairFromPrivateKey } from "@suipredict/sdk";
+import { keypairFromPrivateKey, SUI_GRPC_URL } from "@suipredict/sdk";
 import { runMarketCreator } from "./agents/market-creator.js";
 import { runMarketMaker } from "./agents/market-maker.js";
 import { runMarketResolver } from "./agents/market-resolver.js";
@@ -94,6 +94,20 @@ function validateBootConfig(): void {
     { name: "BalanceManager",     envVar: "BALANCE_MANAGER_ID",            agent: "MarketMaker",    required: false },
     { name: "DeepBookRegistry",   envVar: "DEEPBOOK_REGISTRY_ID",          agent: "MarketMaker",    required: false },
     { name: "PredictPoolKey",     envVar: "PREDICT_DEEPBOOK_POOL_KEY",     agent: "MarketMaker",    required: false },
+    // R40 audit fix: the risk monitor's vault-utilization check
+    // reads `VAULT_TOTAL_BALANCE` and `VAULT_ALLOCATED` from
+    // the env. Neither was in the boot-config validator, so
+    // a misconfigured deploy silently returned 0/0 and the
+    // risk monitor never tripped the pause-policy threshold
+    // — the agents would happily burn budget against a vault
+    // that was never funded. Surface both as optional (the
+    // agents are inert when blank, but the operator should
+    // know).
+    { name: "VaultTotalBal",     envVar: "VAULT_TOTAL_BALANCE",           agent: "RiskMonitor",    required: false },
+    { name: "VaultAllocated",    envVar: "VAULT_ALLOCATED",               agent: "RiskMonitor",    required: false },
+    { name: "FeeVault",          envVar: "FEE_VAULT_ID",                  agent: "Web",            required: false },
+    { name: "ProfileRegistry",   envVar: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", agent: "Web",          required: false },
+    { name: "AdminAddress",      envVar: "NEXT_PUBLIC_ADMIN_ADDRESS",     agent: "Web",            required: false },
   ];
 
   const missing: VarCheck[] = [];
@@ -232,6 +246,25 @@ function bootstrapEnv() {
   const deepRegistry =
     process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
   process.env.DEEPBOOK_REGISTRY_ID = deepRegistry;
+  // R40 audit fix: workers build event-filter strings of the
+  // form `${pkg}::parlay::ParlayCreated<${DUSDC_TYPE}>` at
+  // every tick. If a self-hosted DUSDC deploy sets
+  // DUSDC_PACKAGE_ID but never propagates the full DUSDC_TYPE
+  // env, the filter string freezes against the SDK's bundled
+  // testnet default and matches zero events for the lifetime
+  // of the process. Derive DUSDC_TYPE from the package id
+  // when only the latter is set. The SDK has the same
+  // derivation in `constants.ts`, so this keeps the agents
+  // runtime in lockstep with the SDK's `DUSDC_TYPE` constant.
+  if (!process.env.DUSDC_TYPE) {
+    const pkgId =
+      process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
+      process.env.DUSDC_PACKAGE_ID ??
+      "";
+    if (pkgId) {
+      process.env.DUSDC_TYPE = `${pkgId}::dusdc::DUSDC`;
+    }
+  }
 }
 bootstrapEnv();
 
@@ -313,6 +346,16 @@ function startHealthServer() {
           // way to detect the drift short of clicking through
           // the parlay UI and seeing the move abort.
           parlay_pool_id: process.env.PARLAY_POOL_ID ?? "",
+          // R40 audit fix: the web bundle bakes
+          // NEXT_PUBLIC_FEE_VAULT_ID into every mint/redeem PTB.
+          // A drift between the web bundle and the agents
+          // runtime would silently break every `splitCollateral`
+          // / `redeem` call with EPackageObjectNotFound — the
+          // previous /health payload omitted the field, so the
+          // operator dashboard had no signal short of a
+          // user-reported move abort. Same shape as the
+          // existing parlay/vault entries.
+          fee_vault_id: process.env.FEE_VAULT_ID ?? "",
           streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
           // R39 audit fix: expose the resolved network + RPC URL
           // so the operator can confirm the agents service is
@@ -325,8 +368,17 @@ function startHealthServer() {
           // — drift between NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS
           // and REFERRAL_TREASURY_ADDRESS would silently route
           // claim sweeps to the wrong destination.
+          //
+          // R40 audit fix: previously this reported
+          // `process.env.SUI_RPC_URL` which is only used as an
+          // override in the SDK's `SUI_GRPC_URL` resolver; the
+          // workers themselves call
+          // `getJsonRpcFullnodeUrl(SUI_NETWORK)`, so the prior
+          // value was misleading on a default deploy. Use the
+          // SDK's `SUI_GRPC_URL` constant so the /health payload
+          // reflects what the indexer/gRPC client actually hits.
           network: process.env.SUI_NETWORK ?? "testnet",
-          grpc_url: process.env.SUI_RPC_URL ?? "",
+          grpc_url: SUI_GRPC_URL,
           referral_treasury_address:
             process.env.REFERRAL_TREASURY_ADDRESS ?? "",
           ts_ms: Date.now(),

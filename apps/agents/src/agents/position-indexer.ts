@@ -171,6 +171,34 @@ function readCursor(stateKey: string): EventCursor {
   return (row?.cursor ?? null) as EventCursor;
 }
 
+/**
+ * Decode the base64-encoded `vector<u8>` country_code from the
+ * Sui JSON-RPC event payload into a UTF-8 string. The on-chain
+ * Move module stores the country as bytes; the JSON-RPC layer
+ * renders `vector<u8>` as base64 by default (Sui's standard
+ * representation). We persist the lowercased UTF-8 string so
+ * the `countryRollup` matcher can compare against user input
+ * ("us", "jp") directly.
+ *
+ * If the value is empty or not valid base64, return the empty
+ * string (an empty country_code means the user opted out).
+ */
+function decodeCountryCode(raw: string): string {
+  if (!raw) return "";
+  // Sui's standard event decoder also accepts the case where the
+  // vector is short enough to be inline; on some SDK versions
+  // (and on gRPC) the value comes through as a plain UTF-8 string
+  // already. Try a heuristic: if the value matches /^[a-zA-Z]{2,8}$/
+  // it's already decoded, return lowercased.
+  if (/^[A-Za-z]{2,8}$/.test(raw)) return raw.toLowerCase();
+  try {
+    const buf = Buffer.from(raw, "base64");
+    return buf.toString("utf8").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function writeCursor(stateKey: string, cursor: EventCursor): void {
   if (cursor == null) return;
   getDb()
@@ -195,11 +223,40 @@ async function pollAndApply(
     limit: POLL_BATCH,
     order: "ascending",
   });
+  // R40 audit fix: previously a single throwing `apply(ev)`
+  // (e.g. an `upsertMarket` unique-index collision, an
+  // SQLite disk error, an unhandled JSON shape change) aborted
+  // the for-loop, the cursor was never advanced, and the
+  // next tick re-polled the same 200 events forever — a
+  // silent indexer stall. Wrap each apply in a try/catch and
+  // log the failure with the event id so the operator can
+  // identify the bad event. The cursor still advances to
+  // `page.nextCursor` at the end; the failed event is
+  // re-polled next tick (the upserts are idempotent via
+  // `ON CONFLICT DO UPDATE`).
+  let failedEvents = 0;
   for (const ev of page.data as unknown as EventEnvelope[]) {
-    apply(ev);
+    try {
+      apply(ev);
+    } catch (err) {
+      failedEvents++;
+      const eid = (ev as { id?: { txDigest?: string; eventSeq?: string } })
+        .id;
+      console.error(
+        `[position-indexer] ${stateKey} apply failed for event ${
+          eid?.txDigest ?? "?" + ":" + (eid?.eventSeq ?? "?")
+        }:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   if (page.nextCursor) {
     writeCursor(stateKey, page.nextCursor);
+  }
+  if (failedEvents > 0) {
+    console.warn(
+      `[position-indexer] ${stateKey}: ${failedEvents}/${page.data.length} events failed to apply in this batch; will retry on next tick.`,
+    );
   }
   return page.data.length;
 }
@@ -1048,15 +1105,17 @@ export async function runPositionIndexer(
       if (!j?.user) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
       // The on-chain module is byte-typed; the JSON-RPC event
-      // payload renders `vector<u8>` as a base64 string. We accept
-      // it as-is — the downstream `countryRollup` matcher
-      // lowercases its argument before comparing, so the mirror
-      // stays consistent with what a user typed in lowercase.
-      // An empty value clears the country (per the on-chain
-      // contract), so we write it through verbatim.
+      // payload renders `vector<u8>` as a base64 string. We decode
+      // to UTF-8 + lowercase before persisting because the
+      // downstream `countryRollup` matcher compares against the
+      // user's literal input ("us"), not a base64 string. Without
+      // the decode, a user setting "us" produces the mirror row
+      // country_code="dXM=" and the national leaderboard never
+      // matches. R40 audit fix.
+      const decoded = decodeCountryCode(j.country_code ?? "");
       upsertUserProfile({
         user: j.user,
-        country_code: j.country_code ?? "",
+        country_code: decoded,
         updated_at_ms: ts,
       });
     },

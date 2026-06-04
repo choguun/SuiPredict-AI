@@ -30,6 +30,12 @@ interface HealthEnvelope {
   prize_pool_id?: string;
   parlay_pool_id?: string;
   streak_registry_id?: string;
+  // R40 audit fix: the web bundle bakes
+  // NEXT_PUBLIC_FEE_VAULT_ID into every mint/redeem PTB. The
+  // agents /health payload now echoes `fee_vault_id`; the
+  // drift detector surfaces a mismatch instead of silently
+  // misrouting collateral to a non-existent fee vault.
+  fee_vault_id?: string;
   // R39 audit fix: surface the resolved network, gRPC URL, and
   // referral-treasury address from the agents /health payload.
   // Without these the operator has no way to confirm the
@@ -86,6 +92,15 @@ const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvel
   // no operator visibility.
   { env: "NEXT_PUBLIC_PARLAY_POOL_ID", label: "PARLAY_POOL_ID", runtimeKey: "parlay_pool_id" },
   { env: "NEXT_PUBLIC_STREAK_REGISTRY_ID", label: "STREAK_REGISTRY_ID", runtimeKey: "streak_registry_id" },
+  // R40 audit fix: track the fee vault id as well. The agents
+  // /health payload now returns `fee_vault_id`; without this
+  // ENV_IDS entry the drift detector would silently skip a
+  // mismatch between the web bundle's
+  // `NEXT_PUBLIC_FEE_VAULT_ID` and the agents runtime's
+  // `FEE_VAULT_ID` env, and a deploy that changes only one
+  // would surface as an `EPackageObjectNotFound` move abort
+  // on every mint/redeem.
+  { env: "NEXT_PUBLIC_FEE_VAULT_ID", label: "FEE_VAULT_ID", runtimeKey: "fee_vault_id" },
   // R39 audit fix: track the referral-treasury address so a
   // drift between the web bundle and the agents runtime
   // destination would surface here instead of silently
