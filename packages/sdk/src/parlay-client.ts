@@ -234,17 +234,28 @@ export function buildCreateParlayTx(args: {
  * `prediction_market::is_resolved`). The leg's status flips to WON
  * or LOST based on whether the market outcome matched the user's
  * prediction.
+ *
+ * R41 audit fix: the previous `marketType` parameter was named
+ * misleadingly. The Move function `record_leg<Q>(parlay: &mut Parlay<Q>,
+ * market: &PredictionMarket<Q>, …)` has only ONE type parameter `Q`
+ * (shared between the parlay and the market). The caller was
+ * passing the full `PredictionMarket<DUSDC_TYPE>` string as the
+ * type arg, which is a 2-arg form Move rejects at type-check
+ * (`PTB type-argument count mismatch`). Rename the parameter to
+ * `coinType` and pass the Q value (e.g. `DUSDC_TYPE`) directly.
+ * The market's `PredictionMarket<Q>` type is then pinned by Q
+ * automatically.
  */
 export function buildRecordLegTx(args: {
   parlayId: string;
   marketId: string;
-  marketType: string;
+  coinType: string;
   legIndex: number | bigint;
 }): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::record_leg`,
-    typeArguments: [args.marketType],
+    typeArguments: [args.coinType],
     arguments: [
       tx.object(args.parlayId),
       tx.object(args.marketId),

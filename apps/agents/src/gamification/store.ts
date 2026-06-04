@@ -107,7 +107,17 @@ function getDb(): Database.Database {
         tx_digest TEXT,
         claimed_at_ms INTEGER NOT NULL,
         pool_id TEXT,
-        PRIMARY KEY (user, week_index)
+        -- R41 audit fix: widen the PK to (pool_id, user, week_index)
+        -- so a user claiming from two different prize pools in the
+        -- same week no longer collapses onto a single row. The
+        -- previous PK (user, week_index) silently overwrote the
+        -- first claim's amount/rank/tx_digest with the second
+        -- pool's via ON CONFLICT DO UPDATE. The R33 migration
+        -- added pool_id as a column but never widened the PK.
+        -- R40 audit flagged this and R41 confirmed it remained
+        -- open. Fresh DBs get the new PK from this CREATE; pre-R41
+        -- DBs are migrated via the rebuild below.
+        PRIMARY KEY (pool_id, user, week_index)
       );
     `);
     // R33 migration: existing databases that pre-date the `pool_id`
@@ -119,6 +129,60 @@ function getDb(): Database.Database {
       getDb().exec(`ALTER TABLE prize_claims ADD COLUMN pool_id TEXT`);
     } catch {
       // Column already present; ignore.
+    }
+    // R41 migration: widen the prize_claims PK to
+    // (pool_id, user, week_index). Pre-R41 DBs have the old
+    // (user, week_index) PK. SQLite does not support altering
+    // a PRIMARY KEY in place, so the only way is to rebuild
+    // the table: copy into a new table, drop the old, rename.
+    // Pre-R41 rows have a null `pool_id` (the R33 migration
+    // only added the column with no default, but the
+    // off-chain mirror always writes one when the on-chain
+    // event is observed; rows without a pool_id predate the
+    // multi-pool deploy entirely, so backfill with the empty
+    // string sentinel). Conflict resolution in `recordPrizeClaim`
+    // and `getPrizeClaim` is updated to match the new PK.
+    try {
+      const cols = getDb()
+        .prepare("PRAGMA table_info(prize_claims)")
+        .all() as Array<{ name: string; pk: number }>;
+      const hasWidenedPK =
+        cols.length > 0 &&
+        cols.some((c) => c.pk > 0 && c.name === "pool_id");
+      if (cols.length > 0 && !hasWidenedPK) {
+        db.exec(
+          [
+            "CREATE TABLE IF NOT EXISTS prize_claims_new (",
+            "  user TEXT NOT NULL,",
+            "  week_index INTEGER NOT NULL,",
+            "  rank INTEGER NOT NULL,",
+            "  amount INTEGER NOT NULL,",
+            "  tx_digest TEXT,",
+            "  claimed_at_ms INTEGER NOT NULL,",
+            "  pool_id TEXT,",
+            "  PRIMARY KEY (pool_id, user, week_index)",
+            ");",
+            "INSERT OR IGNORE INTO prize_claims_new",
+            "  (user, week_index, rank, amount, tx_digest,",
+            "   claimed_at_ms, pool_id)",
+            "  SELECT user, week_index, rank, amount, tx_digest,",
+            "         claimed_at_ms,",
+            "         COALESCE(NULLIF(pool_id, ''), '') AS pool_id",
+            "    FROM prize_claims",
+            "   GROUP BY user, week_index;",
+            "DROP TABLE prize_claims;",
+            "ALTER TABLE prize_claims_new RENAME TO prize_claims;",
+            // Re-create the (pool_id, week_index) lookup index
+            // that the leaderboard's claimed-annotation query
+            // relies on (see claimedUsersForWeek).
+            "CREATE INDEX IF NOT EXISTS idx_prize_claims_week",
+            "  ON prize_claims(week_index);",
+          ].join("\n"),
+        );
+      }
+    } catch {
+      // Fresh database; the CREATE TABLE above already declared
+      // the widened PK. Nothing to migrate.
     }
     db.exec(`
       -- Per-day sweep lock. The streak-sweeper inserts a row when it
@@ -596,14 +660,24 @@ function decorateClaimed(row: WeeklyRow): WeeklyRow {
 export function recordPrizeClaim(claim: PrizeClaim): void {
   // R33 audit fix: include `pool_id` in the INSERT / ON CONFLICT
   // UPDATE so the off-chain mirror preserves the on-chain source
-  // pool. Without this, two claims against different pools in the
-  // same week would silently collapse to the same row.
+  // pool.
+  //
+  // R41 audit fix: the conflict target must match the new
+  // PRIMARY KEY (pool_id, user, week_index). Previously the
+  // PK was (user, week_index) and the on-conflict clause
+  // silently collapsed two valid claims from the same user
+  // against different pools onto a single row, overwriting
+  // the first claim's amount/rank/tx_digest with the second.
+  // With the widened PK, two claims from the same user
+  // against different pools in the same week produce two
+  // distinct rows. See the CREATE TABLE / R41 migration
+  // above for the schema.
   getDb()
     .prepare(
       `INSERT INTO prize_claims
        (user, week_index, rank, amount, tx_digest, claimed_at_ms, pool_id)
        VALUES (@user, @week_index, @rank, @amount, @tx_digest, @claimed_at_ms, @pool_id)
-       ON CONFLICT(user, week_index) DO UPDATE SET
+       ON CONFLICT(pool_id, user, week_index) DO UPDATE SET
          rank=excluded.rank, amount=excluded.amount,
          tx_digest=excluded.tx_digest, claimed_at_ms=excluded.claimed_at_ms,
          pool_id=COALESCE(excluded.pool_id, prize_claims.pool_id)`,
@@ -612,19 +686,31 @@ export function recordPrizeClaim(claim: PrizeClaim): void {
 }
 
 /**
- * Look up a single claim by (user, week). Returns null if no claim
- * row exists. Used by the `POST /prize/claims` idempotency check
- * (and by future event-indexer backstops to confirm the row landed).
+ * Look up a single claim by (pool, user, week). Returns null if no
+ * claim row exists. Used by the `POST /prize/claims` idempotency
+ * check (and by future event-indexer backstops to confirm the row
+ * landed).
+ *
+ * R41 audit fix: the previous signature took (user, week) only,
+ * which is non-unique under the widened PK. A caller without
+ * `poolId` would have to disambiguate by hand. Default `poolId`
+ * to the empty string so the call stays backwards-compatible
+ * (pre-R41 rows with no `pool_id` are looked up under the
+ * empty-string sentinel — see the R41 migration above). New
+ * callers should pass the explicit `poolId` from the on-chain
+ * event payload.
  */
 export function getPrizeClaim(
   user: string,
   weekIndex: number,
+  poolId: string = "",
 ): PrizeClaim | null {
   const row = getDb()
     .prepare(
-      `SELECT * FROM prize_claims WHERE user = ? AND week_index = ?`,
+      `SELECT * FROM prize_claims
+        WHERE pool_id IS ? AND user = ? AND week_index = ?`,
     )
-    .get(user, weekIndex) as PrizeClaim | undefined;
+    .get(poolId, user, weekIndex) as PrizeClaim | undefined;
   return row ?? null;
 }
 

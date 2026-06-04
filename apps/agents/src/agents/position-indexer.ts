@@ -199,6 +199,33 @@ function decodeCountryCode(raw: string): string {
   }
 }
 
+/**
+ * Convert a u64 BigInt to a JavaScript number, logging a warning
+ * if the value exceeds `Number.MAX_SAFE_INTEGER` (2^53-1). R41
+ * audit fix: the indexer was previously coercing event-field
+ * u64s with `Number(...)` directly, which silently loses
+ * precision above 2^53 before the SQLite INTEGER column ever
+ * sees the value. Today's parlay payouts fit comfortably below
+ * 2^53 (5e12 atoms = $5000 at the 5x cap) but a future
+ * increase in `max_payout_bps` or collateral would corrupt
+ * historical rows without warning.
+ */
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+function u64ToSafeNumber(
+  value: bigint,
+  fieldName: string,
+  parlayId: string,
+): number {
+  if (value > MAX_SAFE) {
+    console.warn(
+      `[position-indexer] ${fieldName} for parlay ${parlayId} ` +
+        `(${value}) exceeds Number.MAX_SAFE_INTEGER; truncating. ` +
+        "Bump the schema to TEXT or check the on-chain field type.",
+    );
+  }
+  return Number(value);
+}
+
 function writeCursor(stateKey: string, cursor: EventCursor): void {
   if (cursor == null) return;
   getDb()
@@ -280,7 +307,9 @@ export async function runPositionIndexer(
   // (The boot validator in src/index.ts also marks DUSDC_TYPE as
   // required, so a fresh deploy will hard-fail there before the
   // indexer ever gets called — this is a defense-in-depth check.)
-  const dusdcType = process.env.DUSDC_TYPE ?? "";
+  // R41 audit fix: trim env value. See the comment in the
+  // parlay-event subscription block below.
+  const dusdcType = (process.env.DUSDC_TYPE ?? "").trim();
   if (!dusdcType) {
     return recordResult("PositionIndexer", {
       action: "skip",
@@ -1152,7 +1181,15 @@ export async function runPositionIndexer(
   // interpolate the dUSDC type into the subscription string. The
   // on-chain module's `parlay::create_pool` etc. are all generic,
   // so a single subscription covers every collateral variant.
-  const DUSDC_TYPE = process.env.DUSDC_TYPE ?? "";
+  //
+  // R41 audit fix: trim the env value. A `.env` line with
+  // trailing whitespace (common when a value is pasted from
+  // a docs page) silently produces a subscription like
+  // `<0x…::dusdc::DUSDC >` with a space, which matches zero
+  // on-chain events. The R40 bootstrap derivation writes a
+  // clean value but a stale terminal-pasted env wins. Trim
+  // here so the filter string is always normalized.
+  const DUSDC_TYPE = (process.env.DUSDC_TYPE ?? "").trim();
   const parlayType = (eventName: string) =>
     `${predictPackageId}::parlay::${eventName}<${DUSDC_TYPE}>`;
 
@@ -1242,13 +1279,34 @@ export async function runPositionIndexer(
       };
       if (!j?.parlay_id) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      // R41 audit fix: route `payout` and `legs_lost` through
+      // BigInt first so a value above Number.MAX_SAFE_INTEGER
+      // surfaces as a precision-loss warning rather than
+      // silently corrupting the integer. Sui renders u64 event
+      // fields as decimal strings on JSON-RPC, so `BigInt(s)`
+      // is exact. A 5x payout cap on $1k collateral is 5e12
+      // atoms — well under 2^53, so today's payouts don't
+      // trigger the warning, but a future increase in
+      // `max_payout_bps` or collateral would.
+      const payoutBig = BigInt(String(j.payout ?? 0));
+      const legsLostBig = BigInt(String(j.legs_lost ?? 0));
+      const payout = u64ToSafeNumber(
+        payoutBig,
+        "parlay.payout",
+        j.parlay_id,
+      );
+      const legs_lost = u64ToSafeNumber(
+        legsLostBig,
+        "parlay.legs_lost",
+        j.parlay_id,
+      );
       recordParlayFinalized({
         parlay_id: j.parlay_id,
         pool_id: j.pool_id ?? "",
         user: j.user ?? "",
         won: j.won === true,
-        payout: Number(j.payout ?? 0),
-        legs_lost: Number(j.legs_lost ?? 0),
+        payout,
+        legs_lost,
         ts_ms: ts,
       });
     },

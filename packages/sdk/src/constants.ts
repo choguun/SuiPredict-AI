@@ -15,9 +15,10 @@ export const PREDICT_OBJECT_ID =
   "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a";
 
 export const DUSDC_PACKAGE_ID =
-  process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
-  process.env.DUSDC_PACKAGE_ID ??
-  "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705";
+  (process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
+    process.env.DUSDC_PACKAGE_ID ??
+    "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705"
+  ).trim();
 
 // R40 audit fix: when `SUI_NETWORK=mainnet` and none of the
 // package-id env vars are set, every PTB built from this SDK
@@ -29,6 +30,16 @@ export const DUSDC_PACKAGE_ID =
 // so a misconfigured mainnet deploy crashes early with a
 // readable error, matching the existing throw in
 // `prize-client.ts:DEFAULT_DISTRIBUTION_BPS`.
+//
+// R41 audit fix: trim whitespace off the env value. A `.env`
+// line with trailing whitespace (common when a value is pasted
+// from a docs page) silently produces a type tag like
+// `<0x…::dusdc::DUSDC >` with a space, which the agents
+// indexer event-filter treats as a different event type and
+// matches zero on-chain events. The agents' R40 bootstrap
+// derivation also trims, but the SDK's own DUSDC_TYPE /
+// AGENT_POLICY_PACKAGE_ID are read directly by web pages and
+// by PTB builders — trim once at the source.
 function assertMainnetHasExplicitIds(): void {
   if (resolveSuiNetwork() !== "mainnet") return;
   const idVars = [
@@ -80,11 +91,12 @@ export const DUSDC_SCALE = 1_000_000n;
  * to `apps/web/.env.local`).
  */
 export const AGENT_POLICY_PACKAGE_ID =
-  process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
-  process.env.AGENT_POLICY_PACKAGE_ID ??
-  process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
-  process.env.MARKET_PACKAGE_ID ??
-  "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf";
+  (process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
+    process.env.AGENT_POLICY_PACKAGE_ID ??
+    process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+    process.env.MARKET_PACKAGE_ID ??
+    "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf"
+  ).trim();
 
 // R39 audit fix: the URL used to be hardcoded to testnet, which
 // meant a mainnet deploy (where the agents service reads

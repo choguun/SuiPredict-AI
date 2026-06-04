@@ -119,10 +119,18 @@ function buildSingleRecordLegTx(
   marketId: string,
   legIndex: number,
 ): Transaction {
+  // R41 audit fix: previously passed the full
+  // `PredictionMarket<DUSDC_TYPE>` as the type argument to
+  // `parlay::record_leg`, but the Move function has only one
+  // generic parameter Q (the coin type). The PTB rejected at
+  // type-check with `PTB type-argument count mismatch`, so
+  // every parlay leg was silently stuck in PENDING forever.
+  // The market's `PredictionMarket<Q>` type is pinned
+  // automatically once Q is supplied.
   return buildRecordLegTx({
     parlayId,
     marketId,
-    marketType: `${PKG}::prediction_market::PredictionMarket<${DUSDC_TYPE}>`,
+    coinType: DUSDC_TYPE,
     legIndex,
   });
 }

@@ -469,7 +469,19 @@ export async function handleGamificationRoute(
     // membership check (both see `claimed: false`), both submit
     // on-chain, and the second hits `EAlreadyClaimed` — but the second
     // POST would still return 200 and overwrite the off-chain row.
-    const existing = getPrizeClaim(body.user, weekIndex);
+    //
+    // R41 audit fix: pass the configured prize pool id so the
+    // lookup hits the widened PK (pool_id, user, week_index).
+    // Without it, the SQL falls back to the empty-string
+    // sentinel and a claim from pool A wouldn't be detected as
+    // a duplicate of an existing claim from pool A — but a
+    // claim from pool B (same user, same week) would still
+    // pass the check.
+    const existing = getPrizeClaim(
+      body.user,
+      weekIndex,
+      process.env.PRIZE_POOL_ID ?? "",
+    );
     if (existing) {
       json(res, 409, {
         error: "prize already claimed for this user and week",

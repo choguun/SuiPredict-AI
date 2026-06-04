@@ -265,8 +265,16 @@ export default function ParlayPage() {
         coinType: DUSDC_TYPE,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R41 audit fix: the previous `throw new Error("Transaction
+      // failed")` discarded the dAppKit result shape (`Failed`,
+      // `EffectsCert`, etc.) and toasts a generic message. The
+      // sibling admin/vault/dispute call sites toast a
+      // specific error and return cleanly. Match that pattern
+      // so the user can distinguish gas-exhaustion from a
+      // Move abort from an effects-cert mismatch.
       if (r.$kind !== "Transaction") {
-        throw new Error("Transaction failed");
+        toast.error(`Parlay create failed on-chain (${r.$kind})`);
+        return;
       }
       // Pull the new Parlay<Q> object ID from the tx effects via
       // the SDK helper. `::parlay::Parlay` is the struct suffix we

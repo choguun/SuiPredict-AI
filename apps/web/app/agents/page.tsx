@@ -179,12 +179,40 @@ export default function AgentsPage() {
       }
     }
     void load();
-    const id = setInterval(() => { void load(); }, 8000);
+    // R41 audit fix: backoff the poll when the agents service is
+    // unreachable. Hammering at 8s during a 5xx storm wastes the
+    // user's battery, fills the agents log with retries, and
+    // competes with the indexer's own recovery once the service
+    // comes back. After a 5xx we slow the next poll to 30s; on
+    // a successful response we resume 8s polling.
+    let backoffMs = 8000;
+    const tick = () => {
+      if (cancelled) return;
+      void load();
+      // Adjust the next poll based on what the just-finished
+      // load() saw. `error` is captured by the closure; the
+      // effect re-binds the closure on every render anyway
+      // because we tear down and re-create the interval below.
+      const next = error ? 30_000 : 8_000;
+      if (next !== backoffMs) {
+        backoffMs = next;
+        clearInterval(id);
+        if (!cancelled) {
+          id = setInterval(tick, backoffMs);
+        }
+      }
+    };
+    let id: ReturnType<typeof setInterval> = setInterval(tick, backoffMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+    // The effect intentionally re-runs on `error` changes so
+    // the next interval restart can pick up the new backoff
+    // value. `error` is the only state-derived dependency
+    // needed for the tick closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error]);
 
   const primary = manifest.filter((a) => a.kind === "primary");
   // R39 audit fix: drop the `legacy` filter and the dead card
