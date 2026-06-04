@@ -130,9 +130,34 @@ async function readJsonBody<T = unknown>(req: IncomingMessage): Promise<T | null
   // empty body. The previous version of this route file had no POST
   // handlers so the body never needed to be read; the new
   // /prize/claims (POST) handler uses this.
+  //
+  // R47 audit fix: cap the body size at 64KB. The previous
+  // implementation accumulated chunks into a `Buffer[]` with
+  // no upper bound — a client POSTing a multi-MB JSON
+  // (or a `text/plain` body masquerading as JSON) would
+  // exhaust the agents process memory before the
+  // `JSON.parse` ever rejected it. 64KB is well above
+  // the largest legitimate payload (a /prize/claims body
+  // with `txDigest` and a 64-hex user address is <1KB)
+  // and well below the V8 default heap of ~1.5GB even
+  // at 10K concurrent requests. Return null on overflow
+  // so the caller treats it as a malformed body and
+  // responds 400 with the standard `error` shape.
   return await new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c as Buffer));
+    let total = 0;
+    const MAX = 64 * 1024;
+    req.on("data", (c) => {
+      const buf = c as Buffer;
+      total += buf.length;
+      if (total > MAX) {
+        // R47 audit fix: drain so the request
+        // socket doesn't hang on the next keepalive.
+        req.resume();
+        return resolve(null);
+      }
+      chunks.push(buf);
+    });
     req.on("end", () => {
       const text = Buffer.concat(chunks).toString("utf-8");
       if (!text) return resolve(null);
@@ -357,35 +382,52 @@ export async function handleGamificationRoute(
       });
       return true;
     }
-    signClaimPayload(kp, payload, async (b) => keccak_256(b))
-      .then((signed) => {
-        json(res, 200, {
-          payload: {
-            ...signed.payload,
-            weekIndex: signed.payload.weekIndex.toString(),
-            amount: signed.payload.amount.toString(),
-          },
-          signatureB64: signed.signatureB64,
-          expectedAmount: amount.toString(),
-          amountSource,
-        });
-      })
-      .catch((err) => {
-        // R35 audit fix: returning the raw SDK error to the web
-        // client leaks the on-chain contract layout — module path,
-        // abort code, command index, file/function name. Sui SDK
-        // errors include `MoveAbort(Package { id: ... }, Identifier(
-        // ... ), 4, ...)` strings that an attacker can use to
-        // fingerprint contract internals. Log the full error
-        // server-side and return a static string + a correlation
-        // id so the operator can trace a user's report to the
-        // matching server log.
-        const errorId = logAndCorrelate("/prize/signature", err);
-        json(res, 500, {
-          error: "internal error signing claim",
-          errorId,
-        });
+    // R47 audit fix: the previous `signClaimPayload(...).then(...).catch(...)`
+    // pattern returned `true` immediately, before the
+    // promise resolved. The `.catch` only handled
+    // async rejections; a synchronous throw inside
+    // `signClaimPayload` (e.g. a future SDK change
+    // that validates inputs eagerly) would escape
+    // both the `.then` and the `.catch`, leaving
+    // the response uncompleted (the Node http
+    // server eventually times out the socket with
+    // a 502 / connection-reset that the web
+    // renders as a confusing parse error).
+    // Convert to `await` inside the handler so a
+    // sync throw is caught by the surrounding
+    // try/catch and a clean 500 is sent.
+    try {
+      const signed = await signClaimPayload(
+        kp,
+        payload,
+        async (b) => keccak_256(b),
+      );
+      json(res, 200, {
+        payload: {
+          ...signed.payload,
+          weekIndex: signed.payload.weekIndex.toString(),
+          amount: signed.payload.amount.toString(),
+        },
+        signatureB64: signed.signatureB64,
+        expectedAmount: amount.toString(),
+        amountSource,
       });
+    } catch (err) {
+      // R35 audit fix: returning the raw SDK error to the web
+      // client leaks the on-chain contract layout — module path,
+      // abort code, command index, file/function name. Sui SDK
+      // errors include `MoveAbort(Package { id: ... }, Identifier(
+      // ... ), 4, ...)` strings that an attacker can use to
+      // fingerprint contract internals. Log the full error
+      // server-side and return a static string + a correlation
+      // id so the operator can trace a user's report to the
+      // matching server log.
+      const errorId = logAndCorrelate("/prize/signature", err);
+      json(res, 500, {
+        error: "internal error signing claim",
+        errorId,
+      });
+    }
     return true;
   }
 
@@ -457,6 +499,22 @@ export async function handleGamificationRoute(
       body.rank <= 0
     ) {
       json(res, 400, { error: "missing or invalid fields" });
+      return true;
+    }
+    // R47 audit fix: validate `txDigest` if present.
+    // The previous handler accepted any string and
+    // persisted it verbatim. A 10KB txDigest would
+    // be stored in the row and the Sui digest
+    // format is `0x` + 64 hex chars. Reject anything
+    // that doesn't match the strict format so the
+    // off-chain `txDigest` column can be trusted by
+    // the operator-dashboard view.
+    if (
+      body.txDigest != null &&
+      (typeof body.txDigest !== "string" ||
+        !/^0x[a-fA-F0-9]{64}$/.test(body.txDigest))
+    ) {
+      json(res, 400, { error: "txDigest must be a 0x + 64 hex string" });
       return true;
     }
     // R46 audit fix: validate the client-supplied poolId
@@ -531,7 +589,28 @@ export async function handleGamificationRoute(
     // server should not be silently re-routing the off-chain
     // mirror to a different pool. Fall back to the env var
     // when the client omits the field.
+    //
+    // R47 audit fix: refuse the request when both the
+    // client and the env are empty. The previous
+    // `clientPoolId ?? process.env.PRIZE_POOL_ID ?? ""`
+    // would silently attribute the claim to the
+    // empty-string sentinel — a future operator who
+    // set `PRIZE_POOL_ID` would write to a *new*
+    // `(empty → real)` row instead of the
+    // `(real → real)` row the indexer would have
+    // looked at, silently losing the off-chain
+    // mirror. Reject with 400 and a readable message
+    // so the operator has to be explicit about the
+    // pool attribution.
     const claimPoolId = clientPoolId ?? process.env.PRIZE_POOL_ID ?? "";
+    if (!claimPoolId) {
+      json(res, 400, {
+        error:
+          "poolId is required: send a valid poolId in the body or " +
+          "configure PRIZE_POOL_ID on the agents service.",
+      });
+      return true;
+    }
     const existing = getPrizeClaim(
       body.user,
       weekIndex,

@@ -31,6 +31,7 @@ import {
   PREDICT_QUOTE_COIN_KEY,
   tupleBookToSnapshot,
   yesCoinType,
+  isMoveAbortInModule,
   type MarketInfo,
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
@@ -50,6 +51,71 @@ import { clampNumberString } from "@/lib/forms";
 // call sites to toast fake successes.
 
 const QUOTE_COIN = DUSDC_TYPE;
+
+/**
+ * R47 audit fix: translate the common
+ * `prediction_market` and DeepBook move-abort
+ * codes into readable copy. The dispute page
+ * already has a `friendlyDisputeError` helper
+ * (R37); the markets/[id] page is the survivor
+ * and was rendering raw "Mint failed on-chain"
+ * / "Order failed on-chain" / "Redeem failed
+ * on-chain" / "Withdraw settled failed on-chain"
+ * toasts for every abort. A user with
+ * insufficient DUSDC for a mint just saw
+ * "Mint failed on-chain" with no hint about
+ * why. The translation table here covers the
+ * top-5 aborts; any other Move abort falls
+ * through to the previous generic message so
+ * we never *lose* information, only add it.
+ */
+function friendlyMoveError(err: unknown, action: string): string {
+  if (isMoveAbortInModule(err, "prediction_market")) {
+    return `${action} failed: the market is paused or already settled.`;
+  }
+  // Cast external-module names: the MoveModule type only enumerates
+  // our own packages, but `isMoveAbortInModule`'s regex matches any
+  // module name in the error message. balance_manager is the Sui
+  // framework primitive, deepbook is the order-book package, dusdc
+  // is the test-stablecoin — all of which can raise aborts our
+  // markets/[id] actions depend on.
+  if (isMoveAbortInModule(err, "balance_manager" as Parameters<typeof isMoveAbortInModule>[1])) {
+    return `${action} failed: balance manager invariant violated (insufficient funds?).`;
+  }
+  if (isMoveAbortInModule(err, "deepbook" as Parameters<typeof isMoveAbortInModule>[1])) {
+    return `${action} failed: DeepBook pool rejected the order.`;
+  }
+  if (isMoveAbortInModule(err, "dusdc" as Parameters<typeof isMoveAbortInModule>[1])) {
+    return `${action} failed: insufficient DUSDC balance.`;
+  }
+  if (isMoveAbortInModule(err, "agent_policy")) {
+    return `${action} failed: agent policy paused, revoked, or out of budget.`;
+  }
+  return `${action} failed on-chain`;
+}
+
+/**
+ * R47 audit fix: extract the underlying Move-abort message from
+ * a dapp-kit `FailedTransaction` result. The discriminated union
+ * nests the failure as `r.FailedTransaction.status.error`, and
+ * `isMoveAbortInModule` matches against `err.message` — so we
+ * rewrap the message as an `Error` to feed the existing matcher
+ * without changing its signature. Without this helper, the
+ * call sites would either pass a structural object (which
+ * `String()`s to `[object Object]`) or have to inline a deep
+ * `?.` chain at every toast site.
+ */
+function failedTxToError(
+  r: { FailedTransaction?: { status?: { success: false; error?: { message?: string } } | { success: true } } },
+): Error {
+  const failed = r.FailedTransaction;
+  if (!failed) return new Error("Move transaction failed");
+  const status = failed.status;
+  if (!status || status.success !== false) {
+    return new Error("Move transaction failed");
+  }
+  return new Error(status.error?.message ?? "Move transaction failed");
+}
 
 const FEE_VAULT_ID =
   process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
@@ -385,7 +451,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // Failed/EffectsCert result and the success toast fired
       // anyway, lying to the user that a mint succeeded.
       if (r.$kind !== "Transaction") {
-        toast.error("Mint failed on-chain", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "Mint"), { id: toastId });
         return;
       }
       toast.success(`Minted YES + NO: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
@@ -447,7 +513,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // service for no reason. Surface the error early and skip the
       // indexer poll.
       if (r.$kind !== "Transaction") {
-        toast.error("Order failed on-chain (insufficient gas, paused pool, or BalanceManager invariant).", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "Order"), { id: toastId });
         return;
       }
       const digest = r.Transaction.digest;
@@ -565,7 +631,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // subsequent deposit/place-order call would 404 trying to
       // fetch a non-existent object.
       if (r.$kind !== "Transaction") {
-        toast.error("BalanceManager creation failed on-chain.", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "BalanceManager creation"), { id: toastId });
         return;
       }
       const digest = r.Transaction.digest;
@@ -620,7 +686,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // show in effects certs). Surface the error to the user
       // instead of an "Deposit OK: unknown..." toast.
       if (r.$kind !== "Transaction") {
-        toast.error("Deposit failed on-chain.", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "Deposit"), { id: toastId });
         return;
       }
       toast.success(`Deposit OK: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
@@ -655,7 +721,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // would not advance, so the user might wait a full week
       // before noticing their `SettledEvent` was never emitted.
       if (r.$kind !== "Transaction") {
-        toast.error("Withdraw settled failed on-chain (no settled amounts, or pool invariant).", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "Withdraw settled"), { id: toastId });
         return;
       }
       toast.success(`Settled balances withdrawn: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
@@ -717,7 +783,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // but the previous code path would still toast
       // "Redeemed: unknown..." which is much worse than no toast.
       if (r.$kind !== "Transaction") {
-        toast.error("Redeem failed on-chain.", { id: toastId });
+        toast.error(friendlyMoveError(failedTxToError(r), "Redeem"), { id: toastId });
         return;
       }
       toast.success(`Redeemed: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });

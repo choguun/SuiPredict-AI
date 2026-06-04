@@ -165,7 +165,22 @@ export function ConnectModal() {
 
       {/* Modal Overlay */}
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        // R47 audit fix: add the standard ARIA
+        // dialog attributes — `role="dialog"`,
+        // `aria-modal="true"`, and
+        // `aria-labelledby` pointing at the
+        // visible `<h2>` heading. The previous
+        // bare <div> overlay gave screen
+        // readers a context shift announcement
+        // but no role announcement, and
+        // didn't expose the dialog's label
+        // to assistive tech.
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="connect-modal-title"
+          className="fixed inset-0 z-[100] flex h-[100dvh] w-screen flex-col items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in duration-200"
+        >
           {/* Modal Content */}
           <div className="relative w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-3xl border border-white/10 bg-[#11141d] shadow-2xl shadow-black/80 animate-in zoom-in-95 duration-200 hide-scrollbar">
             {/* Background Gradients */}
@@ -174,7 +189,10 @@ export function ConnectModal() {
             
             <div className="relative p-6 sm:p-8">
               <div className="flex items-center justify-between mb-8">
-                <h2 className="text-xl font-bold tracking-tight text-white">
+                <h2
+                  id="connect-modal-title"
+                  className="text-xl font-bold tracking-tight text-white"
+                >
                   {activeAddress ? "Your Profile" : "Connect"}
                 </h2>
                 <button

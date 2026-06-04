@@ -123,6 +123,26 @@ export default function VaultPage() {
 
   async function withdrawPLP() {
     if (!account || !client || !plpCoinId) return;
+    // R47 audit fix: confirm before withdrawing. The
+    // R45 audit pass added `window.confirm` to the
+    // admin cards but missed the legacy PLP vault
+    // page — a user with several million PLP shares
+    // can mis-click the "Withdraw" button and the
+    // entire balance is consumed by a single
+    // `tx.splitCoins` with no second-chance prompt.
+    // The supplied `withdrawAmount` may be only a
+    // fraction of the wallet's PLP, but a zero-amount
+    // submit (operator left the field blank) would
+    // still issue a PTB that splits the *whole coin*
+    // on the move side because the contract treats
+    // 0 atoms as a no-op only at the deposit path.
+    if (
+      !window.confirm(
+        `Withdraw ${withdrawAmount} dUSDC from the PLP vault?`,
+      )
+    ) {
+      return;
+    }
     setLoading(true);
     setStatus("Withdrawing from PLP vault...");
     try {

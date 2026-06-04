@@ -526,6 +526,25 @@ function WithdrawFeesCard(props: {
   async function submit() {
     setErr(null);
     setDigest(null);
+    // R47 audit fix: confirm before withdrawing.
+    // R45 added `window.confirm` to the other
+    // admin cards (settle, rotate, allocate)
+    // but missed the fee-vault withdraw. The
+    // action moves a non-trivial amount of
+    // DUSDC from the on-chain `FeeVault` to
+    // the operator's wallet — a misclick on a
+    // pre-populated amount would silently
+    // transfer the wrong value. Surface the
+    // exact amount (in DUSDC, not atoms) so
+    // the operator has a readable prompt.
+    if (
+      amountDusdc &&
+      !window.confirm(
+        `Withdraw ${amountDusdc} DUSDC from the fee vault to the admin wallet?`,
+      )
+    ) {
+      return;
+    }
     if (!FEE_VAULT_ID) {
       setErr("FEE_VAULT_ID is not set in this deployment.");
       return;
@@ -591,31 +610,66 @@ function WithdrawFeesCard(props: {
           <Stat label="Amount" value={amountDusdc ? `${amountDusdc} DUSDC` : "—"} />
         </div>
         <div className="flex gap-2">
-          <input
-            type="number"
-            step="0.000001"
-            min="0"
-            placeholder="0.0"
-            value={amountDusdc}
-            // R37 audit fix: allow empty or a non-negative
-            // decimal (`0`, `0.5`, `1.234567`). Reject scientific
-            // notation (`1e10`) and junk so the user gets
-            // feedback here instead of a `BigInt(NaN)` throw at
-            // submit. Fractions with up to 6 decimals match the
-            // DUSDC scale (1_000_000 atoms = 1 DUSDC).
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === "" || /^\d+(\.\d{0,6})?$/.test(v)) {
-                setAmountDusdc(v);
-              }
-            }}
-            className={`w-40 rounded-md border bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none ${
-              overBalance
-                ? "border-rose-500/60 focus:border-rose-400"
-                : "border-white/10 focus:border-rose-400"
-            }`}
-            disabled={props.disabled || busy}
-          />
+          {/* R47 audit fix: wrap the input in a
+              <label> with `htmlFor` so screen
+              readers announce it as "Amount in
+              DUSDC" rather than "numeric text
+              input". The previous bare <input>
+              had no accessible name. */}
+          <label
+            htmlFor="withdraw-fees-amount"
+            className="flex flex-col text-xs text-zinc-400"
+          >
+            <span className="sr-only">Amount in DUSDC</span>
+            <input
+              id="withdraw-fees-amount"
+              type="number"
+              step="0.000001"
+              min="0"
+              placeholder="0.0"
+              value={amountDusdc}
+              // R37 audit fix: allow empty or a non-negative
+              // decimal (`0`, `0.5`, `1.234567`). Reject scientific
+              // notation (`1e10`) and junk so the user gets
+              // feedback here instead of a `BigInt(NaN)` throw at
+              // submit. Fractions with up to 6 decimals match the
+              // DUSDC scale (1_000_000 atoms = 1 DUSDC).
+              //
+              // R47 audit fix: cap the integer part
+              // at 10 digits. The previous
+              // `/^\d+(\.\d{0,6})?$/` allowed
+              // `99999999999999999999.999999`,
+              // which the BigInt conversion would
+              // happily serialize to a u64 — but
+              // a mainnet vault with a 9e19
+              // atom (9e13 DUSDC) balance
+              // would have the input *exceed* the
+              // actual `vaultBalance`, and the
+              // `overBalance` pre-flight check
+              // only fires when `vaultBalance`
+              // is loaded. A wallet-less / cold-RPC
+              // deploy would silently let the
+              // user submit a doomed PTB.
+              // Bounding the input to a sane
+              // upper limit (10^10 DUSDC =
+              // 10 billion, well above any
+              // realistic fee-vault balance)
+              // surfaces the issue at the
+              // input stage.
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "" || /^\d{1,10}(\.\d{0,6})?$/.test(v)) {
+                  setAmountDusdc(v);
+                }
+              }}
+              className={`w-40 rounded-md border bg-white/[0.04] px-3 py-1.5 text-sm text-white placeholder-zinc-600 focus:outline-none ${
+                overBalance
+                  ? "border-rose-500/60 focus:border-rose-400"
+                  : "border-white/10 focus:border-rose-400"
+              }`}
+              disabled={props.disabled || busy}
+            />
+          </label>
           <button
             type="button"
             onClick={submit}

@@ -139,6 +139,26 @@ const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvel
   // with no operator visibility.
   { env: "NEXT_PUBLIC_PRIZE_ADMIN_ID", label: "PRIZE_ADMIN_ID", runtimeKey: "prize_admin_id" },
   { env: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", label: "PROFILE_REGISTRY_ID", runtimeKey: "profile_registry_id" },
+  // R47 audit fix: R46 added the /health payload
+  // entries for `admin_address`, `parlay_admin_id`,
+  // `deepbook_pool_id`, and `deepbook_pool_key`
+  // but only the first two of the six new
+  // `ENV_IDS` entries were added here. The
+  // remaining four are still consumed by web
+  // pages (the parlay admin rotate / claim flows
+  // use `parlay_admin_id`; the market maker
+  // buttons and the /vault page use
+  // `deepbook_pool_id` / `deepbook_pool_key`;
+  // `admin_address` is the operator's
+  // wallet) and a drift on any of them
+  // would silently break the corresponding
+  // PTB with `object not found`. Add the
+  // four missing entries so the drift
+  // detector surfaces the mismatch.
+  { env: "NEXT_PUBLIC_ADMIN_ADDRESS", label: "ADMIN_ADDRESS", runtimeKey: "admin_address" },
+  { env: "NEXT_PUBLIC_PARLAY_ADMIN_ID", label: "PARLAY_ADMIN_ID", runtimeKey: "parlay_admin_id" },
+  { env: "NEXT_PUBLIC_DEEPBOOK_POOL_ID", label: "DEEPBOOK_POOL_ID", runtimeKey: "deepbook_pool_id" },
+  { env: "NEXT_PUBLIC_DEEPBOOK_POOL_KEY", label: "DEEPBOOK_POOL_KEY", runtimeKey: "deepbook_pool_key" },
 ];
 
 function driftLinesFor(h: HealthEnvelope): string[] {

@@ -1119,12 +1119,32 @@ export function recordParlayFinalized(p: {
   // `WHERE finalized = 0` clause in the UPDATE means a re-poll
   // of an already-finalized row is a no-op, and a first-time
   // finalize uses the new event's values.
+  //
+  // R47 audit fix: the prior SQL's
+  // `won = COALESCE(won, @won)` only handled the
+  // NULL case, despite the comment above
+  // claiming a `won = NULL/0 → 1; never 1 → 0`
+  // guarantee. If a process restart replayed
+  // an older `ParlayFinalized{won=false}` event
+  // after a newer `ParlayFinalized{won=true}`
+  // had been written (the cursor reset to
+  // checkpoint after the second event was
+  // already applied), the COALESCE would
+  // silently clobber the winning row with a
+  // losing one. Strengthen the WHERE clause
+  // to refuse a re-finalize when the new
+  // event's outcome is worse than what's
+  // already on disk.
   getDb()
     .prepare(
       `UPDATE parlays
          SET finalized = 1,
-             won = COALESCE(won, @won),
-             payout = COALESCE(payout, @payout),
+             won = CASE WHEN won = 1 THEN 1 ELSE @won END,
+             payout = CASE
+               WHEN payout IS NULL THEN @payout
+               WHEN @payout > payout THEN @payout
+               ELSE payout
+             END,
              legs_lost = @legs_lost,
              pool_id = COALESCE(NULLIF(@pool_id, ''), pool_id),
              user = COALESCE(NULLIF(@user, ''), user),

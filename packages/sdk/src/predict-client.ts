@@ -16,6 +16,7 @@ import {
 } from "./constants.js";
 import type { Direction, MintParams, RedeemParams } from "./types.js";
 import { getManagerForOwner } from "./predict-server.js";
+import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 export type SuiClient = SuiGrpcClient;
 
@@ -155,10 +156,17 @@ export function buildDepositTx(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   depositCoin: any,
 ) {
+  // R47 audit fix: normalize `managerId`. R42 added
+  // `normalizeObjectId` to the post-R40 builders but
+  // missed the legacy `predict_manager::deposit` path
+  // (used by the web's `app/legacy/predict/vault`
+  // page). A mixed-case or whitespace-suffixed
+  // managerId aborts the PTB with
+  // `invalid input object`.
   tx.moveCall({
     target: `${PREDICT_PACKAGE_ID}::predict_manager::deposit`,
     typeArguments: [DUSDC_TYPE],
-    arguments: [tx.object(managerId), depositCoin],
+    arguments: [tx.object(normalizeObjectId(managerId)), depositCoin],
   });
 }
 
@@ -173,13 +181,20 @@ export function buildMintTx(params: MintParams): Transaction {
     strike,
     params.direction,
   );
+  // R47 audit fix: normalize every user-supplied id.
+  // R42 normalized `poolId` on the parlay builders but
+  // missed the legacy `predict::mint` path. A
+  // Suiscan-pasted `managerId` or `oracleId` (with
+  // mixed case or trailing whitespace) would abort
+  // the PTB with `invalid input object` at BCS
+  // resolution.
   tx.moveCall({
     target: `${PREDICT_PACKAGE_ID}::predict::mint`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(PREDICT_OBJECT_ID),
-      tx.object(params.managerId),
-      tx.object(params.oracleId),
+      tx.object(normalizeObjectId(params.managerId)),
+      tx.object(normalizeObjectId(params.oracleId)),
       key,
       tx.pure.u64(quantity),
       tx.object(CLOCK_OBJECT_ID),
@@ -216,8 +231,8 @@ export async function mintPositionWithTopup(
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(PREDICT_OBJECT_ID),
-      tx.object(params.managerId),
-      tx.object(params.oracleId),
+      tx.object(normalizeObjectId(params.managerId)),
+      tx.object(normalizeObjectId(params.oracleId)),
       key,
       tx.pure.u64(quantity),
       tx.object(CLOCK_OBJECT_ID),
@@ -241,13 +256,18 @@ export function buildRedeemTx(params: RedeemParams): Transaction {
   const target = params.permissionless
     ? `${PREDICT_PACKAGE_ID}::predict::redeem_permissionless`
     : `${PREDICT_PACKAGE_ID}::predict::redeem`;
+  // R47 audit fix: normalize `managerId` and `oracleId`.
+  // The redeem path is the most-touched legacy page
+  // (the `/legacy/predict/trade` "redeem" button),
+  // so a mixed-case paste here would silently abort
+  // the user's claim for the prior week's winnings.
   tx.moveCall({
     target,
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(PREDICT_OBJECT_ID),
-      tx.object(params.managerId),
-      tx.object(params.oracleId),
+      tx.object(normalizeObjectId(params.managerId)),
+      tx.object(normalizeObjectId(params.oracleId)),
       key,
       tx.pure.u64(quantity),
       tx.object(CLOCK_OBJECT_ID),
@@ -291,7 +311,11 @@ export async function withdrawPLP(
   const tx = new Transaction();
   const address = signer.getPublicKey().toSuiAddress();
   const amount = dollarsToDusdc(amountDollars);
-  const plpCoin = tx.object(plpCoinId);
+  // R47 audit fix: normalize the plpCoinId. R42 missed the
+  // `predict::withdraw` source-coin id; a mixed-case
+  // paste from the vault page aborts the PTB with
+  // `invalid input object`.
+  const plpCoin = tx.object(normalizeObjectId(plpCoinId));
   const [withdrawCoin] = tx.splitCoins(plpCoin, [tx.pure.u64(amount)]);
   tx.moveCall({
     target: `${PREDICT_PACKAGE_ID}::predict::withdraw`,
@@ -331,10 +355,17 @@ export function buildRevokePolicyTx(
   policyId: string,
   packageId = AGENT_POLICY_PACKAGE_ID,
 ): Transaction {
+  // R47 audit fix: normalize `policyId`. R42 missed the
+  // five `agent_policy::*` builders; the web settings
+  // page's revoke/pause/unpause/authorize/log buttons
+  // would all abort with `invalid input object` on a
+  // mixed-case paste. (R44 added `isValidSuiAddress` to
+  // the *input field* but not to the *PTB builder*; a
+  // wallet-typed value could still slip through.)
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::revoke`,
-    arguments: [tx.object(policyId)],
+    arguments: [tx.object(normalizeObjectId(policyId))],
   });
   return tx;
 }
@@ -346,7 +377,7 @@ export function buildPausePolicyTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::pause`,
-    arguments: [tx.object(policyId)],
+    arguments: [tx.object(normalizeObjectId(policyId))],
   });
   return tx;
 }
@@ -364,7 +395,7 @@ export function buildUnpausePolicyTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::unpause`,
-    arguments: [tx.object(policyId)],
+    arguments: [tx.object(normalizeObjectId(policyId))],
   });
   return tx;
 }
@@ -378,7 +409,7 @@ export function buildAuthorizeSpendTx(
   tx.moveCall({
     target: `${packageId}::agent_policy::authorize_spend`,
     arguments: [
-      tx.object(policyId),
+      tx.object(normalizeObjectId(policyId)),
       tx.pure.u64(dollarsToDusdc(amountDollars)),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -391,11 +422,24 @@ export function buildLogActionTx(
   action: string,
   packageId = AGENT_POLICY_PACKAGE_ID,
 ): Transaction {
+  // R47 audit fix: cap the action vector at a sane
+  // length to prevent a runaway 1MB `action` from
+  // bloating the indexer's `AgentActionEvent`
+  // bcs payload. The Move-side check is enforced
+  // by a constant `MAX_ACTION_BYTES = 1024`; a
+  // caller passing a longer string would abort the
+  // PTB. Throw a readable error here so the web
+  // gets a useful message instead of a move-abort.
+  if (action.length > 1024) {
+    throw new Error(
+      `buildLogActionTx: action length ${action.length} exceeds 1024 bytes`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::log_action`,
     arguments: [
-      tx.object(policyId),
+      tx.object(normalizeObjectId(policyId)),
       tx.pure.vector("u8", Array.from(new TextEncoder().encode(action))),
       tx.object(CLOCK_OBJECT_ID),
     ],
@@ -430,13 +474,34 @@ export async function getPolicyState(
     if (!fields || !object.type.includes(`${packageId}::agent_policy::AgentPolicy`)) {
       return null;
     }
+    // R47 audit fix: route the three u64 fields
+    // through the shared `u64ToSafeNumber` helper
+    // so a value above 2^53-1 logs a warning
+    // instead of silently truncating. The
+    // `max_budget` is the most concerning — a
+    // self-hosted policy with a >9e15 atom
+    // budget would lose precision at `Number(...)`
+    // and the off-chain `agent_spend_*` mirror
+    // would diverge from the on-chain budget.
     return {
       policy_id: policyId,
       owner: fields.owner as string,
       agent: fields.agent as string,
-      max_budget: Number(fields.max_budget),
-      spent: Number(fields.spent),
-      expires_at: Number(fields.expires_at),
+      max_budget: u64ToSafeNumber(
+        (fields.max_budget as bigint | string | number | undefined) ?? 0n,
+        "max_budget",
+        policyId,
+      ),
+      spent: u64ToSafeNumber(
+        (fields.spent as bigint | string | number | undefined) ?? 0n,
+        "spent",
+        policyId,
+      ),
+      expires_at: u64ToSafeNumber(
+        (fields.expires_at as bigint | string | number | undefined) ?? 0n,
+        "expires_at",
+        policyId,
+      ),
       revoked: fields.revoked as boolean,
       paused: fields.paused as boolean,
     };

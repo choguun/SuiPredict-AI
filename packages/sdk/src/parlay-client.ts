@@ -300,13 +300,22 @@ export function buildRecordLegTx(args: {
   coinType: string;
   legIndex: number | bigint;
 }): Transaction {
+  // R47 audit fix: normalize `parlayId` and `marketId`.
+  // R45 normalized the parlay pool admin builders
+  // and `buildCreateParlayTx` but missed the
+  // per-leg `record_leg` and the `finalize_parlay`
+  // lifecycle builders. These are the most-touched
+  // hot paths in the parlay-worker (a single tick
+  // can issue hundreds of `record_leg` calls); a
+  // mixed-case paste in the agents `.env` would
+  // abort the entire PTB at BCS resolution.
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::record_leg`,
     typeArguments: [args.coinType],
     arguments: [
-      tx.object(args.parlayId),
-      tx.object(args.marketId),
+      tx.object(normalizeObjectId(args.parlayId)),
+      tx.object(normalizeObjectId(args.marketId)),
       tx.pure.u64(args.legIndex),
     ],
   });
@@ -326,11 +335,19 @@ export function buildFinalizeParlayTx(args: {
   poolId: string;
   coinType: string;
 }): Transaction {
+  // R47 audit fix: normalize `parlayId` and `poolId`.
+  // The finalize path is the highest-value PTB the
+  // worker submits (it transfers the parlay's
+  // collateral to the winner) — losing precision
+  // here is unrecoverable.
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::finalize_parlay`,
     typeArguments: [args.coinType],
-    arguments: [tx.object(args.parlayId), tx.object(args.poolId)],
+    arguments: [
+      tx.object(normalizeObjectId(args.parlayId)),
+      tx.object(normalizeObjectId(args.poolId)),
+    ],
   });
   return tx;
 }

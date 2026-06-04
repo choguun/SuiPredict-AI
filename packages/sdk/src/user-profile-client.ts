@@ -135,7 +135,18 @@ export function buildSetForecasterKindTx(
  * expected outcome for users without a profile).
  */
 export async function readProfileIdForUser(
-  client: { getDynamicField: Function; getObject: Function },
+  // R47 audit fix: drop the over-specified
+  // `getObject: Function` field. R46 added the
+  // dynamic-field read but kept the old type
+  // signature that demanded a client with both
+  // `getDynamicField` and `getObject`. Only
+  // `getDynamicField` is called, so the
+  // `getObject` requirement was dead and
+  // confusing — a future caller that passes
+  // a `SuiClient` already has both methods,
+  // but a mock for testing would have to
+  // implement `getObject` for no reason.
+  client: { getDynamicField: Function },
   registryId: string,
   user: string,
 ): Promise<string | null> {

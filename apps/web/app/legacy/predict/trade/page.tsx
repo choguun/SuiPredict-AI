@@ -22,6 +22,7 @@ import {
   type OracleInfo,
   type PositionSummary,
   predict,
+  isValidSuiAddress,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { clampNumberString } from "@/lib/forms";
@@ -124,6 +125,20 @@ export default function TradePage() {
 
   async function mintPosition() {
     if (!account || !client || !managerId || !oracle) return;
+    // R47 audit fix: validate `managerId` before
+    // submitting. A paste of an Ethereum
+    // address or a truncated Sui object id
+    // produces a doomed PTB; reject at the
+    // UI layer with a readable toast instead
+    // of letting the on-chain BCS decoder
+    // fail with a cryptic `invalid input
+    // object` abort.
+    if (!isValidSuiAddress(managerId)) {
+      toast.error(
+        `Manager id ${managerId.slice(0, 12)}… is not a valid Sui object id`,
+      );
+      return;
+    }
     setLoading(true);
     const toastId = toast.loading("Building mint transaction...");
     try {
@@ -195,6 +210,22 @@ export default function TradePage() {
 
   async function redeemPosition(pos: PositionSummary) {
     if (!account || !managerId) return;
+    // R47 audit fix: validate `managerId` before
+    // submitting. R44 added `isValidSuiAddress` to
+    // the settings page but missed the legacy
+    // trade page. A paste of an Ethereum address
+    // or a truncated Sui object id would have
+    // produced a doomed PTB (the on-chain
+    // `predict::redeem` reads the manager as
+    // an `&mut BalanceManager`, and an invalid
+    // id aborts BCS resolution with
+    // `invalid input object`).
+    if (!isValidSuiAddress(managerId)) {
+      toast.error(
+        `Manager id ${managerId.slice(0, 12)}… is not a valid Sui object id`,
+      );
+      return;
+    }
     setLoading(true);
     const toastId = toast.loading("Redeeming settled position...");
     try {

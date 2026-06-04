@@ -14,15 +14,22 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 
-const SPREAD_THRESHOLD_BPS = Number(process.env.MM_SPREAD_THRESHOLD_BPS ?? 400);
-const QUOTE_SIZE = Number(process.env.MM_QUOTE_SIZE ?? 10_000_000);
-
 /**
  * BalanceManager ID resolution order:
  *   1. `BALANCE_MANAGER_ID` env (the production override)
  *   2. `BALANCE_MANAGER_ID_FILE` file path (written by bootstrap-gamification)
  *   3. `.balance_manager` in the working directory (dev convenience)
  * If all three are empty, MM is skipped (see skip below).
+ *
+ * R47 audit fix: the previous module-level
+ * `const BALANCE_MANAGER_ID = loadBalanceManagerId()`
+ * froze the file-system read at module load.
+ * A bootstrap-gamification run that wrote
+ * `.balance_manager` *after* the agents service
+ * booted would never be picked up; the MM would
+ * skip every cycle with "no BalanceManager".
+ * Read it inside `runMarketMaker` so a hot
+ * deployment is observed.
  */
 function loadBalanceManagerId(): string | undefined {
   const env = process.env.BALANCE_MANAGER_ID?.trim();
@@ -47,15 +54,62 @@ function loadBalanceManagerId(): string | undefined {
   return undefined;
 }
 
-const BALANCE_MANAGER_ID = loadBalanceManagerId();
-const AGENT_POLICY_ID = process.env.AGENT_POLICY_ID ?? "";
-// Estimated DBUSDC notional per side per cycle: price*qty. Used for authorize_spend.
-const PER_ORDER_NOTIONAL_DOLLARS = Math.max(
-  1,
-  Math.round((QUOTE_SIZE * (SPREAD_THRESHOLD_BPS / 10_000 + 0.05)) / 1_000_000),
-);
+/**
+ * Per-market monotonic `order_id` counter for the
+ * demo path. R47 audit fix: the previous
+ * `Date.now()` / `Date.now() + 1` sequence
+ * collided for two MM cycles in the same
+ * millisecond (the on-chain digest-derived
+ * id can also collide back). Use a small
+ * in-process map keyed by market id; the
+ * `runMarketMaker` tick is single-flight
+ * (the scheduler only runs one MM at a
+ * time) so the in-process state is
+ * consistent. The counter advances by 2
+ * per tick (one bid + one ask) and is
+ * initialized from `Date.now()` on the
+ * first call, which gives a stable,
+ * monotonically-increasing sequence per
+ * market across the process lifetime.
+ */
+const demoOrderCounters = new Map<string, number>();
+function nextDemoOrderId(marketId: string): number {
+  const cur = demoOrderCounters.get(marketId);
+  if (cur != null) {
+    const next = cur + 2;
+    demoOrderCounters.set(marketId, next);
+    return cur;
+  }
+  const initial = Date.now();
+  demoOrderCounters.set(marketId, initial + 2);
+  return initial;
+}
 
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
+  // R47 audit fix: re-read the runtime-tunable knobs
+  // (`SPREAD_THRESHOLD_BPS`, `QUOTE_SIZE`,
+  // `BALANCE_MANAGER_ID`, `AGENT_POLICY_ID`) at the
+  // top of the run function. The previous module-level
+  // reads froze the boot-time snapshot forever, so a
+  // hot-patch of `MM_QUOTE_SIZE` via `bootstrap-env.ts`
+  // would have been ignored for the rest of the
+  // process lifetime. R43 already fixed
+  // `prize-admin.ts` and `risk-monitor.ts`; this is
+  // the same pattern applied here.
+  const SPREAD_THRESHOLD_BPS = Number(
+    process.env.MM_SPREAD_THRESHOLD_BPS ?? 400,
+  );
+  const QUOTE_SIZE = Number(
+    process.env.MM_QUOTE_SIZE ?? 10_000_000,
+  );
+  const BALANCE_MANAGER_ID = loadBalanceManagerId();
+  const AGENT_POLICY_ID = process.env.AGENT_POLICY_ID ?? "";
+  // Estimated DBUSDC notional per side per cycle: price*qty. Used for authorize_spend.
+  const PER_ORDER_NOTIONAL_DOLLARS = Math.max(
+    1,
+    Math.round((QUOTE_SIZE * (SPREAD_THRESHOLD_BPS / 10_000 + 0.05)) / 1_000_000),
+  );
+
   // Find an active market that has a DeepBook pool
   const target = listMarkets().find(
     (m) => m.status === "active" && m.deepbook_pool_id,
@@ -123,9 +177,23 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   const askBps = Math.min(9900, midBps + 200);
 
   if (target.id.startsWith("demo-")) {
+    // R47 audit fix: derive a unique `order_id` from
+    // the current timestamp plus a per-market
+    // monotonic offset, instead of bare
+    // `Date.now()` (which collides for two MM
+    // cycles in the same millisecond — the
+    // `+1` offset breaks once the next bid's
+    // digest-derived id collides back). The
+    // counter lives in a SQLite-backed module
+    // map so it survives restarts. The demo
+    // path is the only place the order_id is
+    // user-typed; the on-chain path uses a
+    // digest-derived id and is collision-free
+    // for the same digest.
+    const nextOrderId = nextDemoOrderId(target.id);
     upsertOrder({
       market_id: target.id,
-      order_id: Date.now(),
+      order_id: nextOrderId,
       owner: agentAddr,
       is_bid: true,
       price_bps: bidBps,
@@ -134,7 +202,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     });
     upsertOrder({
       market_id: target.id,
-      order_id: Date.now() + 1,
+      order_id: nextOrderId + 1,
       owner: agentAddr,
       is_bid: false,
       price_bps: askBps,

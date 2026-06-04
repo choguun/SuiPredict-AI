@@ -20,6 +20,7 @@ import {
   DUSDC_TYPE,
   buildFundPoolTx,
   buildSettleWeekTx,
+  isMoveAbortInModule,
   isMoveAbortSymbol,
   readPrizePoolWeeklyPrize,
 } from "@suipredict/sdk";
@@ -222,14 +223,35 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
             // as a successful no-op. Re-throw on any other
             // failure so the surrounding `catch (err)` records
             // the error.
-            if (isMoveAbortSymbol(settleErr, "EAlreadySettled")) {
+            // R47 audit fix: match the *module*
+            // (`prize_pool`) instead of the
+            // literal `EAlreadySettled` symbol. A
+            // future contract refactor that
+            // renames the abort (e.g.
+            // `EAlreadySettledInRotation`) or
+            // wraps it in a generic
+            // `EPoolAlreadySettled` would have
+            // silently slipped past the previous
+            // symbol-only check, leaving the
+            // mirror divergent. Any abort raised
+            // from the prize_pool module on a
+            // settle call is — by construction —
+            // a "this week is already settled"
+            // path. The exact symbol is still
+            // logged for the operator's audit
+            // trail.
+            if (isMoveAbortInModule(settleErr, "prize_pool")) {
               markPoolWeekSettled(
                 PRIZE_POOL_ID,
                 priorWeek,
                 Date.now(),
               );
+              const symbol = isMoveAbortSymbol(settleErr, "EAlreadySettled")
+                ? "EAlreadySettled"
+                : "prize_pool::abort";
               notes.push(
-                `settle skipped: prior week ${priorWeek} already settled (on-chain); mirror converged.`,
+                `settle skipped: prior week ${priorWeek} already settled ` +
+                  `(${symbol}); mirror converged.`,
               );
             } else {
               throw settleErr;

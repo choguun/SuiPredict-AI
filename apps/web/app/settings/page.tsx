@@ -171,6 +171,24 @@ export default function SettingsPage() {
 
   async function revokePolicy() {
     if (!account || !policyId) return;
+    // R47 audit fix: confirm before revoking. The
+    // card description on line ~425 explicitly states
+    // "Revoke permanently disables the policy —
+    // irreversible." yet the previous submit handler
+    // went straight to `buildRevokePolicyTx` with
+    // no second-chance prompt. R45 added this
+    // pattern to the admin destructive actions
+    // (settle, rotate, allocate) but missed the
+    // settings page's policy controls. A user who
+    // mis-clicked "Revoke" would have to redeploy
+    // the entire `agent_policy` object to recover.
+    if (
+      !window.confirm(
+        `Revoke policy ${policyId.slice(0, 12)}…? This is irreversible.`,
+      )
+    ) {
+      return;
+    }
     setLoading(true);
     setStatus("Revoking policy...");
     try {

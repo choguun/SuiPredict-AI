@@ -59,8 +59,25 @@ export const PREDICT_REGISTRY_ID = (
   "0x43af14fed5480c20ff77e2263d5f794c35b9fab7e2212903127062f4fe2a6e64"
 ).trim();
 
-export const PREDICT_OBJECT_ID =
-  "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a";
+// R47 audit fix: `PREDICT_OBJECT_ID` was a hardcoded testnet
+// address with no env override. R42 added the equivalent
+// guard for `PREDICT_PACKAGE_ID` and R46 added it for
+// `PREDICT_REGISTRY_ID`, but missed this third constant.
+// The web's `app/legacy/predict/*` pages route every
+// `predict::mint` / `redeem` / `supply` / `withdraw`
+// PTB through `tx.object(PREDICT_OBJECT_ID)`; a mainnet
+// deploy without an explicit override would route them
+// to a non-existent shared object and abort with
+// `shared object not found`. Resolve from
+// `NEXT_PUBLIC_PREDICT_OBJECT_ID` with a hardcoded
+// testnet default; the mainnet guard below also lists
+// the env var so a misconfigured mainnet build crashes
+// early.
+export const PREDICT_OBJECT_ID = (
+  process.env.NEXT_PUBLIC_PREDICT_OBJECT_ID ??
+  process.env.PREDICT_OBJECT_ID ??
+  "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a"
+).trim();
 
 export const DUSDC_PACKAGE_ID =
   (process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
@@ -166,6 +183,37 @@ function assertMainnetHasExplicitIds(): void {
     "PREDICT_REGISTRY_ID",
   ];
   for (const v of r46Ids) {
+    if (!process.env[v]) {
+      throw new Error(
+        `[sdk] SUI_NETWORK=mainnet but ${v} env var is not set. ` +
+          "Refusing to silently use the bundled testnet default. Set " +
+          "the env var and rebuild.",
+      );
+    }
+  }
+  // R47 audit fix: add the post-R46 ids the bundles now
+  // reference. `PREDICT_OBJECT_ID` is the `predict::Predict`
+  // shared object the legacy mint/redeem/supply/withdraw
+  // PTBs read (it carries the policy table the
+  // `predict::*` Move functions mutate). The pair
+  // `DEEPBOOK_PACKAGE_ID` / `DEEPBOOK_REGISTRY_ID` is
+  // used by every `create_market` and balance-manager
+  // call. A mainnet build that provided everything
+  // above but omitted these would silently route the
+  // legacy `app/legacy/predict/*` traffic and the
+  // DeepBook pool traffic to the bundled testnet
+  // address and abort with `object not found` /
+  // `package object not found` on the first
+  // PTB. Throw at module load.
+  const r47Ids = [
+    "NEXT_PUBLIC_PREDICT_OBJECT_ID",
+    "PREDICT_OBJECT_ID",
+    "NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID",
+    "DEEPBOOK_PACKAGE_ID",
+    "NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID",
+    "DEEPBOOK_REGISTRY_ID",
+  ];
+  for (const v of r47Ids) {
     if (!process.env[v]) {
       throw new Error(
         `[sdk] SUI_NETWORK=mainnet but ${v} env var is not set. ` +

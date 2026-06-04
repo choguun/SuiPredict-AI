@@ -25,11 +25,27 @@ export function BottomNav() {
             <Link
               key={l.href}
               href={l.href}
+              // R47 audit fix: set `aria-current="page"`
+              // on the active link. The previous
+              // implementation relied on a CSS color
+              // class to convey the active state, which
+              // screen readers do not announce. The
+              // WAI-ARIA `aria-current` attribute is
+              // the standard way to expose the
+              // current page to assistive tech.
+              aria-current={active ? "page" : undefined}
               className={`flex flex-col items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
                 active ? "text-emerald-400" : "text-zinc-500 hover:text-white"
               }`}
             >
-              <span className="text-xl leading-none">{l.icon}</span>
+              {/* R47 audit fix: mark the emoji
+                  `aria-hidden` so the screen reader
+                  announces only the label. The
+                  previous bare <span>{l.icon}</span>
+                  made the screen reader say
+                  "Home emoji Home", which is
+                  both noisy and confusing. */}
+              <span aria-hidden="true" className="text-xl leading-none">{l.icon}</span>
               <span>{l.label}</span>
             </Link>
           );

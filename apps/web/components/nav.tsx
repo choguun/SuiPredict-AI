@@ -31,6 +31,18 @@ export function Nav() {
               <Link
                 key={l.href}
                 href={l.href}
+                // R47 audit fix: set
+                // `aria-current="page"` on the
+                // active link. The previous
+                // implementation relied on
+                // a CSS color class to convey
+                // the active state, which
+                // screen readers do not
+                // announce. (The desktop
+                // `nav.tsx` was missed by the
+                // same audit pass that fixed
+                // `BottomNav.tsx`.)
+                aria-current={active ? "page" : undefined}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   active
                     ? "bg-white text-zinc-950"

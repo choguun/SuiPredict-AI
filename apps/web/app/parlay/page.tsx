@@ -238,6 +238,32 @@ export default function ParlayPage() {
 
   const handleSubmit = async () => {
     if (!account || !client || !canSubmit) return;
+    // R47 audit fix: confirm before locking funds.
+    // R45 added `window.confirm` to admin
+    // destructive actions (settle, rotate,
+    // allocate) but missed the user-facing
+    // "lock in" flows. A user who picks 3
+    // legs at 10x and mis-clicks "Lock
+    // 3-leg parlay at 10.0x" will lose 1
+    // DUSDC with no second chance — the
+    // submit PTB transfers the collateral
+    // immediately and the on-chain
+    // `parlay::create_parlay` is
+    // irreversible (the parlay can only be
+    // settled or finalized, never refunded
+    // to the user). The multiplier is a
+    // meaningful enough number that the
+    // user benefits from a confirmation
+    // prompt before signing.
+    if (
+      !window.confirm(
+        `Lock a ${legs.length}-leg parlay at ${multiplier.toFixed(1)}x ` +
+          `for ${(Number(COLLATERAL_ATOMS) / 1_000_000).toFixed(2)} DUSDC? ` +
+          "This is irreversible once the transaction is signed.",
+      )
+    ) {
+      return;
+    }
     setSubmitting(true);
     try {
       // Pick the largest DUSDC coin so a single object covers the
