@@ -288,6 +288,71 @@ export function resolveDusdcTreasuryCapId(): string {
   ).trim();
 }
 
+// R55 audit fix: 9 module-level frozen *_ID env reads. R54 added
+// `resolveDusdcTreasuryCapId()` but the same pattern is missing
+// for the rest. The agents' `bootstrap-env.ts` hot-patches these
+// after SDK import (per R49/R53 pattern) and the patches are
+// invisible until the next restart. Provide call-time getters
+// alongside the consts so PTB builders and workers that need
+// hot-patch sensitivity can opt in without breaking consumers
+// that import the const directly.
+//
+// The consts above are kept for back-compat (and the mainnet
+// `assertMainnetHasExplicitIds` guard reads them at module
+// load). New call sites should prefer the getter form.
+export function resolvePredictPackageId(): string {
+  return (
+    process.env.NEXT_PUBLIC_PREDICT_PACKAGE_ID ??
+    process.env.PREDICT_PACKAGE_ID ??
+    "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138"
+  ).trim();
+}
+export function resolvePredictRegistryId(): string {
+  return (
+    process.env.NEXT_PUBLIC_PREDICT_REGISTRY_ID ??
+    process.env.PREDICT_REGISTRY_ID ??
+    "0x43af14fed5480c20ff77e2263d5f794c35b9fab7e2212903127062f4fe2a6e64"
+  ).trim();
+}
+export function resolvePredictObjectId(): string {
+  return (
+    process.env.NEXT_PUBLIC_PREDICT_OBJECT_ID ??
+    process.env.PREDICT_OBJECT_ID ??
+    "0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a"
+  ).trim();
+}
+export function resolveDusdcPackageId(): string {
+  return (
+    process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ??
+    process.env.DUSDC_PACKAGE_ID ??
+    "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705"
+  ).trim();
+}
+export function resolveAgentPolicyPackageId(): string {
+  return (
+    process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
+    process.env.AGENT_POLICY_PACKAGE_ID ??
+    process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+    process.env.MARKET_PACKAGE_ID ??
+    "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf"
+  ).trim();
+}
+export function resolveFeeVaultId(): string {
+  return (
+    process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
+    process.env.FEE_VAULT_ID ??
+    "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ).trim();
+}
+export function resolveReferralTreasuryAddress(): string {
+  return (
+    process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
+    process.env.REFERRAL_TREASURY_ADDRESS ??
+    process.env.PROTOCOL_TREASURY_ADDRESS ??
+    "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ).trim();
+}
+
 export const CLOCK_OBJECT_ID = "0x6";
 
 export const PRICE_SCALE = 1_000_000_000n;

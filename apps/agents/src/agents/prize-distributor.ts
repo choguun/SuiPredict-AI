@@ -23,7 +23,7 @@
  */
 import { readPrizePoolBalance } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, recordResult, safeBigInt } from "../lib.js";
 import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
 
 // Env reads live inside `runPrizeDistributor` so a late write by
@@ -36,7 +36,17 @@ export async function runPrizeDistributor(
 ): Promise<AgentResult> {
   const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
   const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
-  const PRIZE_WEEKLY_AMOUNT = BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0");
+  // R55 audit fix: route through `safeBigInt` so a
+  // non-integer env value (e.g. `PRIZE_WEEKLY_AMOUNT=10_USDC`
+  // or `100.5`) doesn't throw `SyntaxError` synchronously
+  // — the surrounding try/catch in the worker tick loop
+  // would swallow it, the operator would see no prize
+  // distribution, and the only signal would be a missing
+  // `prize_claims` log. Now we get a `[lib.safeBigInt]`
+  // warning + a 0n fallback that the existing
+  // `PRIZE_WEEKLY_AMOUNT === 0n` check converts into a
+  // clean `skip` action.
+  const PRIZE_WEEKLY_AMOUNT = safeBigInt(process.env.PRIZE_WEEKLY_AMOUNT, 0n);
   if (!PRIZE_POOL_ID || !PRIZE_ADMIN_ID) {
     return recordResult("PrizeDistributor", {
       action: "skip",

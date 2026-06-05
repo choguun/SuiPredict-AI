@@ -25,6 +25,7 @@ import {
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
+import { submitAndWait } from "@/lib/dapp-kit";
 
 interface MirrorProfile {
   user: string;
@@ -79,18 +80,6 @@ function friendlyMoveError(err: unknown, action: string): string {
     return `${action} failed: streak registry rejected the call.`;
   }
   return `${action} failed on-chain`;
-}
-
-function failedTxToError(
-  r: { FailedTransaction?: { status?: { success: false; error?: { message?: string } } | { success: true } } },
-): Error {
-  const failed = r.FailedTransaction;
-  if (!failed) return new Error("Move transaction failed");
-  const status = failed.status;
-  if (!status || status.success !== false) {
-    return new Error("Move transaction failed");
-  }
-  return new Error(status.error?.message ?? "Move transaction failed");
 }
 
 export default function SettingsPage() {
@@ -243,19 +232,36 @@ export default function SettingsPage() {
     try {
       const expiry = BigInt(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const tx = buildCreatePolicyTx(agentAddress, budget, expiry);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      const digest =
-        result.$kind === "Transaction"
-          ? result.Transaction.digest
-          : null;
-      if (!digest) {
+      // R55 audit fix: route through `submitAndWait` so
+      // the `extractCreatedObjectId` gRPC call hits a
+      // node that has already finalized the create
+      // tx. The previous signAndExecuteTransaction
+      // returned immediately; the gRPC query for the
+      // new AgentPolicy id raced on-chain finalization
+      // and a slow RPC returned an empty effect —
+      // surfacing as "Policy created! Tx: <digest>…
+      // (fetch object ID from Suiscan)".
+      const result = await submitAndWait(dAppKit, client, tx);
+      // R55 audit fix: split the $kind check from the
+      // `!digest` check so TypeScript can narrow
+      // `result.error` to the FailedTransaction
+      // variant. The previous `if (!digest)` collapsed
+      // two failure modes (non-Transaction $kind AND
+      // missing digest) into one branch, blocking the
+      // type narrowing.
+      if (result.$kind !== "Transaction") {
         // R52 audit fix: surface a friendly
         // Move-abort message (e.g. "agent
         // cap exceeded") instead of a
         // generic "Transaction failed".
-        setStatus(friendlyMoveError(failedTxToError(result), "Create policy"));
+        setStatus(friendlyMoveError(result.error, "Create policy"));
         return;
       }
+      if (!result.digest) {
+        setStatus(friendlyMoveError(undefined, "Create policy"));
+        return;
+      }
+      const digest = result.digest;
 
       const createdId = await extractCreatedObjectId(
         client,
@@ -301,16 +307,22 @@ export default function SettingsPage() {
     setStatus("Revoking policy...");
     try {
       const tx = buildRevokePolicyTx(policyId);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `loadPolicyInfo` gRPC read sees a revoked
+      // policy. The previous signAndExecuteTransaction
+      // returned immediately; the post-revoke read raced
+      // on-chain finalization and the policy was
+      // briefly reported as still-active.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: same R30/R32/R37 pattern — bail with an
       // explicit error rather than rendering "Revoked! Tx: unknown…"
       // on a Failed/EffectsCert result. The previous code fell
       // through to the literal "unknown" digest.
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         setStatus("Revoke failed on-chain");
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       setStatus(`Revoked! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
     } catch (e) {
@@ -331,17 +343,22 @@ export default function SettingsPage() {
       const tx = pause
         ? buildPausePolicyTx(policyId)
         : buildUnpausePolicyTx(policyId);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the create/revoke paths. The post-pause
+      // `loadPolicyInfo` read raced on-chain
+      // finalization and showed the policy as still
+      // active for ~1-2s.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: same R30/R32/R37 pattern. Bail on a
       // non-Transaction result rather than rendering
       // "Paused! Tx: unknown…" / "Unpaused! Tx: unknown…".
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         setStatus(
           `${pause ? "Pause" : "Unpause"} failed on-chain`,
         );
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       setStatus(`${pause ? "Paused" : "Unpaused"}! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
       invalidateStreakCache();
@@ -358,7 +375,15 @@ export default function SettingsPage() {
     setProfileStatus("Creating profile…");
     try {
       const tx = buildCreateProfileTx(PROFILE_REGISTRY_ID);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait`
+      // so `invalidateStreakCache()` fires after the
+      // on-chain profile exists. The previous
+      // signAndExecuteTransaction returned immediately;
+      // the streak hook's refetch ran against a node
+      // that hadn't yet indexed the new UserProfile
+      // event, and the home page briefly showed
+      // "no profile" for ~1-2s.
+      const r = await submitAndWait(dAppKit, client, tx);
       if (r.$kind !== "Transaction") {
         // R52 audit fix: friendly abort
         // message instead of a generic
@@ -367,11 +392,15 @@ export default function SettingsPage() {
         // too long" (R44) and "profile
         // already exists" (R47) which
         // the user needs to act on.
-        setProfileStatus(friendlyMoveError(failedTxToError(r), "Create profile"));
+        setProfileStatus(friendlyMoveError(r.error, "Create profile"));
+        return;
+      }
+      if (!r.digest) {
+        setProfileStatus(friendlyMoveError(undefined, "Create profile"));
         return;
       }
       setProfileStatus(
-        `Profile created! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+        `Profile created! Tx: ${r.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {
@@ -387,13 +416,21 @@ export default function SettingsPage() {
     setProfileStatus("Saving country code…");
     try {
       const tx = buildSetCountryCodeTx(profile.user, country);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale
+      // as `createProfile` — the post-save
+      // `invalidateStreakCache` refetch races on-chain
+      // finalization without it.
+      const r = await submitAndWait(dAppKit, client, tx);
       if (r.$kind !== "Transaction") {
-        setProfileStatus(friendlyMoveError(failedTxToError(r), "Save country"));
+        setProfileStatus(friendlyMoveError(r.error, "Save country"));
+        return;
+      }
+      if (!r.digest) {
+        setProfileStatus(friendlyMoveError(undefined, "Save country"));
         return;
       }
       setProfileStatus(
-        `Country saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+        `Country saved! Tx: ${r.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {
@@ -409,13 +446,19 @@ export default function SettingsPage() {
     setProfileStatus("Saving forecaster kind…");
     try {
       const tx = buildSetForecasterKindTx(profile.user, forecasterKind);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale
+      // as `createProfile` / `saveCountry`.
+      const r = await submitAndWait(dAppKit, client, tx);
       if (r.$kind !== "Transaction") {
-        setProfileStatus(friendlyMoveError(failedTxToError(r), "Save forecaster kind"));
+        setProfileStatus(friendlyMoveError(r.error, "Save forecaster kind"));
+        return;
+      }
+      if (!r.digest) {
+        setProfileStatus(friendlyMoveError(undefined, "Save forecaster kind"));
         return;
       }
       setProfileStatus(
-        `Forecaster kind saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
+        `Forecaster kind saved! Tx: ${r.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {

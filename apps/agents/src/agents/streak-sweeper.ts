@@ -34,7 +34,7 @@ import {
   type SuiClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, getSharedJsonRpcClient, recordResult } from "../lib.js";
 import {
   acquireSweepLock,
   dayIndexFor,
@@ -432,18 +432,16 @@ export async function resolveDayOutcomes(
   if (!agentPolicyPkg) return [];
   // R49 audit fix: read the network inside the function body so a
   // hot-patch to `process.env.SUI_NETWORK` takes effect on the
-  // next sweep. `bootstrapEnv()` in `index.ts` mutates the env
-  // after import, so the previous module-level capture often
-  // resolved to the empty default at boot.
-  const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
-    | "testnet"
-    | "mainnet"
-    | "devnet"
-    | "localnet";
-  const client = new SuiJsonRpcClient({
-    url: getJsonRpcFullnodeUrl(SUI_NETWORK),
-    network: SUI_NETWORK,
-  });
+  // R55 audit fix: route through the shared
+  // `getSharedJsonRpcClient()` helper from `lib.ts`.
+  // The previous `new SuiJsonRpcClient(...)` per tick
+  // built a fresh client once a day; the connection
+  // churn is smaller than the position-indexer (which
+  // ticks every minute) but the pattern is the same
+  // root cause the R51 sweep fixed for the gRPC
+  // client. The `client` const below now points at
+  // the lazy singleton.
+  const client = getSharedJsonRpcClient();
   const dayStartMs = dayIndex * DAY_MS;
   const dayEndMs = dayStartMs + DAY_MS;
   // Daily markets may expire anywhere in the day window or shortly after

@@ -27,7 +27,28 @@ export interface ScheduleEntry {
   fn: AgentFn;
 }
 
-const POLL_MS = Number(process.env.AGENT_POLL_INTERVAL_MS ?? 60_000);
+// R55 audit fix: read `AGENT_POLL_INTERVAL_MS` at call
+// time inside `msUntilNext` rather than once at module
+// load. The previous module-level const froze the value
+// at import time, so a `bootstrap-env.ts` mid-flight
+// rotation (a common operator move during a debug
+// session) was silently ignored for the rest of the
+// process lifetime. The `index.ts:557` boot log also
+// reads `process.env.AGENT_POLL_INTERVAL_MS` at call
+// time — without this fix the boot log and the actual
+// scheduler value could disagree by up to one tick.
+function readPollMs(): number {
+  const raw = process.env.AGENT_POLL_INTERVAL_MS;
+  if (!raw) return 60_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(
+      `[scheduler] AGENT_POLL_INTERVAL_MS="${raw}" is invalid; using default 60000.`,
+    );
+    return 60_000;
+  }
+  return n;
+}
 
 // Per-entry "currently running" flags. If a previous tick for an
 // agent is still in flight when the next cron boundary arrives,
@@ -198,7 +219,7 @@ export function msUntilNext(expr: string, now: Date = new Date()): number {
     return candidate.getTime() - now.getTime();
   }
   // Shouldn't happen for valid input, but never starve the loop
-  return POLL_MS;
+  return readPollMs();
 }
 
 function matchesPart(part: string, value: number): boolean {

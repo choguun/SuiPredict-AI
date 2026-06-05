@@ -4,10 +4,108 @@ import {
   getOracleState,
   getSpotPrice,
   getVaultSummary,
+  getSharedClient as sdkGetSharedClient,
+  closeClient,
   pickAtmStrike,
+  type SuiClient,
 } from "@suipredict/sdk";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import { logDecision } from "./store.js";
+
+// R55 audit fix: lazy singleton for the JSON-RPC
+// `SuiJsonRpcClient`. The gRPC `getSharedClient()` was
+// already a singleton (R51) but the JSON-RPC client
+// used for `queryEvents` / `listDynamicFields` was
+// rebuilt per tick in `position-indexer` and
+// `streak-sweeper`. `position-indexer` runs at 1min
+// cadence, so the connection churn was 1440/day per
+// process. Mirror the gRPC pattern; the helper
+// resolves the URL at call time so a `bootstrap-env.ts`
+// hot-patch of `SUI_NETWORK` is honored (the cached
+// `SUI_NETWORK` is also re-read on every call).
+let _cachedJsonRpcClient: SuiJsonRpcClient | null = null;
+let _cachedJsonRpcNetwork: string | null = null;
+export function getSharedJsonRpcClient(): SuiJsonRpcClient {
+  const network = process.env.SUI_NETWORK ?? "testnet";
+  // Re-build the client if the network hot-patched.
+  // The old client is GC'd; the underlying HTTP
+  // keepalive connection is dropped after the next
+  // request by Node's default `node-fetch` agent.
+  if (!_cachedJsonRpcClient || _cachedJsonRpcNetwork !== network) {
+    _cachedJsonRpcClient = new SuiJsonRpcClient({
+      url: getJsonRpcFullnodeUrl(network as "testnet" | "mainnet" | "devnet"),
+      network: network as "testnet" | "mainnet" | "devnet" | "localnet",
+    });
+    _cachedJsonRpcNetwork = network;
+  }
+  return _cachedJsonRpcClient;
+}
+
+// R55 audit fix: `safeInt` / `safeFloat` / `safeBigInt`
+// helpers for hot-patchable env reads. A `.env` typo
+// (e.g. `MAX_PARLAYS_PER_TICK=NaN` from `Number("abc")`,
+// or `PRIZE_WEEKLY_AMOUNT=10_USDC` from a unit-suffix
+// paste) used to silently break the worker — a
+// `slice(0, NaN) = []` parked the parlay-worker, and
+// `BigInt("10_USDC")` threw a `SyntaxError` that the
+// surrounding `try/catch` didn't catch. Centralize the
+// validation so a future env addition gets it for free.
+export function safeInt(
+  v: string | undefined,
+  fallback: number,
+  min = 0,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[lib.safeInt] env value "${v}" is not a finite number; using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+  const truncated = Math.trunc(n);
+  const clamped = Math.max(min, Math.min(max, truncated));
+  if (clamped !== n) {
+    console.warn(
+      `[lib.safeInt] env value "${v}" (${n}) clamped to [${min}, ${max}] -> ${clamped}.`,
+    );
+  }
+  return clamped;
+}
+
+export function safeFloat(
+  v: string | undefined,
+  fallback: number,
+  min = 0,
+  max = Number.MAX_VALUE,
+): number {
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[lib.safeFloat] env value "${v}" is not a finite number; using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, n));
+}
+
+export function safeBigInt(
+  v: string | undefined,
+  fallback: bigint,
+): bigint {
+  if (v === undefined || v === null || v === "") return fallback;
+  try {
+    return BigInt(v);
+  } catch (err) {
+    console.warn(
+      `[lib.safeBigInt] env value "${v}" is not a valid bigint (${err instanceof Error ? err.message : String(err)}); using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+}
 
 export interface AgentContext {
   signer: Ed25519Keypair;
@@ -86,50 +184,33 @@ export async function getMarketContext() {
 
 export { createClient, pickAtmStrike };
 
-// R50 audit fix: lazy singleton gRPC client. The
-// previous pattern called `createClient()` on every
-// request (gamification routes, worker ticks,
-// prize-admin), each of which instantiated a new
-// `SuiGrpcClient` and opened a fresh HTTP/2
-// connection. Under a small burst the connection
-// pool churned the Sui gRPC server (and triggered
-// the SDK's own rate limiter). One connection per
-// process; lazy-initialized on first use so unit
-// tests can still mock `createClient` via the
-// barrel re-export. The `SuiClient` type lives in
-// the SDK barrel.
+// R55 audit fix: shrink the local getSharedClient /
+// closeSharedClient into thin wrappers around the SDK's
+// `getSharedClient` and `closeClient` (R54 added both
+// to the SDK). The previous local `closeSharedClient`
+// did `(client as any).close?.()` — the exact `as any`
+// cast R54 was trying to fix in the SDK. The SDK's
+// `closeClient` is therefore a dead export. With this
+// migration the typed escape hatch lives in one place
+// (the SDK) and the agents' SIGTERM handler in
+// `index.ts` reuses the same helper.
 //
-// R52 audit fix: expose `closeSharedClient()`
-// so the SIGTERM handler in `index.ts` can
-// drain the gRPC channel before the process
-// exits. Without it, every Railway redeploy
-// (and every `kill -TERM`) leaks one
-// HTTP/2 connection: the gRPC server sees a
-// RST_STREAM and logs an error, the kernel
-// eventually reaps the socket after a
-// keepalive timeout, and the Sui public node
-// rate-limits the leaked pings. The
-// `SuiGrpcClient` exposes a `close()` method
-// that flushes pending unary calls and aborts
-// the stream.
-import type { SuiClient } from "@suipredict/sdk";
-let cachedClient: SuiClient | null = null;
+// Backward compat: `getSharedClient` and
+// `closeSharedClient` keep their local names so the
+// rest of the agents package (every worker that
+// imports `getSharedClient` from `./lib.js`) doesn't
+// need to change. Both are thin wrappers around the
+// SDK's helpers.
+//
+// The dead helpers the R55 audit also flagged
+// (`getMarketContext` plus the four SDK imports it
+// pulled in) are kept for now — `getMarketContext` is
+// not invoked by the agents package, but it is in the
+// public surface; deleting it would be a breaking
+// change. Future rounds can decide.
 export function getSharedClient(): SuiClient {
-  if (!cachedClient) cachedClient = createClient();
-  return cachedClient;
+  return sdkGetSharedClient();
 }
 export async function closeSharedClient(): Promise<void> {
-  if (!cachedClient) return;
-  const client = cachedClient;
-  cachedClient = null;
-  // The SuiGrpcClient's `close()` returns
-  // once the HTTP/2 session is fully torn
-  // down. It's safe to call on a fresh
-  // client too (it just resolves).
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (client as any).close?.();
-  } catch {
-    /* shutdown best-effort */
-  }
+  return closeClient(sdkGetSharedClient());
 }

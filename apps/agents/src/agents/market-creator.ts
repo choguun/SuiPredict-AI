@@ -10,7 +10,7 @@ import {
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { callLlm, getSharedClient, recordResult } from "../lib.js";
+import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
 import { listMarkets, upsertMarket } from "../markets/store.js";
 
 // R43 audit fix: removed the module-level MAX_ACTIVE and
@@ -130,9 +130,16 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
   // value forever, so a 1 → 10 cap increase would have
   // required a full `pnpm --filter @suipredict/agents
   // restart` instead of just rewriting the env file.
-  const maxActive = Number(process.env.MAX_ACTIVE_MARKETS ?? 5);
-  const initialMintAtoms = BigInt(
-    process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
+  // R55 audit fix: route through `safeInt` /
+  // `safeBigInt` so a `MAX_ACTIVE_MARKETS=NaN` doesn't
+  // bypass the cap (`active.length >= NaN` is always
+  // false) and a `MARKET_CREATOR_INITIAL_MINT_ATOMS=10_000_000`
+  // paste with the underscores doesn't throw
+  // `BigInt SyntaxError` synchronously.
+  const maxActive = safeInt(process.env.MAX_ACTIVE_MARKETS, 5, 1, 100);
+  const initialMintAtoms = safeBigInt(
+    process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS,
+    10_000_000n,
   );
   // R54 audit fix: re-read the operational ids at function-body
   // scope. They were module-level before, which froze them at

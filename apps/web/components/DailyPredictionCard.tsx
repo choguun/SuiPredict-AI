@@ -16,6 +16,7 @@ import {
   type MarketInfo,
 } from "@suipredict/sdk";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import Link from "next/link";
 
@@ -180,17 +181,24 @@ export function DailyPredictionCard() {
         quoteIn: coin.objectId,
         amountPerMarket,
       });
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // invalidateQueries that follow hit a node that has
+      // already finalized the tx. The previous
+      // `signAndExecuteTransaction` call returned immediately
+      // after signing; the React Query refetch raced on-chain
+      // finalization and the user saw a stale portfolio for
+      // ~1-2s.
+      const r = await submitAndWait(dAppKit, client, tx);
       // $kind guard: a Failed / EffectsCert result carries no digest,
       // so toasting a success message with a real success tone would
       // lie to the user. Only proceed to the success toast when the
       // fullnode actually accepted the tx.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         toast.error("Batch mint failed");
         return;
       }
       toast.success(
-        `Predictions locked across ${activeMarketIds.length} markets — ${r.Transaction.digest.slice(0, 12)}…`,
+        `Predictions locked across ${activeMarketIds.length} markets — ${r.digest.slice(0, 12)}…`,
       );
       // The position-indexer polls MintedEvent every ~5s but the user's
       // own session is read from the SDK directly. Invalidate the

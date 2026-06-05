@@ -20,6 +20,7 @@ import {
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
 import { clampNumberString } from "@/lib/forms";
+import { submitAndWait } from "@/lib/dapp-kit";
 
 export default function VaultPage() {
   const account = useCurrentAccount();
@@ -140,17 +141,25 @@ export default function VaultPage() {
         ],
       });
       tx.transferObjects([lpCoin], tx.pure.address(normalizeObjectId(account.address)));
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `Promise.all([refreshVault(), refreshPlp()])`
+      // refetches hit a node that has already finalized
+      // the supply tx. The previous signAndExecuteTransaction
+      // returned immediately after signing; the refresh
+      // PLP-coin list call raced on-chain finalization and
+      // a slow RPC would briefly show the user the OLD
+      // balance even though the new supply was accepted.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R34 audit fix: same R30/R32 pattern. The literal `"unknown"`
       // fallback on Failed / EffectsCert silently toasts a fake
       // success, telling the LP that a deposit happened when the
       // chain rejected it. Bail with a clear error before reading
       // the digest.
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         setStatus("Supply failed on-chain");
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       setStatus(`Supplied $${amount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
       await Promise.all([refreshVault(), refreshPlp()]);
     } catch (e) {
@@ -212,16 +221,21 @@ export default function VaultPage() {
         ],
       });
       tx.transferObjects([plpCoin], tx.pure.address(normalizeObjectId(account.address)));
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the supply path above. The previous
+      // signAndExecuteTransaction returned before
+      // finalization, so the user briefly saw their
+      // OLD PLP balance after the "Withdrew" toast.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R34 audit fix: same R30/R32 pattern as supply() above.
       // Failed / EffectsCert results carry no digest; the previous
       // fallback to "unknown" lied about the withdrawal. Bail with
       // a clear error before reading the digest.
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         setStatus("Withdraw failed on-chain");
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       setStatus(`Withdrew $${withdrawAmount} dUSDC. Tx: ${digest.slice(0, 16)}...`);
       await Promise.all([refreshVault(), refreshPlp()]);
     } catch (e) {

@@ -27,6 +27,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useCurrentAccount,
   useDAppKit,
@@ -72,6 +73,7 @@ import {
 import { moveAbortSymbolAny } from "@suipredict/sdk/move-errors";
 import { useCurrentClient } from "@mysten/dapp-kit-react";
 import { Card, Stat, Badge } from "@/components/ui";
+import { submitAndWait } from "@/lib/dapp-kit";
 
 // Read FEE_VAULT_ID from the env directly instead of the SDK's
 // `FEE_VAULT_ID` constant. The SDK constant falls back to the all-zero
@@ -163,6 +165,18 @@ function friendlyAdminError(err: unknown, action: string): string {
 export default function AdminPage() {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
+  // R55 audit fix: wire up a useQueryClient so the
+  // success path of every admin card can invalidate
+  // the home-page / portfolio / streak / leaderboard
+  // caches. Without this, a "Set distribution" or
+  // "Resolve dispute" submit only updates the local
+  // `lastAction` toast and the on-page LiveStateCard;
+  // the home-page leaderboard and /portfolio stay
+  // stale for 30s+ until the next manual refresh.
+  // The pattern mirrors the
+  // `app/vault/page.tsx:50-65` invalidateCrossPageCaches
+  // helper.
+  const queryClient = useQueryClient();
   // Normalize both sides to lowercase hex. Sui addresses are
   // case-insensitive, but the previous strict-equality check locked
   // the operator out if `NEXT_PUBLIC_ADMIN_ADDRESS` was set with a
@@ -197,6 +211,32 @@ export default function AdminPage() {
   }, [isValidAdmin]);
 
   const live = useLiveState();
+
+  // R55 audit fix: invalidate cross-page React Query
+  // caches after a successful admin action. The home
+  // page reads `["marketsList"]` and `["leaderboard",
+  // "week", ...]`; the /portfolio page reads
+  // `["portfolio", address]`; the streak panel reads
+  // `["userStreakId"]` and `["streakInfo"]`. Without
+  // these, an admin who set a new distribution, created
+  // a market, or paused a policy from /admin would see
+  // stale data on the home page until the leaderboard's
+  // 30s staleTime or the markets list's 60s staleTime
+  // elapsed. The `type: "active"` flag matches the
+  // hook-registered keys (which are 2-tuples / 3-tuples)
+  // via TanStack prefix matching.
+  useEffect(() => {
+    if (!lastAction) return;
+    void queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
+    void queryClient.invalidateQueries({ queryKey: ["dailyMarkets"], type: "active" });
+    void queryClient.invalidateQueries({ queryKey: ["leaderboard", "week"], type: "active" });
+    if (account?.address) {
+      void queryClient.invalidateQueries({
+        queryKey: ["portfolio", account.address],
+        type: "active",
+      });
+    }
+  }, [lastAction, queryClient, account?.address]);
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -560,6 +600,15 @@ function WithdrawFeesCard(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: pull the dapp-kit client here (top of
+  // component) so `submitAndWait` can call
+  // `client.waitForTransaction` from the submit handler.
+  // Calling `useCurrentClient()` inside the async submit
+  // would violate the Rules of Hooks (hooks must run in
+  // the same order on every render). The card
+  // subcomponent pattern is uniform across the admin
+  // page; every submit handler reads this `client`.
+  const client = useCurrentClient();
 
   const amountBig = (() => {
     const n = Number(amountDusdc);
@@ -578,6 +627,11 @@ function WithdrawFeesCard(props: {
   async function submit() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(false);
+      return;
+    }
     // R47 audit fix: confirm before withdrawing.
     // R45 added `window.confirm` to the other
     // admin cards (settle, rotate, allocate)
@@ -617,18 +671,25 @@ function WithdrawFeesCard(props: {
     setBusy(true);
     try {
       const tx = buildWithdrawFeesTx(FEE_VAULT_ID, amount);
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait`
+      // so the post-withdraw `useLiveState` read
+      // sees a finalized vault balance. The previous
+      // signAndExecuteTransaction returned
+      // immediately; the readFeeVaultBalance refetch
+      // raced on-chain finalization and briefly
+      // showed the pre-withdraw balance.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. On a Failed/EffectsCert return
       // (insufficient balance, non-admin caller) `txDigest(r)` is
       // the literal "unknown" — the user would see
       // "Withdraw protocol fees: unknown..." in the toast history
       // and have no idea the withdrawal silently bounced.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Withdraw fees failed on-chain (insufficient balance or non-admin caller).");
         setBusy(false);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -758,6 +819,8 @@ function SetDistributionCard(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   const parsed = bps
     .split(/[\s,]+/)
@@ -769,6 +832,11 @@ function SetDistributionCard(props: {
   async function submit() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(false);
+      return;
+    }
     if (!PRIZE_POOL_ID || !PRIZE_ADMIN_ID) {
       setErr("NEXT_PUBLIC_PRIZE_POOL_ID / NEXT_PUBLIC_PRIZE_ADMIN_ID not set.");
       return;
@@ -797,19 +865,26 @@ function SetDistributionCard(props: {
     setBusy(true);
     try {
       const tx = buildSetDistributionTx(PRIZE_POOL_ID, PRIZE_ADMIN_ID, parsed);
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-write `useLiveState` read sees the updated
+      // distribution curve. The previous
+      // signAndExecuteTransaction returned immediately;
+      // the readPrizePoolDistribution refetch raced
+      // on-chain finalization and briefly showed the
+      // pre-write curve.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. EInvalidDistribution (sum !=
       // 10_000 bps, length mismatch) would surface as a move abort
       // — the previous code would still surface a fake
       // "Set prize distribution: unknown..." success and the admin
       // would have no way to tell the new distribution wasn't
       // applied.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Set distribution failed on-chain (vector must sum to 10_000 bps and match rank count).");
         setBusy(false);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -882,10 +957,17 @@ function ResolveDisputeCard(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   async function submit() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(false);
+      return;
+    }
     if (!marketId.trim()) {
       setErr("Market ID is required.");
       return;
@@ -932,17 +1014,23 @@ function ResolveDisputeCard(props: {
     setBusy(true);
     try {
       const tx = buildResolveDisputeTx(marketId.trim(), outcome === "1" ? 1 : 2);
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-resolve indexer read sees the new market state.
+      // The previous signAndExecuteTransaction returned
+      // immediately; the indexer's resolve event was not yet
+      // visible to the refetch and the admin would briefly
+      // see "disputed" in the markets list.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. Resolving a non-disputed market
       // is an EInvalidState abort; the previous code would toast
       // a fake success and the user would be left wondering why
       // the market still showed "disputed" on the indexer.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Resolve dispute failed on-chain (market is not in disputed state, or non-creator caller).");
         setBusy(false);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -1023,10 +1111,17 @@ function CreateMarketCard(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   async function submit() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(false);
+      return;
+    }
     if (!title.trim()) {
       setErr("Title is required.");
       return;
@@ -1084,19 +1179,26 @@ function CreateMarketCard(props: {
         deepCoinId: deepCoinId.trim(),
         category: cat,
       });
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-create markets-list refetch sees the new
+      // market. The previous signAndExecuteTransaction
+      // returned immediately; the indexer's
+      // MarketCreated event was not yet visible to the
+      // refetch and the markets list would briefly omit
+      // the new market.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. create_market has the largest
       // failure surface (bad DEEP coin, expiry in the past, no
       // admin cap left). A Failed return would previously toast
       // "Create market: unknown..." and the admin would assume
       // the market exists, then call resolve_dispute against a
       // phantom ID.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Create market failed on-chain (bad DEEP coin, expiry in past, or pool-creation budget exhausted).");
         setBusy(false);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -1208,6 +1310,8 @@ function SetMaxPayoutBpsCard(props: {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   // Mirror the on-chain guard: `new_max_bps >= BPS` (10_000). 50_000 =
   // 5x is the production default. We render the multiplier in x for
@@ -1236,6 +1340,11 @@ function SetMaxPayoutBpsCard(props: {
   async function submit() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(false);
+      return;
+    }
     if (!PARLAY_POOL_ID) {
       setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
       return;
@@ -1268,7 +1377,14 @@ function SetMaxPayoutBpsCard(props: {
         parsedBps,
         dusdcPkgId ? `${dusdcPkgId}::dusdc::DUSDC` : DUSDC_TYPE_FALLBACK,
       );
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-write parlay-pool cap is observed. The
+      // previous signAndExecuteTransaction returned
+      // immediately; the /parlay page's
+      // `readParlayMaxPayoutBps` refetch raced
+      // on-chain finalization and a slow RPC could
+      // briefly report the OLD cap.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. The cap must be ≥ 10_000 bps
       // (1x); below that the move call aborts with EPayoutTooSmall.
       // A Failed return would previously update `max_payout_bps`
@@ -1277,12 +1393,12 @@ function SetMaxPayoutBpsCard(props: {
       // fake success and the bootstrap-parlay script's
       // read-then-write idempotency would then try to revert
       // to the env value on the next tick, causing oscillation.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Set parlay max payout failed on-chain (cap must be ≥ 10_000 bps and ≤ 1_000_000).");
         setBusy(false);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
@@ -1420,6 +1536,8 @@ function ParlayAdminCard(props: {
   const [busy, setBusy] = useState<null | "withdraw" | "rotate">(null);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   const parsedAmount = Number(withdrawAmount);
   const isWithdrawValid =
@@ -1452,6 +1570,11 @@ function ParlayAdminCard(props: {
   async function submitWithdraw() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(null);
+      return;
+    }
     if (!PARLAY_POOL_ID) {
       setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
       return;
@@ -1493,7 +1616,14 @@ function ParlayAdminCard(props: {
         parsedAmount,
         dUSDCType(),
       );
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-withdraw pool-balance read sees a finalized
+      // state. The previous signAndExecuteTransaction
+      // returned immediately; the
+      // readParlayPoolBalance refetch raced on-chain
+      // finalization and briefly showed the pre-withdraw
+      // balance.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. Withdrawals can fail on
       // EInsufficientBalance, ENotAdmin, or EPoolHalted. The
       // previous "Parlay admin withdraw: unknown..." toast would
@@ -1501,12 +1631,12 @@ function ParlayAdminCard(props: {
       // were actually still there — and the off-chain indexer
       // reconciliation would then double-count them on the next
       // pool-stats snapshot.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Parlay admin withdraw failed on-chain.");
         setBusy(null);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit("Parlay admin withdraw", d);
     } catch (e) {
@@ -1519,6 +1649,11 @@ function ParlayAdminCard(props: {
   async function submitRotate() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(null);
+      return;
+    }
     if (!PARLAY_POOL_ID) {
       setErr("NEXT_PUBLIC_PARLAY_POOL_ID not set.");
       return;
@@ -1559,19 +1694,21 @@ function ParlayAdminCard(props: {
         newAdmin.trim(),
         dUSDCType(),
       );
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the withdraw path above.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. rotate_admin is one-way and
       // caller is the CURRENT admin. A Failed return (e.g.
       // address-is-zero abort) would previously look like a
       // success and the new admin's first call would then
       // bounce with ENotAdmin, leaving the pool in a state where
       // nobody could admin-withdraw.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Rotate parlay admin failed on-chain (new admin must be a non-zero address).");
         setBusy(null);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit("Rotate parlay admin", d);
     } catch (e) {
@@ -1708,6 +1845,8 @@ function VaultAdminCard(props: {
   const [busy, setBusy] = useState<null | "allocate" | "return">(null);
   const [err, setErr] = useState<string | null>(null);
   const [digest, setDigest] = useState<string | null>(null);
+  // R55 audit fix: see WithdrawFeesCard for the rationale.
+  const client = useCurrentClient();
 
   const parsedAllocate = Number(allocateAmount);
   const isAllocateValid =
@@ -1740,6 +1879,11 @@ function VaultAdminCard(props: {
   async function submitAllocate() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(null);
+      return;
+    }
     if (!VAULT_OBJECT_ID) {
       setErr("NEXT_PUBLIC_VAULT_OBJECT_ID not set.");
       return;
@@ -1778,7 +1922,14 @@ function VaultAdminCard(props: {
         BigInt(parsedAllocate),
         dUSDCType(),
       );
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // post-allocate vault-balance read sees a finalized
+      // allocation. The previous
+      // signAndExecuteTransaction returned immediately;
+      // the readProtocolVaultAvailableBalance refetch
+      // raced on-chain finalization and briefly showed
+      // the pre-allocate available balance.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. allocate_for_mm aborts with
       // EInsufficientAvailable on the available→allocated
       // transfer. A Failed return would previously show
@@ -1786,12 +1937,12 @@ function VaultAdminCard(props: {
       // then believe it had fresh capital to deploy, pulling
       // orders that the chain would reject one-by-one (more
       // RPC load per minute than the success path).
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Allocate for MM failed on-chain (insufficient available balance, or non-admin caller).");
         setBusy(null);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit("Allocate for MM", d);
     } catch (e) {
@@ -1804,6 +1955,11 @@ function VaultAdminCard(props: {
   async function submitReturn() {
     setErr(null);
     setDigest(null);
+    if (!client) {
+      setErr("Wallet client not ready.");
+      setBusy(null);
+      return;
+    }
     if (!VAULT_OBJECT_ID) {
       setErr("NEXT_PUBLIC_VAULT_OBJECT_ID not set.");
       return;
@@ -1842,19 +1998,21 @@ function VaultAdminCard(props: {
         returnCoinId.trim(),
         dUSDCType(),
       );
-      const r = await props.dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the allocate path above.
+      const r = await submitAndWait(props.dAppKit, client, tx);
       // R38 audit fix: $kind guard. return_from_mm aborts if the
       // Coin isn't a dUSDC coin (wrong type) or if the coin has
       // already been consumed by a previous return (object
       // version). The previous code would toast a fake success
       // and the operator's "available" balance would not
       // increase as expected — silently stranded capital.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         setErr("Return from MM failed on-chain (wrong coin type, or coin already consumed).");
         setBusy(null);
         return;
       }
-      const d = r.Transaction.digest;
+      const d = r.digest;
       setDigest(d);
       props.onSubmit("Return from MM", d);
     } catch (e) {

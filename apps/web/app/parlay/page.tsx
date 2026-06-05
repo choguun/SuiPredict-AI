@@ -23,6 +23,7 @@ import {
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { ParlayHistory } from "@/components/ParlayHistory";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 
 const MIN_LEGS = 2;
@@ -330,7 +331,17 @@ export default function ParlayPage() {
         payoutBps,
         coinType: DUSDC_TYPE,
       });
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // extractCreatedObjectId gRPC call and the
+      // invalidateQueries that follow hit a node that has
+      // already finalized the tx. The previous
+      // signAndExecuteTransaction returned immediately after
+      // signing and the gRPC query for the new Parlay object
+      // raced on-chain finalization — a slow RPC would return
+      // an empty effect and the user saw a "Parlay created but
+      // ID not found" toast even though the parlay was
+      // created.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R41 audit fix: the previous `throw new Error("Transaction
       // failed")` discarded the dAppKit result shape (`Failed`,
       // `EffectsCert`, etc.) and toasts a generic message. The
@@ -338,7 +349,7 @@ export default function ParlayPage() {
       // specific error and return cleanly. Match that pattern
       // so the user can distinguish gas-exhaustion from a
       // Move abort from an effects-cert mismatch.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         // R49 audit fix: drop the `(r.$kind)` interpolation. The
         // SDK variant names (`"Failed"`, `"EffectsCert"`,
         // `"Transaction"`) are internal and leaked to the user on
@@ -355,7 +366,7 @@ export default function ParlayPage() {
       // `types[id].includes(suffix)`.
       const parlayId = await extractCreatedObjectId(
         client,
-        r.Transaction.digest,
+        r.digest,
         "::parlay::Parlay",
       );
       if (!parlayId) {

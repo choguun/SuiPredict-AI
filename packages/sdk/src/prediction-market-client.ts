@@ -620,6 +620,19 @@ export function buildSetupReferralTx(
   poolId: string,
   multiplier: bigint = 1_000_000_000n,
 ): Transaction {
+  // R55 audit fix: validate `multiplier > 0` at the
+  // build boundary. The on-chain DeepBook
+  // `setup_referral` accepts a 0-multiplier referral
+  // (no fee share for the protocol — a silent
+  // misconfiguration) and rejects negatives with an
+  // opaque DeepBook abort. The market-creator
+  // hardcodes a safe value, but the admin page or
+  // any future caller could typo.
+  if (typeof multiplier !== "bigint" || multiplier <= 0n) {
+    throw new Error(
+      `buildSetupReferralTx: multiplier must be a bigint > 0 (got ${multiplier})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::setup_referral`,

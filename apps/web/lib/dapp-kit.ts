@@ -171,7 +171,23 @@ export async function submitAndWait(
 ): Promise<SubmitResult> {
   const r = await dappKit.signAndExecuteTransaction({ transaction: tx });
   if (r.$kind !== "Transaction") {
-    return { $kind: r.$kind as "FailedTransaction" | "EffectsCert" };
+    // R55 audit fix: surface the underlying Move-abort
+    // message in `error` so call sites that run
+    // `friendlyMoveError(err, "Mint")` (R47 helper) can
+    // still pattern-match on the abort module. The
+    // dapp-kit FailedTransaction nests the abort as
+    // `r.FailedTransaction.status.error.message`; without
+    // this unwrap the helper would receive
+    // `[object Object]` and fall through to the generic
+    // "Mint failed on-chain" toast.
+    const failed = (r as { FailedTransaction?: { status?: { success: false; error?: { message?: string } } | { success: true } } }).FailedTransaction;
+    const abortMsg = failed?.status && failed.status.success === false
+      ? failed.status.error?.message
+      : undefined;
+    return {
+      $kind: r.$kind as "FailedTransaction" | "EffectsCert",
+      error: abortMsg ? new Error(abortMsg) : undefined,
+    };
   }
   const digest = r.Transaction?.digest;
   if (!digest) {

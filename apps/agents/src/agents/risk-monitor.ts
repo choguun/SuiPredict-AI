@@ -7,7 +7,7 @@ import {
 } from "@suipredict/sdk";
 import { getVaultSummaryFromEnv } from "../markets/store.js";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, recordResult, safeFloat } from "../lib.js";
 
 // R44 audit fix: `RISK_PAUSE_UTILIZATION` is a runtime-tunable
 // knob that an operator might hot-patch via `bootstrap-env.ts`
@@ -23,8 +23,15 @@ import { getSharedClient, recordResult } from "../lib.js";
 const DEFAULT_PAUSE_UTILIZATION = 0.80;
 
 export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
-  const pauseUtilization = Number(
-    process.env.RISK_PAUSE_UTILIZATION ?? DEFAULT_PAUSE_UTILIZATION,
+  // R55 audit fix: route through `safeFloat` so a
+  // `RISK_PAUSE_UTILIZATION=NaN` or `2.0` (out-of-range
+  // >1.0) doesn't disable the pause trigger. Clamp to
+  // `[0, 1]` — utilization is a fraction.
+  const pauseUtilization = safeFloat(
+    process.env.RISK_PAUSE_UTILIZATION,
+    DEFAULT_PAUSE_UTILIZATION,
+    0,
+    1,
   );
   // R54 audit fix: re-read `AGENT_POLICY_PACKAGE_ID` at function
   // scope. The previous module-level import from `@suipredict/sdk`

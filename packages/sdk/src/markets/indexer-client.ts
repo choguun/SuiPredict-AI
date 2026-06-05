@@ -102,10 +102,30 @@ export async function listMarkets(): Promise<MarketInfo[]> {
 }
 
 export async function getMarket(id: string): Promise<MarketInfo> {
+  // R55 audit fix: validate `id` is a non-empty string before
+  // building the path. The previous code silently hit
+  // `https://...com/markets/` for an empty id and produced a
+  // confusing 404 from `fetchJson`. A `null` / `undefined`
+  // would also concatenate as the string `"undefined"`. Throw
+  // at the build boundary with a readable message.
+  if (!id || typeof id !== "string") {
+    throw new Error(
+      `getMarket: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+    );
+  }
   return fetchJson(`/markets/${id}`);
 }
 
 export async function getMarketOrderBook(id: string): Promise<OrderBookSnapshot> {
+  // R55 audit fix: same `id` validation as `getMarket`. The
+  // web's market page passes the URL param directly; a
+  // Next.js catch-all route that resolves to `undefined`
+  // would silently 500 with a path like `/markets/undefined/book`.
+  if (!id || typeof id !== "string") {
+    throw new Error(
+      `getMarketOrderBook: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+    );
+  }
   return fetchJson(`/markets/${id}/book`);
 }
 
@@ -140,11 +160,56 @@ function tupleBookToSnapshot(
 }
 
 export async function getPortfolio(address: string): Promise<PortfolioPosition[]> {
-  return fetchJson(`/portfolio/${address}`);
+  // R55 audit fix: paginate the indexer's `/portfolio/:addr`
+  // endpoint. R54 added pagination to `listMarkets` but missed
+  // this call. The indexer caps at 50 rows per call; a user
+  // with 51+ open positions silently truncates to the first
+  // 50. Loop with the indexer's `?limit=&offset=` query
+  // params until the page comes back short. Cap at 5,000
+  // (a single user cannot reasonably hold more than that) and
+  // throw if we hit the cap so the operator can bump the
+  // indexer's per-page limit.
+  if (!address || typeof address !== "string") {
+    throw new Error(
+      `getPortfolio: address must be a non-empty string (got ${address === undefined ? "undefined" : JSON.stringify(address)})`,
+    );
+  }
+  const PAGE_SIZE = 50;
+  const MAX_TOTAL = 5_000;
+  const all: PortfolioPosition[] = [];
+  let offset = 0;
+  for (let page = 0; page < MAX_TOTAL / PAGE_SIZE; page++) {
+    const res = await fetchJson<PortfolioPosition[]>(
+      `/portfolio/${address}?limit=${PAGE_SIZE}&offset=${offset}`,
+    );
+    all.push(...res);
+    if (res.length < PAGE_SIZE) break;
+    offset += res.length;
+    if (all.length >= MAX_TOTAL) {
+      throw new Error(
+        `getPortfolio: hit MAX_TOTAL (${MAX_TOTAL}) after ${page + 1} pages; ` +
+          "the indexer may be returning a growing dataset. Bump the cap or " +
+          "use a more selective query.",
+      );
+    }
+  }
+  return all;
 }
 
 export async function getVaultSummaryClob(): Promise<VaultSummaryClob> {
-  return fetchJson("/vault/summary");
+  // R55 audit fix: coerce the numeric fields at the read
+  // boundary. The on-the-wire response could swap to
+  // bigint-as-string in a future bignum migration; the
+  // previous "trust the type" approach would silently
+  // surface `NaN` in the admin page when
+  // `total_balance - allocated` is computed.
+  const raw = await fetchJson<VaultSummaryClob>("/vault/summary");
+  return {
+    ...raw,
+    total_balance: Number(raw.total_balance),
+    allocated: Number(raw.allocated),
+    available: Number(raw.available),
+  };
 }
 
 export { tupleBookToSnapshot };

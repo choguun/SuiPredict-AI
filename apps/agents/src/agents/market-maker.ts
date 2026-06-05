@@ -1,5 +1,4 @@
 import {
-  createClient,
   createMarketDeepBookClient,
   buildAuthorizeSpendTx,
   buildPlaceYesLimitOrderTx,
@@ -11,7 +10,7 @@ import {
   DeepBookClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, recordResult, safeInt } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 
 /**
@@ -96,11 +95,23 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   // process lifetime. R43 already fixed
   // `prize-admin.ts` and `risk-monitor.ts`; this is
   // the same pattern applied here.
-  const SPREAD_THRESHOLD_BPS = Number(
-    process.env.MM_SPREAD_THRESHOLD_BPS ?? 400,
+  // R55 audit fix: route both through `safeInt` so a
+  // non-integer env value (e.g. `MM_SPREAD_THRESHOLD_BPS=NaN`
+  // or `MM_QUOTE_SIZE=1e20` OOM-bomb) doesn't break the
+  // market-maker silently. Clamp the spread threshold to
+  // a sane `[1, 10_000]` bps range and the quote size to
+  // `[1, 1e15]` atoms.
+  const SPREAD_THRESHOLD_BPS = safeInt(
+    process.env.MM_SPREAD_THRESHOLD_BPS,
+    400,
+    1,
+    10_000,
   );
-  const QUOTE_SIZE = Number(
-    process.env.MM_QUOTE_SIZE ?? 10_000_000,
+  const QUOTE_SIZE = safeInt(
+    process.env.MM_QUOTE_SIZE,
+    10_000_000,
+    1,
+    1_000_000_000_000_000,
   );
   const BALANCE_MANAGER_ID = loadBalanceManagerId();
   const AGENT_POLICY_ID = process.env.AGENT_POLICY_ID ?? "";

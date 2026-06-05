@@ -57,7 +57,7 @@ import { isMoveAbortInModule } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import { executeTransaction } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, recordResult, safeInt } from "../lib.js";
 import { getMarket } from "../markets/store.js";
 import {
   getParlayLegMarketIds,
@@ -276,8 +276,21 @@ export async function runParlayWorker(
   // remaining parlays, so worst-case latency is
   // `n / 25 * 5s`. A `MAX_PARLAYS_PER_TICK` env override
   // lets the operator tune for gas-bucket size.
-  const MAX_PARLAYS_PER_TICK = Number(
-    process.env.MAX_PARLAYS_PER_TICK ?? 25,
+  //
+  // R55 audit fix: route through `safeInt` with
+  // `[1, 500]` bounds. The previous `Number(env ?? 25)`
+  // accepted `0` (silently disabling the worker), `NaN`
+  // (from `Number("abc")` — `slice(0, NaN) = []` skips
+  // every tick), and a `1e15` OOM-bomb. A `bootstrap-env.ts`
+  // typo of `MAX_PARLAYS_PER_TICK=25;` (with stray
+  // semicolon) would previously produce `25;` and
+  // return NaN. The `safeInt` helper logs the bad value
+  // and falls back to 25.
+  const MAX_PARLAYS_PER_TICK = safeInt(
+    process.env.MAX_PARLAYS_PER_TICK,
+    25,
+    1,
+    500,
   );
   const scopedAndCapped =
     sortedByDeadline.length > MAX_PARLAYS_PER_TICK

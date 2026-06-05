@@ -27,6 +27,7 @@ import {
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { clampNumberString } from "@/lib/forms";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 
 export default function TradePage() {
@@ -147,7 +148,7 @@ export default function TradePage() {
     // a real PTB fee.
     if (
       !window.confirm(
-        `Mint ${quantity + 1} YES shares for ${(quantity + 1) * 1} DUSDC?`,
+        `Mint ${quantity} YES shares for ${quantity} DUSDC?`,
       )
     ) {
       return;
@@ -180,7 +181,15 @@ export default function TradePage() {
           "No DUSDC — request from DeepBook testnet form before minting.",
         );
       }
-      const topup = BigInt(quantity + 1) * BigInt(1_000_000);
+      // R55 audit fix: the deposit and mint amounts are
+      // consistent at `quantity * 1 DUSDC` each. The
+      // R49 fix used `quantity + 1` for the deposit and
+      // `quantity` for the mint — the off-by-one locked
+      // up an extra DUSDC that the user could only
+      // retrieve by withdrawing. The `mint` move call
+      // charges `quantity` atoms of DUSDC, so
+      // `topup = quantity * 1_000_000` is sufficient.
+      const topup = BigInt(quantity) * BigInt(1_000_000);
       // R49 audit fix: the previous code wrapped this block in
       // `if (coins.objects.length > 0)` to silently skip the
       // deposit when the user had no DUSDC. The new throw above
@@ -232,18 +241,25 @@ export default function TradePage() {
         ],
       });
 
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `setRefreshCounter` refetch of positions hits
+      // a node that has already finalized the mint tx.
+      // The previous signAndExecuteTransaction returned
+      // immediately after signing; the getManagerPositions
+      // refetch raced on-chain finalization and the user
+      // saw the new position only after a manual refresh.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R34 audit fix: same R30/R32 pattern — Failed / EffectsCert
       // variants carry no digest. The previous code fell through to
       // the literal string "unknown" and toasted it as a success,
       // lying to the user that a position was minted when the tx
       // had failed. Bail with a clear error toast before reading
       // the digest.
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         toast.error("Mint failed on-chain", { id: toastId });
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       toast.success(`Minted! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {
@@ -285,17 +301,23 @@ export default function TradePage() {
         quantityDollars,
         permissionless: settledOracleIds.has(pos.oracle_id),
       });
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the mint path above. The previous
+      // signAndExecuteTransaction returned before
+      // finalization, so a slow RPC showed the user a
+      // "Redeemed!" toast pointing at a position the
+      // getManagerPositions refetch hadn't seen yet.
+      const result = await submitAndWait(dAppKit, client, tx);
       // R37 audit fix: mirror the R34 mintPosition guard. The
       // previous code fell through to the literal "unknown" and
       // toasted it as a success when the result was a Failed /
       // EffectsCert variant, lying to the user that a position was
       // redeemed when the tx had failed on-chain.
-      if (result.$kind !== "Transaction") {
+      if (result.$kind !== "Transaction" || !result.digest) {
         toast.error("Redeem failed on-chain", { id: toastId });
         return;
       }
-      const digest = result.Transaction.digest;
+      const digest = result.digest;
       toast.success(`Redeemed! Tx: ${digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
     } catch (e) {

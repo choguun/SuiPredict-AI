@@ -762,6 +762,20 @@ export async function mintDusdcFromTreasury(
   signer: Ed25519Keypair,
   amountDollars: number,
 ) {
+  // R55 audit fix: validate `amountDollars > 0` at the
+  // build boundary. R53/R54 added the same check to
+  // `buildAuthorizeSpendTx` and `buildCreatePolicyTx`
+  // but missed the legacy `mintDusdcFromTreasury`. A
+  // zero mints a zero-balance coin and the subsequent
+  // `transferObjects` aborts with "Unused result
+  // without the ability to assign". The smoke-test
+  // script and devnet bootstrap both call this; a
+  // stale test arg would burn gas.
+  if (!Number.isFinite(amountDollars) || amountDollars <= 0) {
+    throw new Error(
+      `mintDusdcFromTreasury: amountDollars must be a finite number > 0 (got ${amountDollars})`,
+    );
+  }
   const tx = new Transaction();
   const address = signer.getPublicKey().toSuiAddress();
   const amount = dollarsToDusdc(amountDollars);

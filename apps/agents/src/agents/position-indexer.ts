@@ -22,7 +22,7 @@
  */
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedJsonRpcClient, recordResult } from "../lib.js";
 import {
   decrementPosition,
   getDb,
@@ -385,15 +385,19 @@ export async function runPositionIndexer(
   }
   // R49 audit fix: read the network inside the function body. See
   // the module-level note for the rationale.
-  const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
-    | "testnet"
-    | "mainnet"
-    | "devnet"
-    | "localnet";
-  const client = new SuiJsonRpcClient({
-    url: getJsonRpcFullnodeUrl(SUI_NETWORK),
-    network: SUI_NETWORK,
-  });
+  //
+  // R55 audit fix: route through the shared
+  // `getSharedJsonRpcClient()` helper from `lib.ts`. The
+  // previous `new SuiJsonRpcClient(...)` per tick
+  // churned a connection every minute (the position-indexer
+  // runs at 1min cadence) — 1440 connections per day per
+  // worker process. Node's default `node-fetch` agent has
+  // `keepAlive: false`, so the connection drops after the
+  // request, but the Sui public node still logs the
+  // connection churn. Same root cause the R51 sweep
+  // addressed for the gRPC client; mirror the singleton
+  // pattern.
+  const client = getSharedJsonRpcClient();
 
   // Each event-type poller is independent. A failure on one (e.g. a
   // transient RPC blip on `queryEvents(MarketResolvedEvent)`) must

@@ -4,6 +4,7 @@ import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-ki
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { buildClaimPrizeTx, expectedAmountForRank } from "@suipredict/sdk";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 
@@ -227,7 +228,13 @@ export function ClaimPrizeButton(props: Props) {
         signatureB64: data.signatureB64,
         poolIdForSig: poolId,
       });
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // /prize/claims POST and the leaderboard invalidate
+      // queries fire after the chain has finalized. The
+      // previous `signAndExecuteTransaction` returned
+      // immediately and the off-chain mirror was written
+      // with a digest the RPC may not have seen yet.
+      const r = await submitAndWait(dAppKit, client, tx);
       // $kind guard — Failed / EffectsCert variants carry no digest.
       // Previously this code called a `txDigest()` helper that
       // returned the literal string "unknown" on non-Transaction
@@ -236,11 +243,11 @@ export function ClaimPrizeButton(props: Props) {
       // polluting the off-chain mirror with phantom claims. R30
       // closed the same pattern in DailyPredictionCard / VaultPage;
       // R32 closes it here.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         toast.error("Claim failed on-chain", { id: toastId });
         return;
       }
-      const digest = r.Transaction.digest;
+      const digest = r.digest;
       toast.success(
         `Claimed ${amountUsdc} DUSDC: ${digest.slice(0, 16)}…`,
         { id: toastId },

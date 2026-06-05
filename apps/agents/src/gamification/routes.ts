@@ -46,7 +46,7 @@ import {
 } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { corsFor } from "../http-cors.js";
-import { getSharedClient } from "../lib.js";
+import { getSharedClient, safeBigInt } from "../lib.js";
 import { tryConsume as tryRateLimit } from "../rate-limit.js";
 import { consumeNonce, issueNonce } from "./nonce-store.js";
 
@@ -901,7 +901,14 @@ export async function handleGamificationRoute(
     // indexer's correct on-chain amount on the next poll. The server
     // is the single source of truth for the rank table.
     const amount = expectedAmountForRank(
-      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+      // R55 audit fix: route through `safeBigInt` so a
+      // non-integer env value (e.g. `100.5`, `10_USDC`,
+      // or `""` from a missing var) doesn't throw
+      // `SyntaxError` synchronously and turn every claim
+      // into a 500. The R55 audit flag is HIGH because
+      // this site runs inside the `POST /prize/claims`
+      // request handler — the most-touched prize flow.
+      safeBigInt(process.env.PRIZE_WEEKLY_AMOUNT, 0n),
       body.rank,
       DEFAULT_DISTRIBUTION_BPS,
     );
@@ -1178,7 +1185,11 @@ async function resolvePrizeAmount(
   // boot health endpoint and investigate the RPC issue. Never silent.
   return {
     amount: expectedAmountForRank(
-      BigInt(process.env.PRIZE_WEEKLY_AMOUNT ?? "0"),
+      // R55 audit fix: same `safeBigInt` guard as the
+      // `POST /prize/claims` handler above. The R55 audit
+      // flagged this site as a duplicate exposure; both
+      // paths run on every leaderboard render.
+      safeBigInt(process.env.PRIZE_WEEKLY_AMOUNT, 0n),
       rank,
       DEFAULT_DISTRIBUTION_BPS,
     ),

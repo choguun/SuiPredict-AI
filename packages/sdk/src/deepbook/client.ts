@@ -2,6 +2,8 @@ import {
   DeepBookClient,
   OrderType,
   SelfMatchingOptions,
+  mainnetCoins,
+  mainnetPools,
   testnetCoins,
   testnetPools,
   type BalanceManager,
@@ -31,6 +33,20 @@ export function createDeepBookClient(
     network?: "mainnet" | "testnet";
   } = {},
 ) {
+  // R55 audit fix: pick the *default* coin/pool registry from
+  // the same `SUI_NETWORK` env var the rest of the SDK already
+  // uses. R48 added the `network` param but the defaults below
+  // still spread `testnetCoins`/`testnetPools` regardless of
+  // network — a mainnet deploy that called
+  // `createDeepBookClient(...)` without `options.coins`/`pools`
+  // got the testnet registry and every CLOB `placeLimitOrder`
+  // then aborted with `pool not found` because the pool id
+  // was a testnet one. Use `mainnetCoins`/`mainnetPools` from
+  // `@mysten/deepbook-v3` when `network === "mainnet"`.
+  const network = options.network
+    ?? (process.env.SUI_NETWORK === "mainnet" ? "mainnet" : "testnet");
+  const defaultCoins = network === "mainnet" ? mainnetCoins : testnetCoins;
+  const defaultPools = network === "mainnet" ? mainnetPools : testnetPools;
   return new DeepBookClient({
     client,
     address,
@@ -39,12 +55,10 @@ export function createDeepBookClient(
     // deploy that forgets to pass `options.network: "mainnet"`
     // previously fell through to "testnet" and silently used the
     // testnet coin/pool registry, breaking every CLOB trade.
-    network:
-      options.network ??
-      (process.env.SUI_NETWORK === "mainnet" ? "mainnet" : "testnet"),
+    network,
     balanceManagers,
-    coins: options.coins,
-    pools: options.pools,
+    coins: options.coins ?? defaultCoins,
+    pools: options.pools ?? defaultPools,
   });
 }
 
@@ -238,7 +252,20 @@ export async function getMidPrice(dbClient: DeepBookClient, poolKey: string) {
     if (bestBid != null) return bestBid;
     if (bestAsk != null) return bestAsk;
     return 0.5;
-  } catch {
+  } catch (err) {
+    // R55 audit fix: log the original error before
+    // returning the 0.5 fallback. R54 fixed the same
+    // pattern in `getOrderBookDepth` and `getSpotPrice`
+    // but missed this one. `market-maker` and
+    // `market-resolver` both call this; a 2-hour pool
+    // outage would have them post "0.5" mid-price
+    // orders indistinguishable from a real mid, churning
+    // the book with bad quotes.
+    console.warn(
+      `[sdk] getMidPrice(${poolKey}) failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return 0.5;
   }
 }

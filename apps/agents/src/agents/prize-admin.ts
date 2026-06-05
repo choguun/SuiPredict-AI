@@ -25,7 +25,7 @@ import {
   readPrizePoolWeeklyPrize,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, recordResult } from "../lib.js";
+import { getSharedClient, recordResult, safeBigInt } from "../lib.js";
 import {
   isPoolWeekSettled,
   markPoolWeekSettled,
@@ -67,13 +67,17 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   // constants for the rationale; the short version is that a
   // hot-patch of PRIZE_FUND_AMOUNT or PRIZE_POOL_MIN_BALANCE
   // via `bootstrap-env.ts` would otherwise be ignored.
-  const prizeFundAmount = BigInt(
-    process.env.PRIZE_FUND_AMOUNT ??
-      process.env.PRIZE_WEEKLY_AMOUNT ??
-      "0",
+  // R55 audit fix: route both through `safeBigInt` so a
+  // non-integer env value (e.g. `10_000_000` with the
+  // underscores) doesn't throw `BigInt SyntaxError` and
+  // turn the first prize-fund tick into a silent no-op.
+  const prizeFundAmount = safeBigInt(
+    process.env.PRIZE_FUND_AMOUNT ?? process.env.PRIZE_WEEKLY_AMOUNT,
+    0n,
   );
-  const prizePoolMinBalance = BigInt(
-    process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
+  const prizePoolMinBalance = safeBigInt(
+    process.env.PRIZE_POOL_MIN_BALANCE,
+    0n,
   );
   // R53 audit fix: re-read
   // `PRIZE_POOL_ID` /

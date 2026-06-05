@@ -394,6 +394,26 @@ export function buildRecordLegTx(args: {
   // can issue hundreds of `record_leg` calls); a
   // mixed-case paste in the agents `.env` would
   // abort the entire PTB at BCS resolution.
+  //
+  // R55 audit fix: bound `legIndex` to the
+  // documented 0..MAX_LEGS-1 range. A negative or
+  // fractional value would reach the BCS encoder as
+  // a huge `u64` and abort on-chain with the
+  // opaque `ELegMismatch` (code 8). The parlay-worker
+  // burns hundreds of these per tick on a stale
+  // counter, so the build-time guard saves real
+  // gas. Also reject non-integer number inputs.
+  if (typeof args.legIndex === "number" && !Number.isInteger(args.legIndex)) {
+    throw new Error(
+      `buildRecordLegTx: legIndex must be an integer (got ${args.legIndex})`,
+    );
+  }
+  const legIndex = BigInt(args.legIndex);
+  if (legIndex < 0n || legIndex > BigInt(MAX_LEGS - 1)) {
+    throw new Error(
+      `buildRecordLegTx: legIndex must be in [0, ${MAX_LEGS - 1}] (got ${args.legIndex})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::record_leg`,
@@ -401,7 +421,7 @@ export function buildRecordLegTx(args: {
     arguments: [
       tx.object(normalizeObjectId(args.parlayId)),
       tx.object(normalizeObjectId(args.marketId)),
-      tx.pure.u64(args.legIndex),
+      tx.pure.u64(legIndex),
     ],
   });
   return tx;

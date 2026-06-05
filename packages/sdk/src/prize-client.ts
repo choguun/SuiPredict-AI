@@ -308,6 +308,20 @@ export function buildSettleWeekTx(
   weekIndex: bigint,
   prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
+  // R55 audit fix: bound `weekIndex` at the build
+  // boundary. A negative bigint would fail at
+  // `tx.pure.u64` (BCS encoder rejects out-of-range
+  // values); a non-bigint number would silently
+  // truncate. The prize-admin agent reads
+  // `nextWeek = current_week + 1` from chain, so
+  // the value is normally safe, but a manual
+  // override or a stale read could ship a negative
+  // bigint. Mirror the `buildCreatePoolTx` pattern.
+  if (typeof weekIndex !== "bigint" || weekIndex < 0n) {
+    throw new Error(
+      `buildSettleWeekTx: weekIndex must be a bigint >= 0 (got ${weekIndex})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::settle_week`,
@@ -323,6 +337,20 @@ export function buildRotateWeekTx(
   newWeek: bigint,
   prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
+  // R55 audit fix: same guard as `buildSettleWeekTx`.
+  // The on-chain `rotate_week` calls
+  // `pool.current_week = new_week` with no upper
+  // bound check; a huge positive value is technically
+  // legal but operationally useless. The build-time
+  // guard prevents the negative-bigint BCS-encoder
+  // crash that a `nextWeek = current_week + 1n`
+  // race (e.g. an off-by-one in the leaderboard
+  // worker) could ship.
+  if (typeof newWeek !== "bigint" || newWeek < 0n) {
+    throw new Error(
+      `buildRotateWeekTx: newWeek must be a bigint >= 0 (got ${newWeek})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_week`,
@@ -336,6 +364,29 @@ export function buildRotatePubkeyTx(
   prizeAdminId: string,
   newPubkey: Uint8Array,
 ): Transaction {
+  // R55 audit fix: enforce the 32-byte ed25519
+  // pubkey length. The on-chain `prize_pool::rotate_pubkey`
+  // stores the bytes verbatim and subsequent
+  // `claim_prize` calls `ed25519::ed25519_verify`
+  // with this pubkey, which requires exactly 32
+  // bytes. A wrong-length pubkey silently kills
+  // every future claim with `EInvalidSignature`
+  // (code 6) until rotated back. The
+  // `bootstrap-gamification` script and
+  // `rotate-prize-pubkey.ts` script both slice the
+  // 64-byte ed25519 secret key; a copy-paste from
+  // the wrong slice is a one-way ticket to "no
+  // winners can ever claim".
+  if (!(newPubkey instanceof Uint8Array)) {
+    throw new Error(
+      `buildRotatePubkeyTx: newPubkey must be a Uint8Array (got ${typeof newPubkey})`,
+    );
+  }
+  if (newPubkey.length !== 32) {
+    throw new Error(
+      `buildRotatePubkeyTx: newPubkey must be exactly 32 bytes (ed25519 pubkey), got ${newPubkey.length}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_pubkey`,

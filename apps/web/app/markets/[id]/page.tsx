@@ -39,6 +39,7 @@ import {
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
 import { Badge, Card, Stat } from "@/components/ui";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
@@ -95,29 +96,6 @@ function friendlyMoveError(err: unknown, action: string): string {
     return `${action} failed: agent policy paused, revoked, or out of budget.`;
   }
   return `${action} failed on-chain`;
-}
-
-/**
- * R47 audit fix: extract the underlying Move-abort message from
- * a dapp-kit `FailedTransaction` result. The discriminated union
- * nests the failure as `r.FailedTransaction.status.error`, and
- * `isMoveAbortInModule` matches against `err.message` — so we
- * rewrap the message as an `Error` to feed the existing matcher
- * without changing its signature. Without this helper, the
- * call sites would either pass a structural object (which
- * `String()`s to `[object Object]`) or have to inline a deep
- * `?.` chain at every toast site.
- */
-function failedTxToError(
-  r: { FailedTransaction?: { status?: { success: false; error?: { message?: string } } | { success: true } } },
-): Error {
-  const failed = r.FailedTransaction;
-  if (!failed) return new Error("Move transaction failed");
-  const status = failed.status;
-  if (!status || status.success !== false) {
-    return new Error("Move transaction failed");
-  }
-  return new Error(status.error?.message ?? "Move transaction failed");
 }
 
 // R50 audit fix: was `?? "0x000…000"`. The `if (!FEE_VAULT_ID)` guards
@@ -301,7 +279,17 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     if (signal?.aborted) return;
     let m: MarketInfo;
     try {
-      m = await getMarket(marketId);
+      // R55 audit fix: normalize the market id before
+      // fetching. The Sui URL decode above (`decodeURIComponent`)
+      // can produce a mixed-case hex string for Enoki zkLogin
+      // sessions or a user-pasted market id, and
+      // `getMarket` round-trips to the agents REST
+      // endpoint which is case-sensitive on the wire —
+      // a mixed-case id would 404 even though the
+      // canonical lowercase id exists. The same
+      // pattern is already in use for `listCoins`
+      // (line 100) and `getPortfolio` (line 387).
+      m = await getMarket(normalizeObjectId(marketId));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // The indexer returns 404 for unknown ids; treat that distinctly
@@ -580,16 +568,28 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // split coin to `mint_shares` — the whole bag is never
       // deposited.
       const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId, amountAtoms);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `setRefreshCounter` + `invalidateMarketCaches`
+      // refetches hit a node that has already finalized
+      // the mint. The previous signAndExecuteTransaction
+      // returned immediately after signing; the React
+      // Query refetch raced on-chain finalization and
+      // the user saw a stale "0 YES, 0 NO" position
+      // card for ~1-2s.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: same R30/R32/R37 pattern. The previous
       // `txDigest(r)` helper returns the literal "unknown" on a
       // Failed/EffectsCert result and the success toast fired
       // anyway, lying to the user that a mint succeeded.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "Mint"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "Mint"), { id: toastId });
         return;
       }
-      toast.success(`Minted YES + NO: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Mint"), { id: toastId });
+        return;
+      }
+      toast.success(`Minted YES + NO: ${r.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
       invalidateMarketCaches();
     } catch (e) {
@@ -626,6 +626,47 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     const clientOrderId = String(Date.now());
     const toastId = toast.loading("Submitting DeepBook V3 limit order...");
     try {
+      // R55 audit fix: pre-flight DUSDC balance for a
+      // buy order. A user with insufficient DUSDC
+      // would otherwise spin up the wallet-adapter
+      // spinner, the PTB would abort inside the
+      // wallet, and the user would see a generic
+      // "Order failed on-chain" toast — the actual
+      // reason (insufficient DUSDC) is only visible
+      // if they open the dev tools. Mirror the
+      // DailyPredictionCard pre-flight (lines 158-168)
+      // and the parlay/page pre-flight (lines 311-320).
+      // Sell orders spend a YES/NO coin, not DUSDC, so
+      // the pre-flight is gated on `isBid`.
+      if (isBid && account) {
+        const { objects } = await client.core.listCoins({
+          owner: normalizeObjectId(account.address),
+          coinType: DUSDC_TYPE,
+          limit: 100,
+        });
+        const totalBalance = objects.reduce(
+          (acc, c) => acc + BigInt(c.balance),
+          BigInt(0),
+        );
+        // `qty` is in YES base units; `yesLimitPrice` is
+        // the per-share DUSDC cost (both scaled 1e6). The
+        // order total is qty * yesLimitPrice / 1e6 in
+        // base units. A 5% buffer keeps the user from
+        // hitting a 1-atom shortfall on a rounding edge
+        // (DeepBook's balance-manager invariant is
+        // strict).
+        const requiredAtoms =
+          (BigInt(qty) * BigInt(Math.round(yesLimitPrice * 1_000_000))) /
+          BigInt(1_000_000);
+        const requiredWithBuffer = (requiredAtoms * BigInt(105)) / BigInt(100);
+        if (totalBalance < requiredWithBuffer) {
+          throw new Error(
+            `Insufficient DUSDC: need ~${(Number(requiredAtoms) / 1_000_000).toFixed(2)} ` +
+              `(${(Number(requiredWithBuffer) / 1_000_000).toFixed(2)} with buffer), ` +
+              `have ${(Number(totalBalance) / 1_000_000).toFixed(2)}. Request more from the DeepBook testnet form.`,
+          );
+        }
+      }
       // R50 audit fix: route through
       // `buildPlaceOrderTx` (the prediction_market
       // wrapper) instead of the DeepBook-direct
@@ -667,7 +708,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         quantity: BigInt(qty),
         isBid,
       });
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `waitForOrderInBook` poll runs against a node
+      // that has already finalized the order tx. The
+      // previous signAndExecuteTransaction returned
+      // immediately after signing; the indexer poll would
+      // race on-chain finalization and a slow RPC could
+      // spend the full 65s timeout looking for an order
+      // the chain had accepted but not yet broadcast.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: dAppKit can return Failed/EffectsCert here
       // (insufficient gas, paused pool, balance-mgr invariant). On
       // those paths `txDigest(r)` returns the literal string
@@ -676,10 +725,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // service for no reason. Surface the error early and skip the
       // indexer poll.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "Order"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "Order"), { id: toastId });
         return;
       }
-      const digest = r.Transaction.digest;
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Order"), { id: toastId });
+        return;
+      }
+      const digest = r.digest;
       // Distinguish "submitted" from "placed". The wallet adapter returns
       // once the fullnode accepts the tx — but the position indexer
       // (cron */1) can take up to 60s to record the OrderPlaced event,
@@ -783,7 +836,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         market: deepBookMarket,
       });
       const tx = buildDeepBookCreateBalanceManagerTx(dbClient, account.address);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `extractCreatedObjectId` gRPC call hits a
+      // node that has already finalized the create tx.
+      // The previous signAndExecuteTransaction returned
+      // immediately; the gRPC query for the new manager
+      // id raced on-chain finalization and a slow RPC
+      // would return an empty effect.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: same $kind guard as placeOrder. On a Failed
       // return, `txDigest(r)` would yield the literal "unknown"
       // and we would then both (a) toast a fake success and
@@ -795,10 +855,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // subsequent deposit/place-order call would 404 trying to
       // fetch a non-existent object.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "BalanceManager creation"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "BalanceManager creation"), { id: toastId });
         return;
       }
-      const digest = r.Transaction.digest;
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "BalanceManager creation"), { id: toastId });
+        return;
+      }
+      const digest = r.digest;
       // Discover the new shared BalanceManager ID from the tx effects
       // and persist it so subsequent deposit/place-order calls find it.
       const managerId = await extractCreatedObjectId(
@@ -876,7 +940,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         depositAsset === "base" ? PREDICT_BASE_COIN_KEY : PREDICT_QUOTE_COIN_KEY,
         depositAmount,
       );
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the `invalidateMarketCaches()` refetch sees a
+      // finalized deposit. The previous
+      // signAndExecuteTransaction returned immediately;
+      // the user's balance card displayed the OLD
+      // deposit amount for ~1-2s after the success
+      // toast.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: $kind guard for deposit. The deposit path is
       // the one most likely to silently "succeed" with "unknown" on
       // a quota-exhausted BalanceManager (the tx would not abort
@@ -884,10 +955,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // show in effects certs). Surface the error to the user
       // instead of an "Deposit OK: unknown..." toast.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "Deposit"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "Deposit"), { id: toastId });
         return;
       }
-      toast.success(`Deposit OK: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Deposit"), { id: toastId });
+        return;
+      }
+      toast.success(`Deposit OK: ${r.digest.slice(0, 16)}...`, { id: toastId });
       invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
@@ -912,7 +987,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         deepBookMarket.poolId,
         balanceManagerId,
       );
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the other markets/[id] actions. The previous
+      // signAndExecuteTransaction returned before
+      // finalization, so the user briefly saw their
+      // OLD settled balance after the success toast.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: $kind guard. If withdraw_settled aborted (no
       // settled amounts available) we'd previously toast
       // "Settled balances withdrawn: unknown..." — extremely
@@ -920,10 +1000,14 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // would not advance, so the user might wait a full week
       // before noticing their `SettledEvent` was never emitted.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "Withdraw settled"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "Withdraw settled"), { id: toastId });
         return;
       }
-      toast.success(`Settled balances withdrawn: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Withdraw settled"), { id: toastId });
+        return;
+      }
+      toast.success(`Settled balances withdrawn: ${r.digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
       invalidateMarketCaches();
     } catch (e) {
@@ -993,17 +1077,27 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           : streakId
             ? buildRedeemNoWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
             : buildRedeemNoTx(market.id, FEE_VAULT_ID, coin.objectId);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so
+      // the redeem confirmation reflects the on-chain
+      // state. The previous signAndExecuteTransaction
+      // returned immediately; the user briefly saw the
+      // "Redeemed" toast but their position card still
+      // showed the now-spent YES/NO coins for ~1-2s.
+      const r = await submitAndWait(dAppKit, client, tx);
       // R38 audit fix: $kind guard for redeem. Redeem is the most
       // asymmetric call here — a Failed result means the user
       // burned gas and lost the streak-attached position proof,
       // but the previous code path would still toast
       // "Redeemed: unknown..." which is much worse than no toast.
       if (r.$kind !== "Transaction") {
-        toast.error(friendlyMoveError(failedTxToError(r), "Redeem"), { id: toastId });
+        toast.error(friendlyMoveError(r.error, "Redeem"), { id: toastId });
         return;
       }
-      toast.success(`Redeemed: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Redeem"), { id: toastId });
+        return;
+      }
+      toast.success(`Redeemed: ${r.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
       invalidateMarketCaches();
     } catch (e) {

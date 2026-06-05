@@ -132,8 +132,17 @@ export async function getManagers(): Promise<
 
 export async function getManagerForOwner(owner: string): Promise<string | null> {
   const managers = await getManagers();
+  // R55 audit fix: null-guard `m.owner` before calling
+  // `.toLowerCase()`. The predict-server response could
+  // include a `{ manager_id: "0x…", owner: null }` row
+  // (a deleted user, or a future schema migration) and
+  // the previous inline `.toLowerCase()` would throw
+  // "Cannot read properties of null" inside the SDK.
+  // `getManagerForOwner` is the very first step of the
+  // mint flow (see `predict-client.ts:createPredictManager`),
+  // so a crash here bricks the entire mint path.
   const mine = managers.filter(
-    (m) => m.owner.toLowerCase() === owner.toLowerCase(),
+    (m) => typeof m.owner === "string" && m.owner.toLowerCase() === owner.toLowerCase(),
   );
   if (mine.length === 0) return null;
   return mine[0]!.manager_id;

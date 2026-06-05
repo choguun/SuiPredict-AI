@@ -18,6 +18,7 @@ import {
 import { Card, Stat } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
 import { clampNumberString } from "@/lib/forms";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 
 const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
@@ -173,15 +174,23 @@ export default function VaultPage() {
         DUSDC_TYPE,
         account.address,
       );
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R55 audit fix: route through `submitAndWait` so the
+      // `setRefreshCounter` + `invalidateCrossPageCaches`
+      // refetches hit a node that has already finalized the
+      // deposit. The previous signAndExecuteTransaction
+      // returned immediately after signing and the position-
+      // indexer's "VaultDeposited" event was not yet visible
+      // to the React Query refetch — a 1-2s window where the
+      // user's VLP balance was still 0.
+      const r = await submitAndWait(dAppKit, client, tx);
       // $kind guard: avoid toasting a fake "Deposited: unknown" on
       // Failed / EffectsCert results. The string "unknown" was a label
       // for non-Transaction results — never a real digest.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         toast.error("Deposit failed", { id: toastId });
         return;
       }
-      toast.success(`Deposited: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+      toast.success(`Deposited: ${r.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
       invalidateCrossPageCaches();
     } catch (e) {
@@ -207,15 +216,20 @@ export default function VaultPage() {
     setLoading(true);
     const toastId = toast.loading("Withdrawing...");
     try {
+      // R55 audit fix: same `submitAndWait` rationale as
+      // the deposit path above. The signAndExecuteTransaction
+      // return-before-finalize race left the "Withdrawn"
+      // toast pointing at a VLP balance the indexer hadn't
+      // seen the VaultWithdrawn event for yet.
       const tx = buildVaultWithdrawTx(VAULT_ID, vlpCoinId);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      const r = await submitAndWait(dAppKit, client, tx);
       // Same $kind guard as deposit: surface a real error for Failed
       // / EffectsCert variants instead of a "Withdrawn: unknown" toast.
-      if (r.$kind !== "Transaction") {
+      if (r.$kind !== "Transaction" || !r.digest) {
         toast.error("Withdraw failed", { id: toastId });
         return;
       }
-      toast.success(`Withdrawn: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+      toast.success(`Withdrawn: ${r.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
       invalidateCrossPageCaches();
     } catch (e) {

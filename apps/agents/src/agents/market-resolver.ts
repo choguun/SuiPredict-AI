@@ -5,7 +5,7 @@ import {
   findNearestActiveOracle,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { callLlm, getSharedClient, recordResult } from "../lib.js";
+import { callLlm, getSharedClient, recordResult, safeFloat } from "../lib.js";
 import { getMarket, listMarkets, upsertMarket } from "../markets/store.js";
 
 // R51 audit fix: moved the `RESOLVER_CONFIDENCE` read
@@ -82,12 +82,16 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
   // (`RESOLVER_CONFIDENCE=500` would have made
   // every market "low confidence" and silently
   // stopped resolutions).
-  const confidenceThresholdRaw = Number(
-    process.env.RESOLVER_CONFIDENCE ?? 85,
-  );
-  const confidenceThreshold = Math.max(
+  // R55 audit fix: route through `safeFloat` so a
+  // `RESOLVER_CONFIDENCE=NaN` doesn't break the resolver
+  // silently. The previous `Math.max(0, Math.min(100, ...))`
+  // clamped the result but didn't warn the operator that
+  // the raw env was invalid.
+  const confidenceThreshold = safeFloat(
+    process.env.RESOLVER_CONFIDENCE,
+    85,
     0,
-    Math.min(100, Number.isFinite(confidenceThresholdRaw) ? confidenceThresholdRaw : 85),
+    100,
   );
   const expired = listMarkets().filter(
     (m) => m.status === "active" && m.expiry_ms <= now,
