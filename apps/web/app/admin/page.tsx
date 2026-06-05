@@ -890,6 +890,28 @@ function ResolveDisputeCard(props: {
       setErr("Market ID is required.");
       return;
     }
+    // R53 audit fix: validate
+    // the id is a well-formed
+    // Sui address (sibling to the
+    // `isValidSuiAddress` check
+    // already on `deepCoinId`
+    // line ~1012 and `newAdmin`
+    // line ~1419). The previous
+    // bare trim() check
+    // accepted any non-empty
+    // string; a wrong-shape id
+    // (e.g. an oracle id, a
+    // vault id, a tx digest)
+    // would build a doomed PTB
+    // and the on-chain
+    // `resolve_dispute` would
+    // abort with an opaque
+    // `EMoveAbort` for object
+    // type mismatch.
+    if (!isValidSuiAddress(marketId.trim())) {
+      setErr("Market ID is not a valid Sui object id");
+      return;
+    }
     // R48 audit fix: confirm before resolving. The card is the
     // "Resolve disputed market" action and locks a market to one
     // of two outcomes irreversibly. A misclick on the YES/NO

@@ -63,6 +63,35 @@ export async function executeTransaction(
       `Transaction failed: ${result.FailedTransaction.status.error?.message ?? "unknown"}`,
     );
   }
+  // R53 audit fix: narrow to
+  // "Transaction" only. The
+  // gRPC `signAndExecuteTransaction`
+  // discriminated union is
+  // `$kind: "Transaction" |
+  // "FailedTransaction" |
+  // "EffectsCert"`. A future
+  // Sui SDK bump that adds a
+  // new variant (e.g. a
+  // "Pending" status for
+  // indexer-laggard flows) would
+  // crash at `result.Transaction`
+  // with "Cannot read properties
+  // of undefined". Branch on
+  // the kind explicitly so the
+  // post-await access is
+  // type-safe.
+  if (result.$kind !== "Transaction") {
+    // At this point the union has been narrowed to "Transaction"
+    // or "EffectsCert" (FailedTransaction was rejected above).
+    // EffectsCert is a real variant the gRPC client returns for
+    // signed effects without a confirmed transaction; treat it
+    // the same as a missing digest. Reading `result.Transaction`
+    // here would crash with "Cannot read properties of undefined".
+    const kind = (result as { $kind: string }).$kind;
+    throw new Error(
+      `signAndExecuteTransaction returned unexpected kind: ${kind}`,
+    );
+  }
 
   // R52 audit fix: cap `waitForTransaction`
   // at 30s. The default is 60s and a slow
@@ -506,6 +535,26 @@ export function buildAuthorizeSpendTx(
   amountDollars: number,
   packageId = AGENT_POLICY_PACKAGE_ID,
 ): Transaction {
+  // R53 audit fix: validate
+  // `amountDollars` at the
+  // build boundary. A negative
+  // value would produce a
+  // negative `bigint` from
+  // `dollarsToDusdc` and the
+  // BCS encoder would reject
+  // the cast to `u64` (or
+  // produce a wrap-around).
+  // A zero would pass the BCS
+  // encoder but the on-chain
+  // `authorize_spend` aborts
+  // with `EZeroAmount` (code
+  // 6). Both cases burn gas on
+  // a doomed PTB.
+  if (!Number.isFinite(amountDollars) || amountDollars <= 0) {
+    throw new Error(
+      `buildAuthorizeSpendTx: amountDollars must be a finite number > 0 (got ${amountDollars})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::authorize_spend`,

@@ -21,6 +21,7 @@ import {
   buildSettleWeekTx,
   isMoveAbortInModule,
   isMoveAbortSymbol,
+  listAllCoins,
   readPrizePoolWeeklyPrize,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -73,7 +74,19 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   const prizePoolMinBalance = BigInt(
     process.env.PRIZE_POOL_MIN_BALANCE ?? "0",
   );
-  if (!PRIZE_POOL_ID) {
+  // R53 audit fix: re-read
+  // `PRIZE_POOL_ID` /
+  // `PRIZE_ADMIN_ID` at
+  // function-body scope (the
+  // module-level consts were
+  // frozen at import time, so
+  // a hot-patch of either
+  // via `bootstrap-env.ts` was
+  // silently ignored for the
+  // process lifetime).
+  const prizePoolId = process.env.PRIZE_POOL_ID ?? "";
+  const prizeAdminId = process.env.PRIZE_ADMIN_ID ?? "";
+  if (!prizePoolId) {
     return recordResult("PrizeAdmin", {
       action: "skip",
       reasoning: "PRIZE_POOL_ID not configured.",
@@ -100,10 +113,22 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
 
   // Step 1: fund the pool if below threshold
   try {
-    const { objects: dusdcCoins } = await client.core.listCoins({
-      owner: agentAddr,
-      coinType: DUSDC_TYPE,
-    });
+    // R53 audit fix: use
+    // `listAllCoins` (paginates
+    // to 50-coins-per-page up
+    // to 20 pages = 1000
+    // coins). The previous
+    // direct `client.core.listCoins`
+    // call returned the default
+    // 50-coin page and stopped;
+    // a busy agent with &gt; 50
+    // DUSDC coins (e.g. after a
+    // day of prize payouts) would
+    // silently miss the right
+    // `eligible` coin, the fund
+    // step would skip, and the
+    // pool would go under-funded.
+    const dusdcCoins = await listAllCoins(client, agentAddr, DUSDC_TYPE);
     const totalDusdc = dusdcCoins.reduce(
       (acc, c) => acc + BigInt(c.balance),
       0n,
@@ -119,7 +144,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
         // entire eligible coin (the R36 parlay::create_parlay fix
         // applied here for the prize pool).
         const fundTx = buildFundPoolTx(
-          PRIZE_POOL_ID,
+          prizePoolId,
           eligible.objectId,
           prizeFundAmount,
         );
@@ -145,7 +170,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   // Step 2: settle the prior week
   try {
     const priorWeek = weekIndexFor(Date.now()) - 1;
-    if (!PRIZE_ADMIN_ID) {
+    if (!prizeAdminId) {
       notes.push("PRIZE_ADMIN_ID not configured; skipping settle.");
     } else {
       // R42 audit fix: read the on-chain `weekly_prize` for the
@@ -162,7 +187,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
       try {
         priorWeeklyPrize = await readPrizePoolWeeklyPrize(
           client,
-          PRIZE_POOL_ID,
+          prizePoolId,
         );
       } catch (err) {
         // RPC outage / wrong network / object not found. Don't
@@ -194,14 +219,14 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
         // chain's own confirmation. If the mirror was wiped
         // (operator disaster-recovery), we'd re-settle and
         // burn gas once — acceptable, not a permanent loop.
-        if (isPoolWeekSettled(PRIZE_POOL_ID, priorWeek)) {
+        if (isPoolWeekSettled(prizePoolId, priorWeek)) {
           notes.push(
             `settle skipped: prior week ${priorWeek} already settled (mirror).`,
           );
         } else {
           const settleTx = buildSettleWeekTx(
-            PRIZE_POOL_ID,
-            PRIZE_ADMIN_ID,
+            prizePoolId,
+            prizeAdminId,
             BigInt(priorWeek),
           );
           try {
@@ -247,7 +272,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
             // trail.
             if (isMoveAbortInModule(settleErr, "prize_pool")) {
               markPoolWeekSettled(
-                PRIZE_POOL_ID,
+                prizePoolId,
                 priorWeek,
                 Date.now(),
               );

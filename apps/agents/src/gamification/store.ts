@@ -22,6 +22,30 @@ const DB_PATH = join(__dirname, "../../data/gamification.db");
 
 let db: Database.Database | null = null;
 
+// R53 audit fix: expose
+// `closeDb()` so the SIGTERM
+// handler in `index.ts` can
+// drain the open SQLite handle
+// (the better-sqlite3 `Database`
+// holds an exclusive WAL writer
+// lock + a `-wal`/`-shm` mmap;
+// a restart under load can
+// return `SQLITE_BUSY` on the
+// first INSERT after the
+// shutdown is initiated if the
+// handle is dropped without
+// `.close()`).
+export function closeDb(): void {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // shutdown is best-effort
+    }
+    db = null;
+  }
+}
+
 export interface DailyScore {
   user: string;
   day_index: number;

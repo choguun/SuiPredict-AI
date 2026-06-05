@@ -32,6 +32,7 @@ import {
   executeTransaction,
   isMoveAbortSymbol,
   isValidSuiAddress,
+  listAllCoins,
   REFERRAL_TREASURY_ADDRESS,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -45,10 +46,17 @@ async function listDusdcCoinIds(
   owner: string,
 ): Promise<Set<string>> {
   try {
-    const { objects } = await client.core.listCoins({
-      owner,
-      coinType: DUSDC_TYPE,
-    });
+    // R53 audit fix: paginate
+    // via `listAllCoins`. The
+    // pre/post delta is used
+    // to detect newly-arrived
+    // DUSDC; missing coins
+    // past the 50-coin page
+    // would be wrongly
+    // classified as "newly
+    // arrived" and forwarded
+    // to the treasury.
+    const objects = await listAllCoins(client, owner, DUSDC_TYPE);
     return new Set(objects.map((c) => c.objectId));
   } catch (err) {
     console.warn(

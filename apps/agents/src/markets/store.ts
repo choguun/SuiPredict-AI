@@ -15,6 +15,22 @@ const DB_PATH = join(__dirname, "../../data/markets.db");
 
 let db: Database.Database | null = null;
 
+// R53 audit fix: see the
+// matching `closeDb()` in
+// `store.ts` and
+// `gamification/store.ts` for
+// the SIGTERM-handler drain.
+export function closeDb(): void {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // shutdown is best-effort
+    }
+    db = null;
+  }
+}
+
 export function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(DB_PATH), { recursive: true });

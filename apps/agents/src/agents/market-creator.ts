@@ -5,6 +5,7 @@ import {
   buildSetupReferralTx,
   DUSDC_TYPE,
   extractCreatedObjectId,
+  listAllCoins,
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
@@ -179,10 +180,15 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
   try {
     // Step 1: acquire a Coin<DEEP> with enough for pool creation fee (500 DEEP)
     const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
-    const { objects: deepCoins } = await client.core.listCoins({
-      owner: agentAddr,
-      coinType: DEEP_TYPE,
-    });
+    // R53 audit fix: paginate
+    // `listCoins` via `listAllCoins`
+    // (mirrors the prize-admin
+    // fix). A busy agent with
+    // 50+ DEEP fragments would
+    // have the eligible coin
+    // missed and fall through to
+    // the demo-market fallback.
+    const deepCoins = await listAllCoins(client, agentAddr, DEEP_TYPE);
     const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
     if (!deepCoin) {
       // Fall back to demo market. The previous behavior was to hard-fail
@@ -293,10 +299,10 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     let initialMintDigest: string | null = null;
     if (initialMintAtoms > 0n) {
       try {
-        const { objects: dusdcCoins } = await client.core.listCoins({
-          owner: agentAddr,
-          coinType: DUSDC_TYPE,
-        });
+        // R53 audit fix: same
+        // `listAllCoins` rationale
+        // as Step 1 above.
+        const dusdcCoins = await listAllCoins(client, agentAddr, DUSDC_TYPE);
         const dusdcCoin = dusdcCoins
           .filter((c) => BigInt(c.balance) >= initialMintAtoms)
           .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];

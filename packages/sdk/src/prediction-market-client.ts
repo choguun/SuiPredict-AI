@@ -818,6 +818,27 @@ export function buildPlaceMarketOrderTx(params: {
   quantity: bigint;
   isBid: boolean;
 }): Transaction {
+  // R53 audit fix: validate
+  // `quantity` at the build
+  // boundary so a stuck
+  // `Math.max(0, ...)` calc
+  // doesn't burn gas on a
+  // doomed PTB. The on-chain
+  // `place_market_order`
+  // asserts `quantity > 0`
+  // and aborts with
+  // `EInvalidQuantity` (code
+  // 9) for 0/negative.
+  if (params.quantity <= 0n) {
+    throw new Error(
+      `buildPlaceMarketOrderTx: quantity must be > 0, got ${params.quantity}`,
+    );
+  }
+  if (params.clientOrderId < 0n) {
+    throw new Error(
+      `buildPlaceMarketOrderTx: clientOrderId must be >= 0, got ${params.clientOrderId}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::place_market_order`,
@@ -881,6 +902,51 @@ export function buildPlaceOrderTx(params: {
   isBid: boolean;
   orderType?: number;
 }): Transaction {
+  // R53 audit fix: validate
+  // `price` and `quantity` at the
+  // build boundary. The on-chain
+  // `place_order` asserts
+  // `price > 0` (`EInvalidPrice`
+  // code 8) and
+  // `quantity > 0`
+  // (`EInvalidQuantity` code 9);
+  // a 0 value burns gas on a
+  // guaranteed-abort PTB and a
+  // price=0 limit order would
+  // silently post a 0-bid ask
+  // (no fills, market-maker
+  // confusion).
+  if (params.price <= 0n) {
+    throw new Error(
+      `buildPlaceOrderTx: price must be > 0, got ${params.price}`,
+    );
+  }
+  if (params.quantity <= 0n) {
+    throw new Error(
+      `buildPlaceOrderTx: quantity must be > 0, got ${params.quantity}`,
+    );
+  }
+  if (params.clientOrderId < 0n) {
+    throw new Error(
+      `buildPlaceOrderTx: clientOrderId must be >= 0, got ${params.clientOrderId}`,
+    );
+  }
+  // R53 audit fix: bound the
+  // optional `orderType` to the
+  // DeepBook enum (0..3). A
+  // mis-binding to an out-of-range
+  // u8 (e.g. a stale "4" from a
+  // future DeepBook bump) would
+  // build a valid PTB and submit
+  // an obscure DeepBook abort.
+  if (
+    params.orderType !== undefined &&
+    (params.orderType < 0 || params.orderType > 3)
+  ) {
+    throw new Error(
+      `buildPlaceOrderTx: orderType must be in [0, 3], got ${params.orderType}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::place_order`,
@@ -1101,6 +1167,34 @@ export function buildVaultDepositTx(
     throw new Error(
       `buildVaultDepositTx: amountAtoms must be > 0 (got ${amountAtoms})`,
     );
+  }
+  // R53 audit fix: validate the
+  // optional `recipient` is a
+  // well-formed Sui address. The
+  // on-chain `transferObjects`
+  // accepts any 32-byte string
+  // without checking, so a typo
+  // (e.g. an Enoki zkLogin
+  // address picked up
+  // mixed-case) or a deliberate
+  // wrong recipient silently
+  // transfers the freshly-minted
+  // VLP coin to a non-existent
+  // address — permanently
+  // losing the principal. The
+  // sibling builders
+  // (`buildParlayAdminWithdrawTx`,
+  // `buildAllocateForMmTx`)
+  // hardcode `@{sender}`, so
+  // this is the only builder
+  // that takes a custom
+  // recipient.
+  if (recipient !== undefined && recipient !== "@{sender}") {
+    if (!isValidSuiAddress(recipient)) {
+      throw new Error(
+        `buildVaultDepositTx: recipient is not a valid Sui address (got ${recipient.slice(0, 16)}...)`,
+      );
+    }
   }
   const tx = new Transaction();
   const [depositCoin] = tx.splitCoins(tx.object(normalizeObjectId(coinId)), [

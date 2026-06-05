@@ -27,8 +27,33 @@ import {
 // `SUI_NETWORK` would always be `undefined` in the web runtime, so
 // the fallback was dead code that gave the false impression of
 // supporting a non-prefixed env. Drop it.
-const SUI_NETWORK = (process.env.NEXT_PUBLIC_SUI_NETWORK ??
-  "testnet") as "testnet" | "mainnet" | "devnet";
+//
+// R53 audit fix: validate the
+// env value against the
+// allowlist. The previous
+// `as "testnet" | "mainnet" |
+// "devnet"` cast accepted any
+// string — a typo like
+// `NEXT_PUBLIC_SUI_NETWORK=mantinet`
+// (or a stale `localnet` from
+// a dev deploy) would
+// configure dAppKit for a
+// non-existent network. The
+// sibling allowlists at
+// `app/admin/page.tsx:116-117`
+// and
+// `app/agents/page.tsx:107-108`
+// already use the
+// `.includes()` check; mirror
+// the same pattern here.
+const SUI_NETWORKS = ["testnet", "mainnet", "devnet"] as const;
+type SuiNetwork = (typeof SUI_NETWORKS)[number];
+const rawNetwork = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
+const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(
+  rawNetwork,
+)
+  ? (rawNetwork as SuiNetwork)
+  : "testnet";
 const FULLNODE_URL =
   process.env.NEXT_PUBLIC_SUI_RPC_URL ??
   (SUI_NETWORK === "mainnet"

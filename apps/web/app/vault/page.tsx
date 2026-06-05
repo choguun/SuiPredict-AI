@@ -98,7 +98,16 @@ export default function VaultPage() {
     // then fire even when the user
     // holds VLP from a prior deposit.
     client.core
-      .listCoins({ owner: normalizeObjectId(account.address), coinType: VLP_TYPE })
+      .listCoins({
+        owner: normalizeObjectId(account.address),
+        coinType: VLP_TYPE,
+        // R53 audit fix: bump default
+        // 50-coin page to 100. The
+        // "Withdraw" button's pre-flight
+        // guard `if (!vlpCoinId)` is
+        // tied to this effect's result.
+        limit: 100,
+      })
       .then(({ objects }) => {
         setVlpBalance(objects.reduce((s, c) => s + Number(c.balance), 0));
         setVlpCoinId(objects[0]?.objectId ?? "");
@@ -130,8 +139,22 @@ export default function VaultPage() {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
+        // R53 audit fix: bump default
+        // 50-coin page to 100, and
+        // pick the largest coin. A
+        // dust-heavy user was getting
+        // `objects[0]` (likely a tiny
+        // dust coin), the PTB would
+        // then try to split more than
+        // the chosen coin held, and
+        // the chain would abort
+        // opaquely.
+        limit: 100,
       });
-      const coin = objects[0];
+      const sorted = [...objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const coin = sorted[0];
       if (!coin) throw new Error("No DUSDC");
       // R38 audit fix: pass the user-supplied `amount` (in dUSDC
       // units) converted to base atoms so the builder splits that

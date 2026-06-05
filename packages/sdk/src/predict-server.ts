@@ -1,6 +1,6 @@
 import {
   PREDICT_OBJECT_ID,
-  PREDICT_SERVER_URL,
+  resolvePredictServerUrl,
 } from "./constants.js";
 import type {
   ManagerSummary,
@@ -29,7 +29,22 @@ async function fetchJson<T>(path: string): Promise<T> {
   // load. Also catches a 200 with
   // `Content-Type: text/html` (Vite dev
   // page) before `res.json()` throws.
-  const res = await fetch(`${PREDICT_SERVER_URL}${path}`, {
+  //
+  // R53 audit fix: read the URL at
+  // call time, not via the
+  // module-level `PREDICT_SERVER_URL`
+  // constant. The agents'
+  // `bootstrap-env.ts` hot-patches
+  // `process.env.PREDICT_SERVER_URL`
+  // after the SDK is imported, but
+  // the SDK was already loaded and
+  // the const was frozen. The
+  // `resolvePredictServerUrl()`
+  // helper re-reads the env on
+  // every call (same pattern as
+  // `getIndexerUrl()` fixed in
+  // R49).
+  const res = await fetch(`${resolvePredictServerUrl()}${path}`, {
     signal: AbortSignal.timeout(5_000),
   });
   if (!res.ok) {

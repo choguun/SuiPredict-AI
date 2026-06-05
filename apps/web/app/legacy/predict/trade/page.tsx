@@ -159,6 +159,16 @@ export default function TradePage() {
       const coins = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
+        // R53 audit fix: bump default 50-coin
+        // page to 100. The legacy trade
+        // page picks `coins.objects[0]`
+        // (the survivor of the R51
+        // largest-coin sort fix), so a
+        // user with 60 dust coins and a
+        // single large coin would be
+        // picked correctly only if all
+        // 60 are on the same page.
+        limit: 100,
       });
       // R49 audit fix: when the user has zero DUSDC, the old
       // code fell through and called `predict::mint` anyway,
@@ -177,7 +187,15 @@ export default function TradePage() {
       // already rejects the no-coin case, so the conditional is
       // now redundant; unwrap it so the deposit path is the
       // only code path.
-      const primary = tx.object(coins.objects[0]!.objectId);
+      // R53 audit fix: pick the largest
+      // coin (not the first returned)
+      // to avoid a dooM PTB when the
+      // user's dust fragments sum to
+      // more than the chosen coin.
+      const sorted = [...coins.objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const primary = tx.object(sorted[0]!.objectId);
       if (coins.objects.length > 1) {
         tx.mergeCoins(
           primary,

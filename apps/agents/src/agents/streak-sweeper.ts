@@ -25,7 +25,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
-import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "@suipredict/sdk";
+import { CLOCK_OBJECT_ID } from "@suipredict/sdk";
 import {
   executeTransaction,
   isMoveAbortCode,
@@ -412,7 +412,24 @@ async function readLastParticipationDays(
 export async function resolveDayOutcomes(
   dayIndex: number,
 ): Promise<ResolvedUser[]> {
-  if (!AGENT_POLICY_PACKAGE_ID) return [];
+  // R53 audit fix: read
+  // `AGENT_POLICY_PACKAGE_ID` at
+  // function-body scope so a hot-patch
+  // (the same pattern as the R48 fix
+  // for `parlay-worker.ts:PKG` and
+  // `position-indexer.ts`) takes effect
+  // on the next sweep. The previous
+  // module-level import froze the value
+  // at SDK import time, before
+  // `bootstrapEnv()` ran, so a redeploy
+  // that rotated the package id would
+  // silently no-op the streak sweep
+  // (the `MoveEventType` filter strings
+  // below would be built from the
+  // *old* id and the indexer would
+  // return zero events).
+  const agentPolicyPkg = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+  if (!agentPolicyPkg) return [];
   // R49 audit fix: read the network inside the function body so a
   // hot-patch to `process.env.SUI_NETWORK` takes effect on the
   // next sweep. `bootstrapEnv()` in `index.ts` mutates the env
@@ -441,7 +458,7 @@ export async function resolveDayOutcomes(
 
   // 1. Daily markets
   const createdRaw = await queryAllEvents(client, {
-    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
+    MoveEventType: `${agentPolicyPkg}::prediction_market::MarketCreatedEvent`,
   }, "streak-sweeper:MarketCreatedEvent");
   const dailyMarketIds = new Set<string>();
   // `category` is read off the same `MarketCreatedEvent` stream and
@@ -488,7 +505,7 @@ export async function resolveDayOutcomes(
 
   // 2. Resolutions for daily markets
   const resolvedRaw = await queryAllEvents(client, {
-    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
+    MoveEventType: `${agentPolicyPkg}::prediction_market::MarketResolvedEvent`,
   }, "streak-sweeper:MarketResolvedEvent");
   const resolvedMap = new Map<string, 1 | 2>();
   for (const e of resolvedRaw) {
@@ -502,7 +519,7 @@ export async function resolveDayOutcomes(
 
   // 3. Mints on daily markets within the day window
   const mintedRaw = await queryAllEvents(client, {
-    MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MintedEvent`,
+    MoveEventType: `${agentPolicyPkg}::prediction_market::MintedEvent`,
   }, "streak-sweeper:MintedEvent");
   const userMarkets = new Map<string, Set<string>>();
   for (const e of mintedRaw) {
@@ -595,9 +612,15 @@ function appendRecordParticipation(
     outcome: number;
     category: number;
   },
+  // R53 audit fix: read the package
+  // id at function-body scope so
+  // hot-patch takes effect. Was a
+  // module-level frozen const
+  // imported from `@suipredict/sdk`.
+  agentPolicyPkg: string,
 ): void {
   tx.moveCall({
-    target: `${AGENT_POLICY_PACKAGE_ID}::streak_system::record_participation`,
+    target: `${agentPolicyPkg}::streak_system::record_participation`,
     arguments: [
       tx.object(args.adminId),
       tx.object(args.registryId),
@@ -615,6 +638,7 @@ function buildSweepTx(
   adminId: string,
   users: ResolvedUser[],
   dayIndex: bigint,
+  agentPolicyPkg: string,
 ): Transaction {
   const tx = new Transaction();
   for (const u of users) {
@@ -643,7 +667,7 @@ function buildSweepTx(
       dayIndex,
       outcome: u.outcome,
       category: u.category,
-    });
+    }, agentPolicyPkg);
   }
   return tx;
 }
@@ -798,11 +822,16 @@ export async function runStreakSweeper(
 
   for (let i = 0; i < combined.length && !aborted; i += PTB_BATCH) {
     const batch = combined.slice(i, i + PTB_BATCH);
+    // R53 audit fix: read at function-body
+    // scope so a hot-patch takes effect
+    // (mirror the `agentPolicyPkg` fix
+    // in `resolveDayOutcomes`).
     const tx = buildSweepTx(
       STREAK_REGISTRY_ID,
       STREAK_ADMIN_ID,
       batch,
       BigInt(dayIndex),
+      process.env.AGENT_POLICY_PACKAGE_ID ?? "",
     );
     try {
       const res = await executeTransaction(client, tx, ctx.signer);
@@ -860,6 +889,7 @@ export async function runStreakSweeper(
           STREAK_ADMIN_ID,
           [u],
           BigInt(dayIndex),
+          process.env.AGENT_POLICY_PACKAGE_ID ?? "",
         );
         type Outcome =
           | { kind: "ok" }

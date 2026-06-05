@@ -50,6 +50,14 @@ export default function VaultPage() {
     const { objects } = await client.core.listCoins({
       owner: normalizeObjectId(account.address),
       coinType: PLP_TYPE,
+      // R53 audit fix: bump default
+      // 50-coin page to 100. PLP
+      // shares fragment fast (every
+      // supply/withdraw creates a
+      // new coin), and a dust-heavy
+      // user's balance display is
+      // silently truncated.
+      limit: 100,
     });
     const total = objects.reduce((s, c) => s + Number(c.balance), 0);
     setPlpBalance(total);
@@ -105,6 +113,12 @@ export default function VaultPage() {
       const coins = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
+        // R53 audit fix: same
+        // `limit: 100` rationale as
+        // `refreshPlp` above. A
+        // dust-heavy user is silently
+        // told they have no DUSDC.
+        limit: 100,
       });
       if (coins.objects.length === 0) throw new Error("No dUSDC in wallet");
       const primary = tx.object(coins.objects[0]!.objectId);
@@ -124,7 +138,7 @@ export default function VaultPage() {
           tx.object(CLOCK_OBJECT_ID),
         ],
       });
-      tx.transferObjects([lpCoin], tx.pure.address(account.address));
+      tx.transferObjects([lpCoin], tx.pure.address(normalizeObjectId(account.address)));
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       // R34 audit fix: same R30/R32 pattern. The literal `"unknown"`
       // fallback on Failed / EffectsCert silently toasts a fake
@@ -183,7 +197,7 @@ export default function VaultPage() {
           tx.object(CLOCK_OBJECT_ID),
         ],
       });
-      tx.transferObjects([plpCoin], tx.pure.address(account.address));
+      tx.transferObjects([plpCoin], tx.pure.address(normalizeObjectId(account.address)));
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       // R34 audit fix: same R30/R32 pattern as supply() above.
       // Failed / EffectsCert results carry no digest; the previous

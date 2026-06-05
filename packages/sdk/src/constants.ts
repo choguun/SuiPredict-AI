@@ -26,6 +26,17 @@ function resolvePredictServerUrl(): string {
 }
 
 export const PREDICT_SERVER_URL = resolvePredictServerUrl();
+// R53 audit fix: export the
+// function-form so consumers
+// (notably `predict-server.ts`'s
+// `fetchJson`) can re-read the
+// env at call time. The
+// module-level const above is
+// kept for backward compatibility
+// (some consumers import it
+// directly), but new code
+// should prefer the getter.
+export { resolvePredictServerUrl };
 
 // R42 audit fix: `PREDICT_PACKAGE_ID` is the DeepBook Predict
 // upstream package — it lives on a Mysten-managed testnet

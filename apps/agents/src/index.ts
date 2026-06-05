@@ -14,9 +14,11 @@ import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
 import { closeSharedClient } from "./lib.js";
-import { getRecentDecisions } from "./store.js";
+import { getRecentDecisions, closeDb as closeDecisionsDb } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
+import { closeDb as closeGamificationDb } from "./gamification/store.js";
+import { closeDb as closeMarketsDb } from "./markets/store.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
 import { corsFor } from "./http-cors.js";
 
@@ -477,8 +479,27 @@ function startHealthServer() {
 }
 
 async function main() {
-  startHealthServer();
+  // R53 audit fix: validate
+  // the boot config BEFORE
+  // starting the HTTP server.
+  // The previous ordering
+  // booted a fully-functional
+  // health server that served
+  // `/health` 200 OK with an
+  // empty `package_id`,
+  // `prize_pool_id`, etc.,
+  // *before* the validator
+  // rejected the boot with
+  // `process.exit(1)`. Railway's
+  // healthcheck could race
+  // this and mark the pod
+  // healthy on a deploy that
+  // was about to die, defeating
+  // the R35/R46 drift detector
+  // (which watches for an
+  // empty `package_id`).
   validateBootConfig();
+  startHealthServer();
   const ctx = loadContext();
   if (!ctx) {
     console.log("[agents] Running in API-only mode (no wallet configured)");
@@ -525,6 +546,11 @@ async function main() {
     // boot before the first tick).
     stopScheduler(5_000)
       .then(() => closeSharedClient())
+      .then(() => Promise.allSettled([
+        closeDecisionsDb(),
+        closeGamificationDb(),
+        closeMarketsDb(),
+      ]))
       .catch(() => {})
       .finally(() => {
         console.log(`[agents] Exiting after ${sig}.`);

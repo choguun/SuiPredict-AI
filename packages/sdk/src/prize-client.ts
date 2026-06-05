@@ -202,6 +202,41 @@ export function buildClaimPrizeTx(params: {
       `buildClaimPrizeTx: amount must be > 0 (got ${params.amount})`,
     );
   }
+  // R53 audit fix: validate
+  // `signatureB64` decodes to
+  // exactly 64 bytes (the ed25519
+  // signature length). The
+  // previous code called
+  // `fromBase64` without
+  // checking length, so a
+  // misconfigured backend that
+  // returned an empty string or
+  // a 32-byte truncated value
+  // would build a malformed
+  // `vector<u8>` and the
+  // on-chain
+  // `ed25519::ed25519_verify`
+  // would abort with an opaque
+  // `EInvalidSignature` (code 6).
+  // Fast-fail at the build
+  // boundary so the caller can
+  // diagnose the backend bug
+  // before signing the PTB.
+  let sigBytes: Uint8Array;
+  try {
+    sigBytes = fromBase64(params.signatureB64);
+  } catch (e) {
+    throw new Error(
+      `buildClaimPrizeTx: signatureB64 is not valid base64: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+  if (sigBytes.length !== 64) {
+    throw new Error(
+      `buildClaimPrizeTx: signatureB64 must decode to 64 bytes (ed25519), got ${sigBytes.length}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
@@ -213,7 +248,7 @@ export function buildClaimPrizeTx(params: {
       tx.pure.u64(params.weekIndex),
       tx.pure.u64(params.rank),
       tx.pure.u64(params.amount),
-      tx.pure.vector("u8", Array.from(fromBase64(params.signatureB64))),
+      tx.pure.vector("u8", Array.from(sigBytes)),
       tx.pure.id(normalizedPoolIdForSig),
     ],
   });
