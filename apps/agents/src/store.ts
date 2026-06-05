@@ -13,6 +13,15 @@ export function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(DB_PATH), {recursive: true});
     db = new Database(DB_PATH);
+    // R48 audit fix: enable WAL, busy_timeout, and foreign_keys on
+    // the decisions DB. Without WAL every read in
+    // getRecentDecisions holds a write-lock against the
+    // cron-driven indexer writers; without busy_timeout a lock
+    // contention throws and the indexer's per-event try/catch
+    // swallows it (and per finding #7, the event is lost).
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
     db.exec(`
       CREATE TABLE IF NOT EXISTS decisions (
         id TEXT PRIMARY KEY,
@@ -47,6 +56,14 @@ export function getDb(): Database.Database {
     );
     db.exec(
       `CREATE INDEX IF NOT EXISTS idx_policy_events_ts_ms ON policy_events(ts_ms DESC)`,
+    );
+    // R48 audit fix: index the `decisions.timestamp` column for
+    // the getRecentDecisions `ORDER BY timestamp DESC LIMIT ?`
+    // query. With 4 agents × 1 cycle/min × weeks of uptime the
+    // table is 10k+ rows; the previous full-table sort cost ~1ms
+    // per /decisions request, which compounds under load.
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(timestamp DESC)`,
     );
   }
   return db;

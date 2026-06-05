@@ -119,7 +119,7 @@ function buildMarketKey(
   const keyFn = direction === "up" ? "up" : "down";
   return tx.moveCall({
     target: `${PREDICT_PACKAGE_ID}::market_key::${keyFn}`,
-    arguments: [tx.pure.id(oracleId), tx.pure.u64(expiry), tx.pure.u64(strike)],
+    arguments: [tx.pure.id(normalizeObjectId(oracleId)), tx.pure.u64(expiry), tx.pure.u64(strike)],
   });
 }
 

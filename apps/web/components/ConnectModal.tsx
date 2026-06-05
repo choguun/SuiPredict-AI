@@ -3,10 +3,20 @@
 import { useEffect, useState } from "react";
 import { useWallets, useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
 import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 export function ConnectModal() {
   const [isOpen, setIsOpen] = useState(false);
+  // R48 audit fix: track which connect button (Google or
+  // a specific wallet name) is currently busy so the user can't
+  // double-click and fire two OAuth popups / wallet prompts in
+  // parallel. Some wallets treat two simultaneous connect
+  // requests as a UX attack and reject both; the previous
+  // double-click was harmless-looking but produced a confusing
+  // "no wallet selected" / "user cancelled" round-trip.
+  const [busy, setBusy] = useState<null | "google" | string>(null);
+  const queryClient = useQueryClient();
   const wallets = useWallets();
   const currentAccount = useCurrentAccount();
   const dappKit = useDAppKit();
@@ -18,6 +28,7 @@ export function ConnectModal() {
   const isZkLogin = !!zkLogin?.address && !currentAccount?.address;
 
   const handleGoogleLogin = async () => {
+    if (busy) return;
     // Read the Google OAuth client id defensively. `as string` would
     // coerce the runtime placeholder "undefined" into the Enoki call
     // and silently fail the OAuth round-trip; the round-17 audit
@@ -34,6 +45,7 @@ export function ConnectModal() {
     const host = window.location.host;
     const redirectUrl = `${protocol}//${host}/auth`;
 
+    setBusy("google");
     enokiFlow
       .createAuthorizationURL({
         provider: "google",
@@ -58,12 +70,15 @@ export function ConnectModal() {
             | undefined) ?? "testnet",
       })
       .then((url) => {
+        // Note: the user is navigating away; no need to clear
+        // `busy` because the component unmounts.
         window.location.href = url;
       })
       .catch((err) => {
         toast.error(
           err instanceof Error ? err.message : "Google zkLogin failed",
         );
+        setBusy(null);
       });
   };
 
@@ -106,6 +121,18 @@ export function ConnectModal() {
       } else {
         await dappKit.disconnectWallet();
       }
+      // R48 audit fix: clear the React Query cache for the
+      // address-keyed queries so a second user connecting to
+      // the same browser doesn't briefly see the previous
+      // user's portfolio / marketsList / dailyMarkets / streak
+      // data while React Query refetches. Clear on success
+      // only — a failed disconnect keeps the cache as-is so
+      // the user can retry without losing UI state.
+      queryClient.removeQueries({ queryKey: ["portfolio"] });
+      queryClient.removeQueries({ queryKey: ["marketsList"] });
+      queryClient.removeQueries({ queryKey: ["dailyMarkets"] });
+      queryClient.removeQueries({ queryKey: ["userStreakId"] });
+      queryClient.removeQueries({ queryKey: ["profile"] });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "unknown error";
@@ -245,7 +272,8 @@ export function ConnectModal() {
                     <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-zinc-500">Social Login</h3>
                     <button
                       onClick={handleGoogleLogin}
-                      className="group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-3.5 transition hover:bg-white/10"
+                      disabled={busy !== null}
+                      className="group flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] p-3.5 transition hover:bg-white/10 disabled:opacity-50"
                     >
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/10 transition group-hover:scale-110">
                         <svg className="h-5 w-5" viewBox="0 0 24 24">
@@ -274,7 +302,10 @@ export function ConnectModal() {
                       {wallets.map((wallet) => (
                         <button
                           key={wallet.name}
+                          disabled={busy !== null}
                           onClick={async () => {
+                            if (busy) return;
+                            setBusy(wallet.name);
                             // R42 audit fix: `dappKit.connectWallet`
                             // rejects on user-cancelled prompts
                             // (wallet popup closed without confirm),
@@ -299,9 +330,11 @@ export function ConnectModal() {
                               toast.error(
                                 `Failed to connect ${wallet.name}: ${message}`,
                               );
+                            } finally {
+                              setBusy(null);
                             }
                           }}
-                          className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-transparent p-3 transition hover:bg-white/[0.04]"
+                          className="flex w-full items-center gap-3 rounded-xl border border-white/5 bg-transparent p-3 transition hover:bg-white/[0.04] disabled:opacity-50"
                         >
                           <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/10">
                             {/* eslint-disable-next-line @next/next/no-img-element */}

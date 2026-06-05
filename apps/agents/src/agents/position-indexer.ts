@@ -257,10 +257,20 @@ async function pollAndApply(
   // next tick re-polled the same 200 events forever — a
   // silent indexer stall. Wrap each apply in a try/catch and
   // log the failure with the event id so the operator can
-  // identify the bad event. The cursor still advances to
-  // `page.nextCursor` at the end; the failed event is
-  // re-polled next tick (the upserts are idempotent via
-  // `ON CONFLICT DO UPDATE`).
+  // identify the bad event.
+  //
+  // R48 audit fix: when *any* event in the batch failed to
+  // apply, do NOT advance the cursor to `page.nextCursor` —
+  // that would silently drop the failed event (the next tick
+  // re-polls starting from the *next* page and the bad event
+  // is gone). Park the cursor at the same value (don't write)
+  // so the next tick re-polls the same page; the upserts are
+  // idempotent via `ON CONFLICT DO UPDATE`, so successful
+  // events are harmless to re-apply, and the failed event
+  // gets another retry. This trades "stall forever on a
+  // poison event" (R40 pre-fix bug) for "stall until the
+  // poison event heals" — the operator sees the
+  // `failedEvents > 0` log and can act.
   let failedEvents = 0;
   for (const ev of page.data as unknown as EventEnvelope[]) {
     try {
@@ -277,13 +287,14 @@ async function pollAndApply(
       );
     }
   }
-  if (page.nextCursor) {
-    writeCursor(stateKey, page.nextCursor);
-  }
   if (failedEvents > 0) {
     console.warn(
-      `[position-indexer] ${stateKey}: ${failedEvents}/${page.data.length} events failed to apply in this batch; will retry on next tick.`,
+      `[position-indexer] ${stateKey}: ${failedEvents}/${page.data.length} events failed to apply in this batch; cursor parked at current position, will retry same page next tick.`,
     );
+    return page.data.length;
+  }
+  if (page.nextCursor) {
+    writeCursor(stateKey, page.nextCursor);
   }
   return page.data.length;
 }

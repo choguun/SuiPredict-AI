@@ -199,6 +199,11 @@ export function DailyPredictionCard() {
       queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
       queryClient.invalidateQueries({ queryKey: ["portfolio", account.address], type: "active" });
       queryClient.invalidateQueries({ queryKey: ["dailyMarkets"], type: "active" });
+      // R48 audit fix: also invalidate the markets-list query that
+      // the /portfolio page reads for the "X active markets"
+      // subtitle. Without this, the subtitle is stale for 60s
+      // after a daily batch mint.
+      queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

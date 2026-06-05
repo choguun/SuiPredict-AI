@@ -8,6 +8,7 @@ import {
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   buildDeepBookCreateBalanceManagerTx,
   buildDeepBookDepositTx,
@@ -209,6 +210,31 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   const [tradeCapId, setTradeCapId] = useState("");
   const [depositAsset, setDepositAsset] = useState<"quote" | "base">("quote");
   const [depositAmount, setDepositAmount] = useState(10);
+  // R48 audit fix: invalidate the global React Query caches that
+  // the markets list, portfolio, and daily-markets pages read, so
+  // a user who mints/redeems/orders on this page and then navigates
+  // to /portfolio or /markets sees fresh data immediately instead
+  // of waiting for the 8s portfolio `refetchInterval` or the 60s
+  // `staleTime` on the markets list. R30/R32/R37/R40/R43 added
+  // this pattern to parlay, daily, settings, and other pages;
+  // markets/[id] was the last survivor with 6 successful-tx
+  // paths and zero cache invalidation.
+  const queryClient = useQueryClient();
+  const invalidateMarketCaches = useCallback(() => {
+    if (!account?.address) return;
+    void queryClient.invalidateQueries({
+      queryKey: ["portfolio", account.address],
+      type: "active",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["marketsList"],
+      type: "active",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["dailyMarkets"],
+      type: "active",
+    });
+  }, [queryClient, account?.address]);
   const initializedPrice = useRef(false);
   // R36 audit fix: a single AbortController for the component's
   // lifetime. Polling intervals and the post-submit order-confirm
@@ -456,6 +482,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       }
       toast.success(`Minted YES + NO: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
+      invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Mint failed", { id: toastId });
     } finally {
@@ -543,6 +570,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       );
       if (placed) {
         toast.success(`Order placed: ${digest.slice(0, 16)}…`, { id: toastId });
+        invalidateMarketCaches();
       } else {
         toast.message(
           `Order submitted (${digest.slice(0, 16)}…) but the indexer hasn't ` +
@@ -654,6 +682,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       );
       // Wait a moment for indexer before refreshing
       setTimeout(() => setRefreshCounter(c => c + 1), 2000);
+      invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "BalanceManager creation failed", { id: toastId });
     } finally {
@@ -690,6 +719,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         return;
       }
       toast.success(`Deposit OK: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
+      invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
@@ -726,6 +756,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       }
       toast.success(`Settled balances withdrawn: ${r.Transaction.digest.slice(0, 16)}...`, { id: toastId });
       setRefreshCounter(c => c + 1);
+      invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Withdraw settled failed", { id: toastId });
     } finally {
@@ -788,6 +819,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       }
       toast.success(`Redeemed: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
+      invalidateMarketCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Redeem failed", { id: toastId });
     } finally {

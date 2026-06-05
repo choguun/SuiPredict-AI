@@ -24,6 +24,7 @@ import { TransactionObjectInput } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
 import { normalizeObjectId } from "./utils.js";
 import type { SuiClient } from "./predict-client.js";
+import { asBalance } from "./protocol-reads.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -156,6 +157,14 @@ export function buildRotateParlayAdminTx(
   newAdmin: string,
   coinType: string,
 ): Transaction {
+  // R48 audit fix: pre-validate `newAdmin` so a typo (`""`,
+  // `"0x0"`) surfaces as a build-time error instead of a Move
+  // abort at execute time. Mirror the R37 streak guard.
+  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+    throw new Error(
+      `buildRotateParlayAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::rotate_admin`,
@@ -374,19 +383,14 @@ export async function readParlayPoolBalance(
 ): Promise<bigint> {
   const fields = await readParlayObject(client, poolId);
   if (!fields) return 0n;
-  // `pool_balance` is a `Balance<Q>` wrapper. Sui's gRPC JSON renders
-  // it as a struct with a `value` field. For backward compat with
-  // older Sui JSON encodings, also accept the raw string form.
-  const bal = fields.pool_balance as
-    | string
-    | { fields?: { value?: string | number } }
-    | undefined;
-  if (typeof bal === "string") return BigInt(bal);
-  if (bal && typeof bal === "object" && "fields" in bal) {
-    const v = bal.fields?.value;
-    if (v != null) return BigInt(v);
-  }
-  return 0n;
+  // R48 audit fix: route through the shared `asBalance` helper. The
+  // previous inline check only handled the legacy `fields.value`
+  // shape and silently returned 0n on the modern gRPC
+  // `{value: "..."}` form, which the R39 migration made the only
+  // shape seen in production. The pre-flight pool-balance check
+  // and the bootstrap/resume scripts that read this value all
+  // reported an empty pool post-migration.
+  return asBalance(fields, "pool_balance");
 }
 
 /** Fetch the `admin` (address) for a `ParlayPool<Q>`. */

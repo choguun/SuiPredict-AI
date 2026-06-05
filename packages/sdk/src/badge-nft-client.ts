@@ -17,7 +17,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -149,8 +149,26 @@ export async function readBadge(
     owner: String(fields.owner ?? ""),
     tier: Number(fields.tier ?? 0),
     name: String(fields.name ?? ""),
-    threshold_days: Number(fields.threshold_days ?? 0),
-    longest_streak_at_mint: Number(fields.longest_streak_at_mint ?? 0),
-    minted_at_ms: Number(fields.minted_at_ms ?? 0),
+    // R48 audit fix: route u64 fields through `u64ToSafeNumber` so
+    // a value > 2^53-1 (or just a bad type from the chain) logs a
+    // warning instead of silently truncating via `Number()`. The
+    // R46 helper was applied to streak/profile-state readers; the
+    // badge and user-profile readers were missed.
+    threshold_days: u64ToSafeNumber(
+      (fields.threshold_days as bigint | string | number | undefined) ?? 0,
+      "threshold_days",
+      badgeId,
+    ),
+    longest_streak_at_mint: u64ToSafeNumber(
+      (fields.longest_streak_at_mint as bigint | string | number | undefined) ??
+        0,
+      "longest_streak_at_mint",
+      badgeId,
+    ),
+    minted_at_ms: u64ToSafeNumber(
+      (fields.minted_at_ms as bigint | string | number | undefined) ?? 0,
+      "minted_at_ms",
+      badgeId,
+    ),
   };
 }

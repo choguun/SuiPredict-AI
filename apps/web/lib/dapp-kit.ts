@@ -45,7 +45,20 @@ export const dAppKit = createDAppKit({
       baseUrl: FULLNODE_URL,
     });
   },
-  autoConnect: true,
+  // R48 audit fix: opt out of autoConnect. A user who clicks
+  // "Disconnect" and refreshes the page was previously
+  // auto-reconnected because the wallet extension's own session
+  // is still alive (only the local dapp-kit cookie is cleared by
+  // `disconnectWallet`), and `autoConnect: true` re-establishes
+  // the connection on the next mount. The disconnect was
+  // effectively a no-op across reloads — exactly the opposite of
+  // what the user asked for. A user-initiated reconnect is the
+  // expected UX: open the wallet extension, click the
+  // ConnectWallet button, and re-authorize. If a future flow
+  // wants a silent re-prompt we can wire it via an explicit
+  // `dappKit.connectWallet({ silent: true })` after a debounce
+  // against a stored address.
+  autoConnect: false,
 });
 
 export const PACKAGE_IDS = {

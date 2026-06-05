@@ -1108,7 +1108,7 @@ export function buildRegisterMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::registry::register_market`,
-    arguments: [tx.object(normalizeObjectId(registryId)), tx.pure.id(marketObjectId)],
+    arguments: [tx.object(normalizeObjectId(registryId)), tx.pure.id(normalizeObjectId(marketObjectId))],
   });
   return tx;
 }

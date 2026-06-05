@@ -1,7 +1,8 @@
 "use client";
 
 import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
 import {
   AGENT_POLICY_PACKAGE_ID,
   buildCreatePolicyTx,
@@ -43,6 +44,26 @@ export default function SettingsPage() {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
+  // R48 audit fix: invalidate the `useUserStreakId` query after a
+  // successful create/revoke policy or create/save profile
+  // operation, so the StreakProfile / StreakWelcomeBanner /
+  // DailyPredictionCard / ClaimPrizeButton components pick up
+  // the new state on next render. R40/R43 added this pattern to
+  // the StreakProfile and DailyPredictionCard; settings was the
+  // survivor. Without invalidation the streak panel shows
+  // "no streak" for up to 30s after the policy is created.
+  const queryClient = useQueryClient();
+  const invalidateStreakCache = useCallback(() => {
+    if (!account?.address) return;
+    void queryClient.invalidateQueries({
+      queryKey: ["userStreakId", PROFILE_REGISTRY_ID, account.address],
+      type: "active",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["profile", PROFILE_REGISTRY_ID, account.address],
+      type: "active",
+    });
+  }, [queryClient, account?.address]);
   const [agentAddress, setAgentAddress] = useState("");
   const [budget, setBudget] = useState(50);
   const [policyId, setPolicyId] = useState("");
@@ -162,6 +183,7 @@ export default function SettingsPage() {
       } else {
         setStatus(`Policy created! Tx: ${digest.slice(0, 16)}… (fetch object ID from Suiscan)`);
       }
+      invalidateStreakCache();
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -236,6 +258,7 @@ export default function SettingsPage() {
       const digest = result.Transaction.digest;
       setStatus(`${pause ? "Paused" : "Unpaused"}! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
+      invalidateStreakCache();
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -256,6 +279,7 @@ export default function SettingsPage() {
       setProfileStatus(
         `Profile created! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
+      invalidateStreakCache();
     } catch (e) {
       setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -276,6 +300,7 @@ export default function SettingsPage() {
       setProfileStatus(
         `Country saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
+      invalidateStreakCache();
     } catch (e) {
       setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -296,6 +321,7 @@ export default function SettingsPage() {
       setProfileStatus(
         `Forecaster kind saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
+      invalidateStreakCache();
     } catch (e) {
       setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

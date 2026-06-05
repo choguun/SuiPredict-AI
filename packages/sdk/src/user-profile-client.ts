@@ -20,7 +20,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID } from "./constants.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -220,7 +220,14 @@ export async function readUserProfile(
     owner: String(fields.owner ?? ""),
     country_code: decodeCountryCodeField(fields.country_code),
     forecaster_kind: Number(fields.forecaster_kind ?? 0),
-    created_at_ms: Number(fields.created_at_ms ?? 0),
+    // R48 audit fix: route u64 fields through `u64ToSafeNumber` so
+    // a value > 2^53-1 (or a bad type from the chain) logs a
+    // warning instead of silently truncating via `Number()`.
+    created_at_ms: u64ToSafeNumber(
+      (fields.created_at_ms as bigint | string | number | undefined) ?? 0,
+      "created_at_ms",
+      profileId,
+    ),
   };
 }
 

@@ -112,30 +112,35 @@ export function buildFundPoolTx(
 /**
  * Build `create_pool` transaction. Deployer-only initialization of a
  * `PrizePool<PrizeCoin>` shared object. The new pool is seeded with
- * `initial_coin` (can be 0 — `fund_pool` can top it up later) and
- * `current_week = initial_week`.
+ * `seedAtoms` atoms of `PrizeCoin` (split off `initialCoinId` in-PTB)
+ * and `current_week = initialWeek`. Pass `seedAtoms: 0n` to create an
+ * empty pool and `fund_pool` it later.
  *
- * The on-chain `create_pool` asserts the default distribution sums to
- * `BPS` (10_000) so a bad hard-coded default aborts the publish tx
- * rather than silently mis-paying every freshly-deployed pool.
- *
- * Bootstrap flow: deploy contracts → call `buildCreatePoolTx` once
- * (typically with the deployer hot wallet) → save the resulting
- * shared object id as `PRIZE_POOL_ID` in `.env`.
+ * R48 audit fix: the on-chain `create_pool` takes the seed `Coin`
+ * BY VALUE, and the previous builder passed the *whole* source coin
+ * via `tx.object(...)`. A deployer whose hot wallet held a single
+ * 100k-DUSDC coin (and only wanted to seed 1k DUSDC) lost 99,000
+ * DUSDC into the prize pool on the first `create_pool` call. Mirror
+ * the R36/R38 split-then-pass pattern from `buildFundPoolTx` and
+ * `buildVaultDepositTx` so the seed amount is exact. The caller
+ * supplies `seedAtoms` explicitly; the helper picks the seed off
+ * via `tx.splitCoins` and hands the result to `create_pool`.
  */
 export function buildCreatePoolTx(params: {
   initialCoinId: string;
+  seedAtoms: bigint;
   initialWeek: bigint;
   prizeCoinType?: string;
 }): Transaction {
   const tx = new Transaction();
+  const [seedCoin] = tx.splitCoins(
+    tx.object(normalizeObjectId(params.initialCoinId)),
+    [tx.pure.u64(params.seedAtoms)],
+  );
   tx.moveCall({
     target: `${PKG()}::prize_pool::create_pool`,
     typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
-    arguments: [
-      tx.object(normalizeObjectId(params.initialCoinId)),
-      tx.pure.u64(params.initialWeek),
-    ],
+    arguments: [tx.object(seedCoin), tx.pure.u64(params.initialWeek)],
   });
   return tx;
 }
@@ -257,6 +262,14 @@ export function buildRotateAdminTx(
   prizeAdminId: string,
   newAdmin: string,
 ): Transaction {
+  // R48 audit fix: pre-validate `newAdmin` so a typo (`""`,
+  // `"0x0"`) surfaces as a build-time error instead of a Move
+  // abort at execute time. Mirror the R37 streak guard.
+  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+    throw new Error(
+      `buildRotateAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_admin`,
@@ -302,21 +315,30 @@ export function expectedAmountForRank(
  * Build the canonical claim message bytes (must match on-chain
  * `prize_pool::build_claim_message`). Backend should sign the keccak256
  * of this message with its ed25519 key.
+ *
+ * R48 audit fix: normalize `poolId` and `user` to the canonical
+ * 32-byte hex (no `0x`, lowercase) before byte-packing. The
+ * submission side (`buildSubmitClaimTx`) was fixed in R44 to
+ * normalize, but the *signing* side still hashed whatever the
+ * caller passed in. A leaderboard worker that hands the backend a
+ * mixed-case poolId produces a signature over mixed-case bytes
+ * that the on-chain verifier (which reads the canonical form from
+ * the PTB args) will reject.
  */
 export function buildClaimMessageBytes(payload: ClaimPayload): Uint8Array {
-  // Pool ID is 32 bytes. Strip the leading 0x if present.
-  const poolIdHex = payload.poolId.startsWith("0x")
-    ? payload.poolId.slice(2)
-    : payload.poolId;
+  // Pool ID is 32 bytes. Normalize: strip 0x prefix, lowercase,
+  // then hex-decode the canonical form.
+  const poolIdHex = normalizeObjectId(payload.poolId).slice(2);
   if (poolIdHex.length !== 64) {
     throw new Error(`Invalid poolId length: ${poolIdHex.length}`);
   }
   const poolBytes = hexToBytes(poolIdHex);
 
-  // User address — strip leading 0x and pad to 32 bytes.
-  const userHex = payload.user.startsWith("0x")
-    ? payload.user.slice(2)
-    : payload.user;
+  // User address — normalize to 32-byte lowercase hex (no 0x), then
+  // left-pad to 32 bytes (hex is already 64 chars for a valid
+  // Sui address, but the padLeft32 guard mirrors the prior safety
+  // for short inputs).
+  const userHex = normalizeObjectId(payload.user).slice(2);
   const userBytes = padLeft32(hexToBytes(userHex));
 
   const msg = new Uint8Array(1 + 32 + 8 + 32 + 8 + 8);

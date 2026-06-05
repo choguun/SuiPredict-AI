@@ -8,6 +8,7 @@ import {
 } from "@mysten/dapp-kit-react";
 import { buildDisputeMarketTx, getMarket, isMoveAbortCode } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { toast } from "sonner";
 
 // On-chain `MAX_EVIDENCE_URI_BYTES` (packages/contracts/sources/prediction_market.move:51).
 // Hard-capped at the protocol layer; the user gets `EEvidenceUriTooLong` (abort 16)
@@ -131,6 +132,7 @@ export default function DisputeMarketPage() {
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
+    const toastId = toast.loading("Filing dispute...");
     try {
       const tx = buildDisputeMarketTx(marketId, evidenceUri.trim());
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
@@ -140,12 +142,23 @@ export default function DisputeMarketPage() {
       // if it were a real digest, so a failed dispute looked
       // identical to a successful one minus the txblock link.
       if (r.$kind !== "Transaction") {
+        // R48 audit fix: also surface a toast in addition to the
+        // inline `setError`. The inline block sits below the form
+        // and is easy to miss on a long page where the user has
+        // scrolled to the top to re-read the evidence URI; the
+        // toast pins to the top-right and persists for 5s. The
+        // sibling markets/[id] page uses the toast pattern for the
+        // same $kind failure.
         setError("Dispute failed on-chain");
+        toast.error("Dispute failed on-chain", { id: toastId });
         return;
       }
       setDigest(r.Transaction.digest);
+      toast.success("Dispute filed", { id: toastId });
     } catch (err) {
-      setError(friendlyDisputeError(err));
+      const msg = friendlyDisputeError(err);
+      setError(msg);
+      toast.error(msg, { id: toastId });
     } finally {
       setSubmitting(false);
     }
@@ -188,10 +201,19 @@ export default function DisputeMarketPage() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-1.5">
+            <label
+              // R48 audit fix: bind the label to the input via
+              // `htmlFor` + `id` so screen readers can navigate
+              // from the label text to the field. R47 added the
+              // same pattern to the admin withdraw form; the
+              // dispute evidence URI input was missed.
+              htmlFor="dispute-evidence-uri"
+              className="block text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-1.5"
+            >
               Evidence URI
             </label>
             <input
+              id="dispute-evidence-uri"
               type="text"
               value={evidenceUri}
               onChange={(e) => setEvidenceUri(e.target.value)}

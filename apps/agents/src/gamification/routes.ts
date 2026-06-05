@@ -496,7 +496,16 @@ export async function handleGamificationRoute(
       !/^0x[a-fA-F0-9]{64}$/.test(body.user) ||
       (typeof body.weekIndex !== "number" && typeof body.weekIndex !== "string") ||
       typeof body.rank !== "number" ||
-      body.rank <= 0
+      body.rank <= 0 ||
+      // R48 audit fix: cap `rank` at 100. The on-chain
+      // `prize_pool::claim_prize` aborts on `rank > 100`, but the
+      // off-chain `prize_claims` row is written *before* the user
+      // submits the on-chain tx. A `rank=999999` request would
+      // either store `expectedAmountForRank` returning 0 (so the
+      // row lands with a nonsense rank) or — if the user forges
+      // the on-chain tx — succeed at the mirror layer and burn
+      // gas at the chain layer. The leaderboard's max rank is 100.
+      body.rank > 100
     ) {
       json(res, 400, { error: "missing or invalid fields" });
       return true;

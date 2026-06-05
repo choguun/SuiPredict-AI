@@ -19,6 +19,15 @@ export function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(DB_PATH), { recursive: true });
     db = new Database(DB_PATH);
+    // R48 audit fix: enable WAL, busy_timeout, and foreign_keys on
+    // the markets DB. The cron-driven indexer writers and the
+    // HTTP route readers would otherwise serialize via
+    // SQLITE_BUSY, and the readers' per-route handlers had no
+    // retry. busy_timeout lets SQLite wait up to 5s for the
+    // writer to finish.
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
     db.exec(`
       CREATE TABLE IF NOT EXISTS markets (
         id TEXT PRIMARY KEY,
@@ -543,16 +552,38 @@ export function getOrderBook(marketId: string): OrderBookSnapshot {
   // /markets/:id/book REST route already overlays DeepBook's
   // authoritative `getOrderBookDepth` in the maker-bot path
   // (apps/agents/src/agents/market-maker.ts).
-  const rows = getDb()
-    .prepare(
-      `SELECT co.*, m.deepbook_base_scalar, m.deepbook_quote_scalar
-       FROM chain_orders co
-       LEFT JOIN markets m ON co.market_id = m.id
-       WHERE co.market_id = ?
-         AND co.cancelled_at_ms IS NULL
-       ORDER BY co.price`,
-    )
-    .all(marketId) as Record<string, unknown>[];
+  // R48 audit fix: demo markets (id starts with `demo-`) only
+  // ever have synthetic quotes written to `demo_orders` by the
+  // market-maker (see `apps/agents/src/agents/market-maker.ts:179`).
+  // The previous query only read `chain_orders`, so the demo
+  // order book was always empty. UNION `demo_orders` into the
+  // result so demo markets surface their maker quotes. The
+  // `chain_orders` schema is rich (filled, scaled, etc.) and the
+  // `demo_orders` schema is lean, so we only project the common
+  // columns the OrderBookLevel needs.
+  const isDemo = marketId.startsWith("demo-");
+  const rows = isDemo
+    ? (getDb()
+        .prepare(
+          `SELECT do.market_id, do.order_id, do.owner, do.is_bid,
+                  do.price_bps, do.quantity, 0 AS filled,
+                  NULL AS cancelled_at_ms, 1 AS deepbook_base_scalar,
+                  1 AS deepbook_quote_scalar
+             FROM demo_orders do
+            WHERE do.market_id = ?
+            ORDER BY do.price_bps`,
+        )
+        .all(marketId) as Record<string, unknown>[])
+    : (getDb()
+        .prepare(
+          `SELECT co.*, m.deepbook_base_scalar, m.deepbook_quote_scalar
+           FROM chain_orders co
+           LEFT JOIN markets m ON co.market_id = m.id
+           WHERE co.market_id = ?
+             AND co.cancelled_at_ms IS NULL
+           ORDER BY co.price`,
+        )
+        .all(marketId) as Record<string, unknown>[]);
 
   const bids: OrderBookLevel[] = [];
   const asks: OrderBookLevel[] = [];

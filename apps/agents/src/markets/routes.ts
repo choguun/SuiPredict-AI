@@ -67,7 +67,15 @@ export function handleMarketsRoute(
       return true;
     }
     if (sub === "/orders") {
-      const limit = Number(url.searchParams.get("limit") ?? 50);
+      // R48 audit fix: cap the limit param so a malicious or naive
+      // client can't request `limit=1e9` and hold the agents
+      // worker on a 100k-row scan. Mirror the gamification
+      // leaderboard route which caps at 500. Reject non-finite /
+      // negative values.
+      const raw = Number(url.searchParams.get("limit") ?? 50);
+      const limit = Number.isFinite(raw) && raw > 0
+        ? Math.min(raw, 500)
+        : 50;
       json(res, 200, { orders: listChainOrders(id!, limit) });
       return true;
     }

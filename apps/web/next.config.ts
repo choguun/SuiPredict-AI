@@ -5,10 +5,18 @@ import withPWAInit from "@ducanh2912/next-pwa";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// R48 audit fix: disable PWA entirely in production too. R43 added
+// an `unregister` effect in `providers-inner.tsx` to tear down the
+// legacy Workbox SW on first mount, but the unregister only fires
+// *after* hydration — a network race on the very first navigation
+// of a session can still hit the SW and serve stale HTML. The
+// unregister-then-flash path is the worst of both worlds: an SW
+// gets registered (and can intercept) before it's killed. Skip
+// `sw.js` generation entirely so the browser never sees it.
 const withPWA = withPWAInit({
   dest: "public",
-  disable: process.env.NODE_ENV === "development",
-  register: true,
+  disable: true,
+  register: false,
 });
 
 const nextConfig: NextConfig = {

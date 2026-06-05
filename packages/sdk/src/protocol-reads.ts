@@ -38,7 +38,13 @@ async function readObject(
 // shape and threw on the gRPC `{value: "..."}` form, so the admin
 // page's "—" fallback hid every shared-object balance and disabled
 // the pre-flight checks.
-function asBalance(
+// R48 audit fix: exported so `parlay-client.ts:readParlayPoolBalance`
+// can reuse the gRPC + legacy JSON-RPC dual-shape parser. The parlay
+// helper was checking only the legacy `fields.value` shape and
+// silently returning 0n on the modern gRPC `{value: "..."}` form,
+// which made the pre-flight pool-balance check lie post gRPC
+// migration.
+export function asBalance(
   fields: Record<string, unknown> | null,
   key: string,
 ): bigint {

@@ -33,7 +33,14 @@ export function createDeepBookClient(
   return new DeepBookClient({
     client,
     address,
-    network: options.network ?? "testnet",
+    // R48 audit fix: derive the default from the same `SUI_NETWORK`
+    // env var the rest of the SDK already uses (R39). A mainnet
+    // deploy that forgets to pass `options.network: "mainnet"`
+    // previously fell through to "testnet" and silently used the
+    // testnet coin/pool registry, breaking every CLOB trade.
+    network:
+      options.network ??
+      (process.env.SUI_NETWORK === "mainnet" ? "mainnet" : "testnet"),
     balanceManagers,
     coins: options.coins,
     pools: options.pools,

@@ -108,6 +108,19 @@ function validateBootConfig(): void {
     { name: "FeeVault",          envVar: "FEE_VAULT_ID",                  agent: "Web",            required: false },
     { name: "ProfileRegistry",   envVar: "NEXT_PUBLIC_PROFILE_REGISTRY_ID", agent: "Web",          required: false },
     { name: "AdminAddress",      envVar: "NEXT_PUBLIC_ADMIN_ADDRESS",     agent: "Web",            required: false },
+    // R48 audit fix: the previous boot-config list missed
+    // streak / parlay / deepbook registry / market-registry ids
+    // that the respective agents read at module load. A fresh
+    // deploy would boot cleanly with every worker silently
+    // `skip`ping, and the operator's first 6 hours were spent
+    // wondering why no events were flowing. Surface them as
+    // optional (the workers are inert when blank) so the
+    // startup log at least *names* what's missing.
+    { name: "MarketRegistry",   envVar: "MARKET_REGISTRY_ID",            agent: "PositionIndexer", required: false },
+    { name: "StreakRegistry",   envVar: "STREAK_REGISTRY_ID",            agent: "PositionIndexer", required: false },
+    { name: "StreakAdmin",      envVar: "STREAK_ADMIN_ID",               agent: "PositionIndexer", required: false },
+    { name: "ParlayPoolAdmin",  envVar: "PARLAY_POOL_ADMIN_ID",          agent: "ParlayWorker",   required: false },
+    { name: "DeepBookRegistry", envVar: "DEEPBOOK_REGISTRY_ID",          agent: "PositionIndexer", required: false },
   ];
 
   const missing: VarCheck[] = [];

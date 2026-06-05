@@ -557,11 +557,15 @@ async function main() {
     log("Creating PrizePool<DBUSDC>...");
     let createPoolDigest = "";
     {
-      // R28: use SDK builder for create_pool. The builder accepts
-      // a params object so future parameter additions (e.g. a
-      // distribution schedule) only need to flow through one place.
+      // R28: use SDK builder for create_pool. R48 audit fix: the
+      // builder now requires `seedAtoms` (split off in-PTB) so a
+      // deployer with a single oversized DUSDC coin no longer
+      // drains the full balance into the prize pool. The bootstrap
+      // already gates `findDusdcCoin` on `>= PRIZE_WEEKLY_AMOUNT`,
+      // so we pass the seed amount explicitly.
       const tx = buildCreatePoolTx({
         initialCoinId: seedCoinId,
+        seedAtoms: PRIZE_WEEKLY_AMOUNT,
         initialWeek: BigInt(INITIAL_WEEK),
       });
       const res = await executeTransaction(txClient, tx, signer);

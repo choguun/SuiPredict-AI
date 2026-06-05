@@ -75,6 +75,15 @@ function getDb(): Database.Database {
   if (!db) {
     mkdirSync(dirname(DB_PATH), { recursive: true });
     db = new Database(DB_PATH);
+    // R48 audit fix: enable WAL, busy_timeout, and foreign_keys
+    // on the gamification DB. The /prize/signature and
+    // /prize/claims HTTP routes do concurrent reads against the
+    // leaderboard/score tables while the indexer writes
+    // PrizeClaimed events; without busy_timeout a transient
+    // lock surfaces as a 500 to the client.
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
     db.exec(`
       CREATE TABLE IF NOT EXISTS daily_scores (
         user TEXT NOT NULL,

@@ -725,6 +725,23 @@ function SetDistributionCard(props: {
       setErr("Distribution must be non-negative integers summing to 10_000.");
       return;
     }
+    // R48 audit fix: confirm before replacing the distribution.
+    // The card description warns "Replaces the rank → bps
+    // mapping" but the previous build let a single misclick
+    // silently override the on-chain prize curve for all future
+    // weeks. The on-chain `set_distribution` requires the vector
+    // to sum to 10_000 (already validated above) and to match
+    // rank count, but doesn't know whether the new shape is
+    // "the curve you actually want" — that's an operator
+    // judgment, and a confirm is the right second-chance gate.
+    if (
+      !window.confirm(
+        `Replace the prize distribution with [${parsed.join(", ")}]? ` +
+          `This affects all future weeks.`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     try {
       const tx = buildSetDistributionTx(PRIZE_POOL_ID, PRIZE_ADMIN_ID, parsed);
@@ -819,6 +836,23 @@ function ResolveDisputeCard(props: {
     setDigest(null);
     if (!marketId.trim()) {
       setErr("Market ID is required.");
+      return;
+    }
+    // R48 audit fix: confirm before resolving. The card is the
+    // "Resolve disputed market" action and locks a market to one
+    // of two outcomes irreversibly. A misclick on the YES/NO
+    // toggle + Resolve button locks the wrong outcome forever;
+    // the on-chain `resolve_dispute` does not allow re-resolution.
+    // R45 added `window.confirm` to all the other admin cards
+    // (settle, rotate, allocate, return) but `resolveDispute` was
+    // missed.
+    const outcomeLabel = outcome === "1" ? "YES" : "NO";
+    if (
+      !window.confirm(
+        `Resolve market ${marketId.trim().slice(0, 10)}… as ${outcomeLabel}? ` +
+          `This is irreversible.`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -935,6 +969,21 @@ function CreateMarketCard(props: {
     const cat = Number(category);
     if (!Number.isInteger(cat) || cat < 0 || cat > 3) {
       setErr("Category must be 0..3.");
+      return;
+    }
+    // R48 audit fix: confirm before creating. The card burns one
+    // DEEP coin (non-refundable) plus gas. The help text already
+    // warns "The fee is non-refundable" but the submit button had
+    // no second-chance prompt. A misclick here is an irrecoverable
+    // ~1 DEEP loss. R45 added `window.confirm` to the other admin
+    // cards (settle, rotate, allocate, return); this card was
+    // missed.
+    if (
+      !window.confirm(
+        `Create market "${title.trim().slice(0, 60)}" expiring in ${days} days? ` +
+          `This burns one DEEP coin (non-refundable).`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -1394,7 +1443,14 @@ function ParlayAdminCard(props: {
     const oldAdminShort = props.currentAdmin
       ? `${props.currentAdmin.slice(0, 6)}…${props.currentAdmin.slice(-4)}`
       : "(unknown)";
-    const newAdminShort = `${newAdmin.slice(0, 6)}…${newAdmin.trim().slice(-4)}`;
+    // R48 audit fix: trim the new admin before slicing the
+    // shortened form shown in the confirm prompt. The previous
+    // `newAdmin.slice(0, 6)` read the raw untrimmed input, so a
+    // user who typed `"  0xABC…123  "` saw `0xABC…  123` (with
+    // the leading whitespace in the start) which is misleading
+    // when the operator is checking the on-chain rotation effect.
+    const trimmedForPrompt = newAdmin.trim();
+    const newAdminShort = `${trimmedForPrompt.slice(0, 6)}…${trimmedForPrompt.slice(-4)}`;
     if (!window.confirm(
       `Rotate parlay pool admin from ${oldAdminShort} to ${newAdminShort}? ` +
         `This is one-way — the new admin takes over immediately.`,
