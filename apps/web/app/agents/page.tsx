@@ -93,6 +93,21 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
 // the agents runtime. The web inlines NEXT_PUBLIC_* values at build
 // time, so a deploy that changes one but not the other bricks every
 // PTB the web submits.
+// R50 audit fix: validate SUI_NETWORK against the admin
+// page's allowlist. The previous `?? "testnet"`
+// fallback produced a malformed `https://.suivision.xyz/`
+// URL when the env was set-but-empty, and a 404 for
+// `localnet` (which isn't a valid SuiVision host). Mirror
+// `app/admin/page.tsx:101-107`.
+const SUI_NETWORKS = ["testnet", "mainnet", "devnet", "localnet"] as const;
+type SuiNetwork = (typeof SUI_NETWORKS)[number];
+const _rawNetwork = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
+const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(
+  _rawNetwork,
+)
+  ? (_rawNetwork as SuiNetwork)
+  : "testnet";
+const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvelope }> = [
   { env: "NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID", label: "AGENT_POLICY_PACKAGE_ID", runtimeKey: "package_id" },
   { env: "NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID", label: "DEEPBOOK_REGISTRY_ID", runtimeKey: "deepbook_registry_id" },
@@ -414,7 +429,7 @@ export default function AgentsPage() {
                   // the explorer the admin page uses; matches its
                   // txblock path. Fall back to testnet for local dev
                   // to preserve the pre-R34 default.
-                  href={`https://${process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet"}.suivision.xyz/txblock/${d.txDigest}`}
+                  href={`${SUIVISION_TX_URL}${d.txDigest}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="mt-3 inline-block rounded-md bg-cyan-500/10 px-2 py-1 text-xs font-mono text-cyan-400 hover:bg-cyan-500/20 transition-colors"

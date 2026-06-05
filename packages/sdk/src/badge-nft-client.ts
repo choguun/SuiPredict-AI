@@ -17,6 +17,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import type { SuiClient } from "./predict-client.js";
 import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
@@ -135,15 +136,22 @@ export interface BadgeFields {
  * streak crossed the threshold, not a live readout.
  */
 export async function readBadge(
-  client: { getObject: Function },
+  // R50 audit fix: type the client as `SuiClient` and
+  // route through `client.core.getObject` with the
+  // gRPC `include: { json: true }` shape. The
+  // previous duck-type `{ getObject: Function }` is
+  // unreachable on a `SuiClient = SuiGrpcClient` —
+  // gRPC exposes the call at `client.core.getObject`.
+  // Mirror the fix to `readUserProfile` and
+  // `readProfileIdForUser` from R50.
+  client: SuiClient,
   badgeId: string,
 ): Promise<BadgeFields | null> {
-  const res = await client.getObject({
-    id: badgeId,
-    options: { showContent: true },
+  const { object } = await client.core.getObject({
+    objectId: badgeId,
+    include: { json: true },
   });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as Partial<BadgeFields> | undefined;
+  const fields = (object?.json as Partial<BadgeFields> | undefined) ?? undefined;
   if (!fields) return null;
   return {
     owner: String(fields.owner ?? ""),

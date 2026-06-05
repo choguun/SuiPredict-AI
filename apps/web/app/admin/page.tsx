@@ -1003,6 +1003,20 @@ function CreateMarketCard(props: {
       setErr("Expiry must be a positive number of days.");
       return;
     }
+    // R50 audit fix: cap `days` at 365. The
+    // subsequent `BigInt(Date.now() + Math.round(days
+    // * 86_400_000))` overflows the u64 parameter
+    // for `days > 7.5e10` (u64 ms max ≈ 5.85e11),
+    // and a more realistic `days = 999999999`
+    // corrupts the move-side expiry before the
+    // wallet sees the tx. The on-chain module has
+    // no upper bound but the web should refuse
+    // nonsense. Mirror the `SetMaxPayoutBpsCard` cap
+    // pattern (line 1011 has the same shape).
+    if (days > 365) {
+      setErr("Expiry must be ≤ 365 days.");
+      return;
+    }
     const cat = Number(category);
     if (!Number.isInteger(cat) || cat < 0 || cat > 3) {
       setErr("Category must be 0..3.");
@@ -1335,10 +1349,17 @@ const DUSDC_TYPE_FALLBACK = DUSDC_TYPE;
 // Resolved once at module load. Used by every parlay admin card to
 // pass the pool's generic type argument. Same fallback pattern as
 // the SetMaxPayoutBpsCard above — the production pool is dUSDC.
+//
+// R50 audit fix: trim the env value. The previous version
+// didn't `.trim()` — the sibling `dusdcPkgId` on line 1214
+// does. A `.env` line with trailing whitespace produced a
+// type tag like `0x…::dusdc::DUSDC ` (trailing space) and
+// the Sui runtime aborted "type argument not found" on every
+// parlay admin submit. Hoist a single trimmed module-level
+// constant so every caller gets the same hygiene.
 function dUSDCType(): string {
-  return process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID
-    ? `${process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID}::dusdc::DUSDC`
-    : DUSDC_TYPE_FALLBACK;
+  const raw = (process.env.NEXT_PUBLIC_DUSDC_PACKAGE_ID ?? "").trim();
+  return raw ? `${raw}::dusdc::DUSDC` : DUSDC_TYPE_FALLBACK;
 }
 
 // ============================================================

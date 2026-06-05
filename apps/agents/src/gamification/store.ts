@@ -741,15 +741,33 @@ export function getPrizeClaim(
   return row ?? null;
 }
 
+/**
+ * R50 audit fix: cap the row count to prevent
+ * unbounded growth in the operator-dashboard view.
+ * The week 0 archive (the first rolled-up week) can
+ * accumulate thousands of rows over months; the
+ * previous version returned every row in a single
+ * response. 500 mirrors the `/leaderboard/week`
+ * cap. The `?week=N` path returns at most 500
+ * rows; the unfiltered path returns at most 500
+ * (most-recent-first).
+ */
+const PRIZE_CLAIMS_LIMIT = 500;
+
 export function listPrizeClaims(weekIndex?: number): PrizeClaim[] {
   if (weekIndex != null) {
     return getDb()
-      .prepare(`SELECT * FROM prize_claims WHERE week_index = ?`)
-      .all(weekIndex) as PrizeClaim[];
+      .prepare(
+        `SELECT * FROM prize_claims WHERE week_index = ? ` +
+          `ORDER BY claimed_at_ms DESC LIMIT ?`,
+      )
+      .all(weekIndex, PRIZE_CLAIMS_LIMIT) as PrizeClaim[];
   }
   return getDb()
-    .prepare(`SELECT * FROM prize_claims ORDER BY claimed_at_ms DESC`)
-    .all() as PrizeClaim[];
+    .prepare(
+      `SELECT * FROM prize_claims ORDER BY claimed_at_ms DESC LIMIT ?`,
+    )
+    .all(PRIZE_CLAIMS_LIMIT) as PrizeClaim[];
 }
 
 /**
@@ -818,33 +836,60 @@ export function getSweepRun(dayIndex: number): SweepRun | null {
  *
  * `running` rows older than `staleMs` are recovered to the new caller
  * so a process that died mid-sweep doesn't permanently block the day.
+ *
+ * R50 audit fix: was a non-atomic read-then-write. Two
+ * concurrent processes (e.g. two agents instances, or a
+ * process restart during `getSweepRun`) both saw
+ * `existing = null`, both issued `INSERT`, and the second
+ * raised a `SQLITE_CONSTRAINT` that escaped to the
+ * caller. Wrap the read+write in `db.transaction()` with
+ * `INSERT ... ON CONFLICT(day_index) DO UPDATE` so the
+ * PK constraint is the single source of truth — the loser
+ * of the race becomes a `UPDATE` that re-claims the slot
+ * if and only if the previous row's `started_at_ms` is
+ * stale. The `RETURNING` clause gives us the post-write
+ * row so we can return the canonical "is this caller the
+ * owner" bit without a second roundtrip.
  */
 export function acquireSweepLock(
+  // R50 audit fix (Low #22): 24h was too coarse.
+  // A SIGKILL before `releaseSweepLock`'s
+  // `finally` could keep the slot blocked for a
+  // full day before another sweep takes over. 6h
+  // is a safer window — a sweep that takes > 6h
+  // is by definition hung, and the recovery
+  // path (`ON CONFLICT DO UPDATE`) gives the
+  // next caller the slot without manual
+  // intervention.
   dayIndex: number,
-  staleMs = 24 * 60 * 60 * 1000,
+  staleMs = 6 * 60 * 60 * 1000,
 ): boolean {
   const now = Date.now();
-  const existing = getSweepRun(dayIndex);
-  if (existing?.status === "running" && now - existing.started_at_ms < staleMs) {
-    return false;
-  }
-  if (existing) {
-    getDb()
-      .prepare(
-        `UPDATE sweep_runs
-         SET status='running', started_at_ms=?, finished_at_ms=NULL
-         WHERE day_index=?`,
-      )
-      .run(now, dayIndex);
-  } else {
-    getDb()
-      .prepare(
-        `INSERT INTO sweep_runs (day_index, status, started_at_ms, finished_at_ms)
-         VALUES (?, 'running', ?, NULL)`,
-      )
-      .run(dayIndex, now);
-  }
-  return true;
+  return getDb()
+    .transaction(() => {
+      const existing = getSweepRun(dayIndex);
+      if (
+        existing?.status === "running" &&
+        now - existing.started_at_ms < staleMs
+      ) {
+        return false;
+      }
+      // Use ON CONFLICT so a concurrent INSERT that lost
+      // the race becomes a deterministic UPDATE. The
+      // UPDATE's `WHERE day_index=?` is the PK guard.
+      getDb()
+        .prepare(
+          `INSERT INTO sweep_runs (day_index, status, started_at_ms, finished_at_ms)
+           VALUES (?, 'running', ?, NULL)
+           ON CONFLICT(day_index) DO UPDATE SET
+             status='running',
+             started_at_ms=excluded.started_at_ms,
+             finished_at_ms=NULL`,
+        )
+        .run(dayIndex, now);
+      return true;
+    })
+    .immediate();
 }
 
 // R39 audit fix: `completeSweepRun` was a no-op-on-disk dead

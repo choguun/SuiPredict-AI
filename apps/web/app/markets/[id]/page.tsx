@@ -12,11 +12,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   buildDeepBookCreateBalanceManagerTx,
   buildDeepBookDepositTx,
-  buildDeepBookPlaceLimitOrderTx,
   buildMarketWithdrawSettledTx,
   buildMintSharesTx,
+  buildPlaceOrderTx,
   dollarsToDusdc,
   DUSDC_TYPE,
+  QUOTE_SCALE,
   extractCreatedObjectId,
   buildRedeemNoTx,
   buildRedeemNoWithStreakTx,
@@ -118,9 +119,12 @@ function failedTxToError(
   return new Error(status.error?.message ?? "Move transaction failed");
 }
 
-const FEE_VAULT_ID =
-  process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000";
+// R50 audit fix: was `?? "0x000…000"`. The `if (!FEE_VAULT_ID)` guards
+// at lines 468 and 783 evaluated `if (!"0x000…000")` (false), so the
+// "FEE_VAULT_ID is not set" toast never fired — the PTB submitted
+// with the zero vault and the on-chain abort was opaque. `app/admin/
+// page.tsx:81` already uses the `?? ""` pattern. Mirror that.
+const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 
 function clampProbability(value: number) {
   if (Number.isNaN(value)) return 0.5;
@@ -199,7 +203,26 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   const [orderSide, setOrderSide] = useState<"buy" | "sell">("buy");
   const [price, setPrice] = useState(0.5);
   const [qty, setQty] = useState(1);
-  const [loading, setLoading] = useState(false);
+  // R50 audit fix: per-action busy flags. The previous
+  // single `loading: boolean` gated 7 action buttons
+  // (mint, placeOrder, createBalanceManager, deposit,
+  // withdraw, redeemWinner, merge) — a user mid-mint
+  // could not click `redeemWinner` independently. R49
+  // closed the `market.outcome === null` redeem path
+  // but did not split the busy flag. Use a single
+  // string-union key instead of a `Map` so React's
+  // referential-equality check on `disabled` stays
+  // cheap (one switch per render).
+  const [busy, setBusy] = useState<
+    | null
+    | "mint"
+    | "placeOrder"
+    | "createBalanceManager"
+    | "deposit"
+    | "withdraw"
+    | "redeemWinner"
+    | "merge"
+  >(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const [loadError, setLoadError] = useState<{
     kind: "not_found" | "fetch_failed";
@@ -469,7 +492,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       toast.error("NEXT_PUBLIC_FEE_VAULT_ID is not set in this deployment.");
       return;
     }
-    setLoading(true);
+    setBusy("mint");
     const toastId = toast.loading("Minting YES + NO from DUSDC…");
     try {
       const { objects } = await client.core.listCoins({
@@ -500,7 +523,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Mint failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
@@ -527,22 +550,49 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       return;
     }
     if (!deepBookMarket) return;
-    setLoading(true);
+    setBusy("placeOrder");
     const clientOrderId = String(Date.now());
     const toastId = toast.loading("Submitting DeepBook V3 limit order...");
     try {
-      const dbClient = createPredictionDeepBookClient({
-        client,
-        address: account.address,
+      // R50 audit fix: route through
+      // `buildPlaceOrderTx` (the prediction_market
+      // wrapper) instead of the DeepBook-direct
+      // `buildDeepBookPlaceLimitOrderTx`. The
+      // wrapper emits `OrderPlacedEvent { market_id,
+      // pool_id, ... }`; the position-indexer relies
+      // on this event to advance its `settled_weeks`
+      // cursor and to surface the order in the
+      // user's portfolio. The DeepBook-direct path
+      // emits only DeepBook's own
+      // `OrderPlaced` (no `market_id`), so the
+      // indexer has no way to attribute the order
+      // to a market. Limit-order orders were
+      // invisible to the indexer before this fix.
+      const tx = buildPlaceOrderTx({
+        marketId: market.id,
+        poolId: deepBookMarket.poolId,
         balanceManagerId,
-        tradeCapId: tradeCapId || undefined,
-        market: deepBookMarket,
-      });
-      const tx = buildDeepBookPlaceLimitOrderTx(dbClient, {
-        poolKey: deepBookMarket.poolKey,
-        clientOrderId,
-        price: yesLimitPrice,
-        quantity: qty,
+        clientOrderId: BigInt(clientOrderId),
+        // R50 audit fix: scale the 0..1 dollar price
+        // to the on-chain 1e9-scaled quote units the
+        // wrapper expects (the
+        // `prediction_market::place_order` docstring
+        // at `prediction_market.move:737` calls this
+        // out: "500_000_000 = 0.5 Q"). The DeepBook-
+        // direct path's `placeLimitOrder` accepted a
+        // `number` and scaled internally; the wrapper
+        // takes a raw `bigint` so the caller has to
+        // do the conversion explicitly. `QUOTE_SCALE`
+        // lives in the SDK barrel so we don't
+        // hardcode 1e9 in three places.
+        price: BigInt(Math.round(yesLimitPrice * Number(QUOTE_SCALE))),
+        // `qty` is the YES * 10^decimals base quantity.
+        // `displayedPrice * qty` would be a fraction
+        // (0..qty), so we pass qty directly. The
+        // DeepBook-direct path took a `number`; the
+        // wrapper takes a `bigint` (the on-chain
+        // signature is `quantity: u64`).
+        quantity: BigInt(qty),
         isBid,
       });
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
@@ -597,7 +647,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Order failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
@@ -652,7 +702,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
 
   async function createBalanceManager() {
     if (!account || !client || !deepBookMarket) return;
-    setLoading(true);
+    setBusy("createBalanceManager");
     const toastId = toast.loading("Creating DeepBook V3 BalanceManager...");
     try {
       const dbClient = createPredictionDeepBookClient({
@@ -700,13 +750,13 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "BalanceManager creation failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
   async function depositToBalanceManager() {
     if (!account || !client || !deepBookMarket || !balanceManagerId) return;
-    setLoading(true);
+    setBusy("deposit");
     const toastId = toast.loading("Depositing to DeepBook V3 BalanceManager...");
     try {
       const dbClient = createPredictionDeepBookClient({
@@ -737,13 +787,13 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
   async function withdrawSettledDeepBook() {
     if (!account || !client || !market || !deepBookMarket || !balanceManagerId) return;
-    setLoading(true);
+    setBusy("withdraw");
     const toastId = toast.loading("Withdrawing settled balances...");
     try {
       // Route through the market wrapper (`prediction_market::withdraw_settled`)
@@ -774,7 +824,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Withdraw settled failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
@@ -793,7 +843,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       toast.error("Market has no outcome recorded");
       return;
     }
-    setLoading(true);
+    setBusy("redeemWinner");
     const toastId = toast.loading("Fetching your winning position...");
     try {
       const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
@@ -837,7 +887,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Redeem failed", { id: toastId });
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
@@ -1150,7 +1200,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           <button
             type="button"
             disabled={
-              loading ||
+              busy === "placeOrder" ||
               !account ||
               (!useDeepBookRoute && market.id.startsWith("demo-"))
             }
@@ -1188,7 +1238,11 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                 </p>
                 <button
                   type="button"
-                  disabled={loading || !account || !deepBookMarket}
+                  disabled={
+                    busy === "createBalanceManager" ||
+                    !account ||
+                    !deepBookMarket
+                  }
                   onClick={createBalanceManager}
                   className="min-h-11 w-full rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] hover:shadow-cyan-900/50 disabled:opacity-50 disabled:scale-100"
                 >
@@ -1237,7 +1291,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <button
                     type="button"
-                    disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                    disabled={
+                      busy === "deposit" ||
+                      !account ||
+                      !deepBookMarket ||
+                      !balanceManagerId
+                    }
                     onClick={depositToBalanceManager}
                     className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
                   >
@@ -1245,7 +1304,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                   </button>
                   <button
                     type="button"
-                    disabled={loading || !account || !deepBookMarket || !balanceManagerId}
+                    disabled={
+                      busy === "withdraw" ||
+                      !account ||
+                      !deepBookMarket ||
+                      !balanceManagerId
+                    }
                     onClick={withdrawSettledDeepBook}
                     className="min-h-11 rounded-lg border border-white/10 bg-black/20 px-4 text-sm font-semibold text-zinc-300 transition-all hover:bg-white/5 disabled:opacity-50"
                   >
@@ -1264,7 +1328,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           <div className="grid grid-cols-2 gap-3 mt-2">
             <button
               type="button"
-              disabled={loading || !account || market.id.startsWith("demo-")}
+              disabled={busy === "mint" || !account || market.id.startsWith("demo-")}
               onClick={splitCollateral}
               className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
             >
@@ -1272,7 +1336,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             </button>
             <button
               type="button"
-              disabled={loading || !account || market.id.startsWith("demo-")}
+              disabled={busy === "merge" || !account || market.id.startsWith("demo-")}
               onClick={mergeCollateral}
               className="min-h-11 rounded-lg border border-white/10 bg-black/20 px-4 text-sm font-semibold text-zinc-300 transition-all hover:bg-white/5 disabled:opacity-50"
             >
@@ -1304,7 +1368,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                   // entirely. The button label stays the same so
                   // the disabled state is the only signal.
                   disabled={
-                    loading ||
+                    busy === "redeemWinner" ||
                     !account ||
                     market.id.startsWith("demo-") ||
                     market.outcome === null

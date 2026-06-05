@@ -20,9 +20,11 @@ import Link from "next/link";
 
 const QUOTE_COIN = DUSDC_TYPE;
 
-const FEE_VAULT_ID =
-  process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000";
+// R50 audit fix: was `?? "0x000…000"`. The `if (!FEE_VAULT_ID)`
+// guard at line 114 evaluated `if (!"0x000…000")` (false), so the
+// "FEE_VAULT_ID is not set" toast never fired. Mirror the
+// `app/admin/page.tsx:81` `?? ""` pattern.
+const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 
 /** Daily markets: expiry within 36h from now, status active. */
 const DAILY_EXPIRY_WINDOW_MS = 36 * 60 * 60 * 1000;

@@ -737,6 +737,85 @@ export function buildPlaceMarketOrderTx(params: {
   return tx;
 }
 
+/**
+ * Build `place_order` transaction — the limit-order counterpart to
+ * `buildPlaceMarketOrderTx`. Routes through the prediction_market
+ * wrapper that emits `OrderPlacedEvent { market_id, pool_id, ... }`,
+ * which the position-indexer observes to advance the `settled_weeks`
+ * cursor and to surface the order in the user's portfolio.
+ *
+ * R50 audit fix: this wrapper did not exist. The only
+ * limit-order builder was `buildDeepBookPlaceLimitOrderTx`
+ * (`deepbook/client.ts:165`) which calls DeepBook's
+ * `pool::place_limit_order` directly, bypassing the
+ * wrapper's `OrderPlacedEvent` carrying `market_id` — the
+ * position-indexer relies on this event to advance the
+ * `settled_weeks` cursor. The wrapper was dead in both
+ * directions: not exposed by the SDK, and the web's
+ * `placeOrder` button could only call the DeepBook-direct
+ * path. The fix adds the wrapper, exports it from the
+ * barrel, and re-points the web's `placeOrder` to use it
+ * (see `apps/web/app/markets/[id]/page.tsx`).
+ *
+ * `orderType` is the DeepBook `OrderType` u8: 0=POST_ONLY,
+ * 1=FOK, 2=IOC, 3=GFT (default). The on-chain module
+ * asserts `is_bid` xor `is_ask` semantics via DeepBook's
+ * own check; the wrapper only requires a non-zero
+ * price/quantity (the on-chain assert is `price > 0,
+ * quantity > 0`, matching `EMarketNotActive` /
+ * `EInvalidPrice` / `EInvalidQuantity`).
+ */
+export function buildPlaceOrderTx(params: {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+  clientOrderId: bigint;
+  /**
+   * Price in *quote units* (e.g. `500_000_000n` = 0.5 DUSDC).
+   * The on-chain module's docstring at
+   * `prediction_market.move:737` calls this out:
+   * "Price in quote units (e.g. 500_000_000 = 0.5 Q)".
+   * Callers passing a human-readable price (0.01..0.99)
+   * should multiply by 1e9 — see `QUOTE_SCALE` below.
+   */
+  price: bigint;
+  quantity: bigint;
+  isBid: boolean;
+  orderType?: number;
+}): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::place_order`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object(normalizeObjectId(params.marketId)),
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.object(normalizeObjectId(params.balanceManagerId)),
+      tx.pure.u64(params.clientOrderId),
+      tx.pure.u64(params.price),
+      tx.pure.u64(params.quantity),
+      tx.pure.bool(params.isBid),
+      // DeepBook OrderType u8. Default to 3 (GFT) so a
+      // misclick doesn't issue a POST_ONLY (0) that
+      // would silently drop the order in a thin book.
+      tx.pure.u8(params.orderType ?? 3),
+      tx.object(CLOCK_OBJECT_ID),
+    ],
+  });
+  return tx;
+}
+
+/**
+ * The on-chain wrapper's price is in 1e9-scaled quote
+ * units (dUSDC has 6 decimals, so the wrapper multiplies
+ * 1e3 to round-trip to a fixed-point representation that
+ * matches DeepBook's expected `u64` ticks). Export the
+ * constant so web callers passing a 0..1 dollar price can
+ * do `BigInt(Math.round(price * QUOTE_SCALE))` without
+ * hardcoding the magic number.
+ */
+export const QUOTE_SCALE = 1_000_000_000n;
+
 // ─── Cancel wrappers ────────────────────────────────────────────────────────
 
 /**

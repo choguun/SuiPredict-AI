@@ -168,10 +168,53 @@ interface EventEnvelope {
 }
 
 function readCursor(stateKey: string): EventCursor {
+  // R50 audit fix: read the cursor only if the row's
+  // stored (network, package_id) matches the current
+  // runtime. The previous shape stored one row per
+  // event-type with no network/package_id tag; an
+  // operator who rotated `SUI_NETWORK` testnet→mainnet
+  // (or `AGENT_POLICY_PACKAGE_ID` after a contract
+  // republish) silently replayed the saved cursor
+  // against the new chain. Sui cursors are opaque
+  // `txDigest+eventSeq` and either error ("Invalid
+  // cursor") or — worse — start at a different logical
+  // point, dropping events. Refuse to reuse on
+  // mismatch; the indexer re-bootstraps from the
+  // genesis cursor on the new chain.
+  const expectedTag = cursorTag();
   const row = getDb()
-    .prepare(`SELECT cursor FROM indexer_state WHERE key = ?`)
-    .get(stateKey) as { cursor: string | null } | undefined;
-  return (row?.cursor ?? null) as EventCursor;
+    .prepare(
+      `SELECT cursor, network, package_id FROM indexer_state WHERE key = ?`,
+    )
+    .get(stateKey) as
+    | { cursor: string | null; network: string | null; package_id: string | null }
+    | undefined;
+  if (!row) return null as unknown as EventCursor;
+  if (row.network !== expectedTag.network || row.package_id !== expectedTag.packageId) {
+    console.warn(
+      `[position-indexer] cursor tag mismatch for ${stateKey}: ` +
+        `stored=(network=${row.network}, pkg=${row.package_id}) ` +
+        `runtime=(network=${expectedTag.network}, pkg=${expectedTag.packageId}); ` +
+        `discarding stale cursor and re-bootstrapping.`,
+    );
+    return null as unknown as EventCursor;
+  }
+  return (row.cursor ?? null) as EventCursor;
+}
+
+/**
+ * Build a (network, package_id) tag for the current
+ * runtime. R50 audit fix: include both — `SUI_NETWORK`
+ * alone is insufficient because the agent_policy
+ * contract might be republished (same network, new
+ * package id) and the old cursor references events
+ * that no longer exist on the new contract.
+ */
+function cursorTag(): { network: string; packageId: string } {
+  return {
+    network: process.env.SUI_NETWORK ?? "",
+    packageId: process.env.AGENT_POLICY_PACKAGE_ID ?? "",
+  };
 }
 
 /**
@@ -231,13 +274,22 @@ function u64ToSafeNumber(
 
 function writeCursor(stateKey: string, cursor: EventCursor): void {
   if (cursor == null) return;
+  // R50 audit fix: stamp the row with the current
+  // (network, package_id) so a future
+  // `readCursor` can detect a mismatch and refuse
+  // to replay the cursor on a different chain.
+  const tag = cursorTag();
   getDb()
     .prepare(
-      `INSERT INTO indexer_state (key, cursor, updated_at_ms)
-       VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET cursor=excluded.cursor, updated_at_ms=excluded.updated_at_ms`,
+      `INSERT INTO indexer_state (key, cursor, network, package_id, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         cursor=excluded.cursor,
+         network=excluded.network,
+         package_id=excluded.package_id,
+         updated_at_ms=excluded.updated_at_ms`,
     )
-    .run(stateKey, String(cursor), Date.now());
+    .run(stateKey, String(cursor), tag.network, tag.packageId, Date.now());
 }
 
 async function pollAndApply(

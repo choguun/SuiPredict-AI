@@ -12,15 +12,25 @@
  *
  * The allowlist comes from `ALLOWED_ORIGIN`:
  *   - explicit value  → used verbatim
- *   - unset in prod   → logs a warning and falls back to "*"
+ *   - unset in prod   → hard-fail the boot with an exception
  *   - unset in dev    → defaults to http://localhost:3000
+ *
+ * R50 audit fix: was "log a warning and fall back to '*'". A
+ * script on attacker.com could pre-sign payloads for
+ * legitimate winners (the signed payload is a
+ * transferable asset, finding #3) and `Access-Control-
+ * Allow-Origin: *` on side-effecting endpoints lets
+ * that script drive a `fetch()` chain. The browser
+ * rejects `* + credentials` (correct), but the
+ * preflight for a non-credentialed `fetch()` succeeds.
+ * Hard-fail at boot so the misconfiguration is loud,
+ * not silent.
  *
  * The Vary: Origin header is set so a downstream cache doesn't
  * serve the wrong access-control allowlist to a different origin.
  */
 
 let cachedOrigin: string | null = null;
-let warnedAboutProductionFallback = false;
 
 function resolveAllowedOrigin(): string {
   if (cachedOrigin !== null) return cachedOrigin;
@@ -30,16 +40,11 @@ function resolveAllowedOrigin(): string {
     return cachedOrigin;
   }
   if (process.env.NODE_ENV === "production") {
-    if (!warnedAboutProductionFallback) {
-      console.warn(
-        "[agents] ALLOWED_ORIGIN unset in production — falling back to '*'. " +
-          "Set ALLOWED_ORIGIN to the deployed web URL to lock down " +
-          "side-effecting endpoints.",
-      );
-      warnedAboutProductionFallback = true;
-    }
-    cachedOrigin = "*";
-    return cachedOrigin;
+    throw new Error(
+      "[agents] ALLOWED_ORIGIN is required in production. " +
+        "Set ALLOWED_ORIGIN to the deployed web URL to lock down " +
+        "side-effecting endpoints (/prize/signature, /prize/claims).",
+    );
   }
   cachedOrigin = "http://localhost:3000";
   return cachedOrigin;

@@ -63,6 +63,24 @@ export {
   buildReturnFromMmTx,
   buildWithdrawFeesTx,
   buildInitFeeVaultTx,
+  // R50 audit fix: 5 builders were defined in
+  // `prediction-market-client.ts` but omitted from
+  // the explicit barrel list. Consumers importing
+  // from `@suipredict/sdk` (instead of the deep
+  // path) got `undefined` for each, and the
+  // `place_order` Move call relied on by the
+  // position-indexer's `OrderPlacedEvent` cursor
+  // advancement was the dead one. Add all five.
+  buildPlaceMarketOrderTx,
+  buildPlaceOrderTx,
+  buildCancelOrderTx,
+  buildCancelOrdersTx,
+  buildCancelAllOrdersTx,
+  buildDepositForTradingTx,
+  // 1e9 quote scale for the `place_order` wrapper.
+  // See `QUOTE_SCALE` docstring in
+  // `prediction-market-client.ts`.
+  QUOTE_SCALE,
   yesCoinType,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,

@@ -376,7 +376,23 @@ export default function ParlayPage() {
       // in a still-mounting child route).
       queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
       queryClient.invalidateQueries({ queryKey: ["dailyMarkets"], type: "active" });
-      queryClient.invalidateQueries({ queryKey: ["portfolio"], type: "active" });
+      // R50 audit fix: prefix-match on `["portfolio"]`
+      // works (TanStack matches on the prefix) but
+      // the registered key at `portfolio/page.tsx:42`
+      // is `["portfolio", account?.address]` for
+      // symmetry with `vault/page.tsx:52` and
+      // `markets/[id]/page.tsx:226`. Use the full
+      // key here too so the invalidation is
+      // unambiguous — and so a future caller
+      // registering `["portfolio", "summary"]` (a
+      // global, no-address variant) doesn't get
+      // accidentally nuked.
+      if (account?.address) {
+        queryClient.invalidateQueries({
+          queryKey: ["portfolio", account.address],
+          type: "active",
+        });
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Submit failed");
     } finally {

@@ -184,6 +184,19 @@ export function ClaimPrizeButton(props: Props) {
             user: account.address,
             weekIndex,
             rank,
+            // R50 audit fix: pass `category` so the
+            // server's membership check is category-
+            // scoped. Without it, a rank-1 in "AI
+            // news" (category=1) would still pass the
+            // server's check on the global
+            // (category=0) leaderboard and the
+            // off-chain mirror row would be written
+            // with no category, losing the
+            // attribution. The /prize/signature
+            // endpoint already enforces this (round-17
+            // audit, finding #6); /prize/claims was
+            // the asymmetric survivor.
+            category: category ?? 0,
             amount: signedAmount,
             txDigest: digest,
           }),

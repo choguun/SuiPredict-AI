@@ -44,6 +44,25 @@ import {
 } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { corsFor } from "../http-cors.js";
+import { getSharedClient } from "../lib.js";
+import { tryConsume as tryRateLimit } from "../rate-limit.js";
+
+/**
+ * Best-effort client-IP extraction. The agents
+ * service is fronted by Railway's edge which
+ * sets `X-Forwarded-For`; fall back to the
+ * raw socket address. Returns `"unknown"` if
+ * neither is present (a misconfigured deploy)
+ * — the rate limiter still works because all
+ * "unknown" callers share a single bucket.
+ */
+function clientIp(req: IncomingMessage): string {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.length > 0) {
+    return xff.split(",")[0]!.trim();
+  }
+  return req.socket?.remoteAddress ?? "unknown";
+}
 
 /**
  * R35 audit fix: log an unexpected route error server-side and
@@ -307,6 +326,25 @@ export async function handleGamificationRoute(
     const category = Number(url.searchParams.get("category") ?? 0);
     const poolId = process.env.PRIZE_POOL_ID ?? "";
     const adminPk = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
+    // R50 audit fix: rate-limit per (ip) and per (user).
+    // The user bucket is the stricter of the two
+    // (a single user shouldn't be able to mint
+    // 1000 sigs/min even from different IPs).
+    // In-memory only — see `rate-limit.ts` for the
+    // cross-replica caveat. 5 sigs/min, burst 5.
+    if (
+      !tryRateLimit(`prize-sig:ip:${clientIp(req)}`, {
+        capacity: 10,
+        refillPerMinute: 10,
+      }) ||
+      !tryRateLimit(`prize-sig:user:${user}`, {
+        capacity: 5,
+        refillPerMinute: 5,
+      })
+    ) {
+      json(res, 429, { error: "rate limit exceeded; try again later" });
+      return true;
+    }
     // R49 audit fix: require integer week/rank. `NaN < 0` and
     // `NaN <= 0` are both false, so a fuzzing client could pass
     // `?week=abc&rank=xyz` and reach the SDK's `pure.u64(NaN)`,
@@ -508,6 +546,21 @@ export async function handleGamificationRoute(
     }
     // POST
     //
+    // R50 audit fix: rate-limit per (ip) before doing
+    // any work. The on-chain `claimed[user]` map
+    // prevents double-payout but each request still
+    // hits the leaderboard archive + writes to
+    // SQLite. 10 POSTs/min/IP, burst 10.
+    if (
+      !tryRateLimit(`prize-claim:ip:${clientIp(req)}`, {
+        capacity: 10,
+        refillPerMinute: 10,
+      })
+    ) {
+      json(res, 429, { error: "rate limit exceeded; try again later" });
+      return true;
+    }
+    //
     // Auth model: same leaderboard-membership + rank-mismatch check
     // as GET /prize/signature (lines 137-161). The previous version
     // accepted any (user, week, rank) without verifying the user was
@@ -523,6 +576,25 @@ export async function handleGamificationRoute(
       rank?: number;
       amount?: number | string;
       txDigest?: string;
+      // R50 audit fix: `category` is now required so the
+      // membership check at line 598 is category-scoped.
+      // The previous handler passed no category to either
+      // `liveRollup(weekIndex)` or `getUserWeekRank(...)`,
+      // both of which default to category=0. A user who
+      // was rank-1 in category 1 (AI news) could POST
+      // `{user: me, week: 1, rank: 1}` to this endpoint
+      // — the membership check would find them on the
+      // global (category=0) leaderboard, the rank check
+      // would pass, and the off-chain `prize_claims` row
+      // would be written, marking their AI-news claim as
+      // done. When the AI-news pool's admin signed the
+      // legit on-chain tx, the off-chain mirror would
+      // already say "claimed" — and worse, the off-chain
+      // row would carry no category, so an operator
+      // dashboard audit would lose the category
+      // attribution. Same hardening /prize/signature
+      // got in round-17.
+      category?: number;
       // R46 audit fix: accept an optional `poolId` so a
       // multi-pool deploy (one prize pool per market
       // category, say) can attribute the claim to the
@@ -554,6 +626,24 @@ export async function handleGamificationRoute(
       body.rank > 100
     ) {
       json(res, 400, { error: "missing or invalid fields" });
+      return true;
+    }
+    // R50 audit fix: validate `category` is an integer in
+    // [0, 3]. Same range /prize/signature enforces. We
+    // intentionally reject NaN / negative / >3 so a
+    // fuzzing client can't smuggle a category-100 row into
+    // the leaderboard archive by relying on the
+    // getUserWeekRank default. Strict membership is the
+    // safer choice: the web only ever sends 0..3.
+    if (
+      typeof body.category !== "number" ||
+      !Number.isInteger(body.category) ||
+      body.category < 0 ||
+      body.category > 3
+    ) {
+      json(res, 400, {
+        error: "category must be an integer in [0, 3] (0=general, 1=ai_news, 2=crypto_price, 3=other)",
+      });
       return true;
     }
     // R47 audit fix: validate `txDigest` if present.
@@ -592,15 +682,27 @@ export async function handleGamificationRoute(
       return true;
     }
     // Membership check — same fallback used by /prize/signature so
-    // current-week claims work the same way.
+    // current-week claims work the same way. R50 audit fix: pass
+    // the validated `category` through to both branches so the
+    // membership check is category-scoped (a rank-1 in
+    // "AI news" cannot claim a rank-1 row from the "crypto
+    // price" leaderboard by omitting the param).
     const currentWeek = weekIndexFor(Date.now());
     const row = weekIndex === currentWeek
-      ? liveRollup(weekIndex).find((r) => r.user === body.user) ?? null
-      : getUserWeekRank(body.user, weekIndex);
+      ? liveRollup(weekIndex, body.category).find((r) => r.user === body.user) ?? null
+      : getUserWeekRank(body.user, weekIndex, body.category);
     if (!row) {
       json(res, 403, {
-        error: "user not on leaderboard for this week",
+        error: "user not on leaderboard for this week and category",
         week_index: weekIndex,
+        // R50 audit fix: include the category in the
+        // 403 body so a misrouted client (the user's
+        // request is for category 1 but the user is
+        // only on category 2's leaderboard) can self-
+        // diagnose without re-fetching the
+        // /leaderboard/user/:addr endpoint to figure
+        // out which category they qualify for.
+        category: body.category,
       });
       return true;
     }
@@ -865,7 +967,12 @@ async function resolvePrizeAmount(
   rank: number,
 ): Promise<{ amount: bigint; amountSource: "onchain" | "env" }> {
   try {
-    const client = createClient();
+    // R50 audit fix: route through the
+    // process-wide gRPC singleton (lazy-initialized
+    // in `lib.ts`) instead of `createClient()`,
+    // which would have opened a fresh HTTP/2
+    // connection on every prize-signature request.
+    const client = getSharedClient();
     const { objects } = await client.getObjects({
       objectIds: [poolId],
       include: { json: true },

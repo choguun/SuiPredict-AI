@@ -20,6 +20,7 @@
  */
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID } from "./constants.js";
+import type { SuiClient } from "./predict-client.js";
 import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
@@ -135,34 +136,39 @@ export function buildSetForecasterKindTx(
  * expected outcome for users without a profile).
  */
 export async function readProfileIdForUser(
-  // R47 audit fix: drop the over-specified
-  // `getObject: Function` field. R46 added the
-  // dynamic-field read but kept the old type
-  // signature that demanded a client with both
-  // `getDynamicField` and `getObject`. Only
-  // `getDynamicField` is called, so the
-  // `getObject` requirement was dead and
-  // confusing — a future caller that passes
-  // a `SuiClient` already has both methods,
-  // but a mock for testing would have to
-  // implement `getObject` for no reason.
-  client: { getDynamicField: Function },
+  // R50 audit fix: type the client as `SuiClient`
+  // (the gRPC shape used by `predict-client.ts:21`)
+  // and route the dynamic-field read through
+  // `client.core.getDynamicField`. The previous
+  // `{ getDynamicField: Function }` duck-type was
+  // calling the legacy `client.getDynamicField`,
+  // which is unreachable on a `SuiClient` (gRPC
+  // has no top-level `getDynamicField` — it lives
+  // at `client.core.getDynamicField`). The R46
+  // comment claimed the modern path was preferred
+  // but the implementation only used the legacy
+  // one. R47's "drop the over-specified getObject
+  // requirement" then never fired because the
+  // underlying call would have always thrown.
+  // The sibling `streakIdForUser` (`streak-client.ts:225`)
+  // uses the correct `client.core.getDynamicField`
+  // pattern — mirror that.
+  client: SuiClient,
   registryId: string,
   user: string,
 ): Promise<string | null> {
-  // R46 audit fix: prefer the modern `core.getDynamicField`
-  // path; fall back to the legacy `getDynamicFieldObject` only
-  // if the client doesn't expose `core`. Both call the same
-  // underlying RPC under the hood.
   try {
-    const dynamicField = await client.getDynamicField({
+    const { dynamicField } = await client.core.getDynamicField({
       parentId: registryId,
-      name: { type: "address", value: user },
+      name: { type: "address", value: user } as unknown as never,
     });
-    const value = (dynamicField as { dynamicField?: { value?: unknown } })
-      ?.dynamicField?.value;
-    if (!value) return null;
-    return typeof value === "string" ? value : String(value);
+    if (!dynamicField) return null;
+    const value = (dynamicField as { value?: unknown }).value;
+    if (typeof value === "string") return value;
+    if (typeof value === "object" && value !== null && "id" in value) {
+      return (value as { id: string }).id;
+    }
+    return null;
   } catch {
     // 404 = user has no profile (the expected case for the vast
     // majority of pre-profile users). Any other error = the
@@ -188,15 +194,23 @@ export interface UserProfileFields {
 }
 
 export async function readUserProfile(
-  client: { getObject: Function },
+  // R50 audit fix: type the client as `SuiClient` and
+  // route through `client.core.getObject` with the gRPC
+  // shape. The legacy `client.getObject` is unreachable
+  // on a `SuiClient = SuiGrpcClient` (gRPC has no
+  // top-level `getObject`). The previous
+  // `{ getObject: Function }` duck-type compiled but
+  // threw at runtime the first time a real call
+  // happened. Mirror `getStreakInfo` (`streak-client.ts:150`)
+  // which already uses the correct path.
+  client: SuiClient,
   profileId: string,
 ): Promise<UserProfileFields | null> {
-  const res = await client.getObject({
-    id: profileId,
-    options: { showContent: true },
+  const { object } = await client.core.getObject({
+    objectId: profileId,
+    include: { json: true },
   });
-  const fields = (res.data?.content as { fields?: Record<string, unknown> })
-    ?.fields as Partial<UserProfileFields> | undefined;
+  const fields = (object?.json as Partial<UserProfileFields> | undefined) ?? undefined;
   if (!fields) return null;
   // R44 audit fix: `country_code` is a `vector<u8>` on-chain, and
   // Sui JSON-RPC renders it in two shapes depending on the codec:

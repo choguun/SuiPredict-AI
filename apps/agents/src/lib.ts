@@ -85,3 +85,22 @@ export async function getMarketContext() {
 }
 
 export { createClient, pickAtmStrike };
+
+// R50 audit fix: lazy singleton gRPC client. The
+// previous pattern called `createClient()` on every
+// request (gamification routes, worker ticks,
+// prize-admin), each of which instantiated a new
+// `SuiGrpcClient` and opened a fresh HTTP/2
+// connection. Under a small burst the connection
+// pool churned the Sui gRPC server (and triggered
+// the SDK's own rate limiter). One connection per
+// process; lazy-initialized on first use so unit
+// tests can still mock `createClient` via the
+// barrel re-export. The `SuiClient` type lives in
+// the SDK barrel.
+import type { SuiClient } from "@suipredict/sdk";
+let cachedClient: SuiClient | null = null;
+export function getSharedClient(): SuiClient {
+  if (!cachedClient) cachedClient = createClient();
+  return cachedClient;
+}
