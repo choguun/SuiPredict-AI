@@ -99,7 +99,12 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
 // URL when the env was set-but-empty, and a 404 for
 // `localnet` (which isn't a valid SuiVision host). Mirror
 // `app/admin/page.tsx:101-107`.
-const SUI_NETWORKS = ["testnet", "mainnet", "devnet", "localnet"] as const;
+//
+// R51 audit fix: drop "localnet" from the allowlist so
+// the membership check now falls through to the
+// "testnet" default. See admin/page.tsx for the
+// rationale.
+const SUI_NETWORKS = ["testnet", "mainnet", "devnet"] as const;
 type SuiNetwork = (typeof SUI_NETWORKS)[number];
 const _rawNetwork = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
 const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(

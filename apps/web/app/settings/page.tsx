@@ -23,6 +23,7 @@ import {
   type AgentPolicyState,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { useUserStreakId } from "@/hooks/useUserStreakId";
 
 interface MirrorProfile {
   user: string;
@@ -53,6 +54,7 @@ export default function SettingsPage() {
   // survivor. Without invalidation the streak panel shows
   // "no streak" for up to 30s after the policy is created.
   const queryClient = useQueryClient();
+  const { streakId } = useUserStreakId(account?.address);
   const invalidateStreakCache = useCallback(() => {
     if (!account?.address) return;
     void queryClient.invalidateQueries({
@@ -63,7 +65,27 @@ export default function SettingsPage() {
       queryKey: ["profile", PROFILE_REGISTRY_ID, account.address],
       type: "active",
     });
-  }, [queryClient, account?.address]);
+    // R51 audit fix: also invalidate the
+    // `useStreakInfo` query (key shape
+    // `["streakInfo", streakId]`). After
+    // `createPolicy` or `saveProfile`, the
+    // agents' `RiskMonitor` updates
+    // `streak_info` off-chain and the next
+    // render of the home page's streak
+    // panel would otherwise show a stale
+    // "no policy" badge for up to 30s.
+    // Only invalidate when we know the
+    // streakId — otherwise the unscoped
+    // `["streakInfo"]` would also catch
+    // other addresses' cached streakInfo
+    // entries from SSR preloading.
+    if (streakId) {
+      void queryClient.invalidateQueries({
+        queryKey: ["streakInfo", streakId],
+        type: "active",
+      });
+    }
+  }, [queryClient, account?.address, streakId]);
   const [agentAddress, setAgentAddress] = useState("");
   const [budget, setBudget] = useState(50);
   const [policyId, setPolicyId] = useState("");

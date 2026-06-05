@@ -9,11 +9,20 @@ import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertMarket } from "../markets/store.js";
 
-const CONFIDENCE_THRESHOLD = Number(process.env.RESOLVER_CONFIDENCE ?? 85);
+// R51 audit fix: moved the `RESOLVER_CONFIDENCE` read
+// inside `runMarketResolver` so a hot-patch via
+// `bootstrap-env.ts` takes effect on the next tick.
+// The previous module-level capture meant a
+// hot-patched value would not be seen until the
+// process restarted, defeating the point of the
+// hot-patch utility. The sibling `market-creator.ts`
+// and `prize-admin.ts` already use this in-body
+// pattern (R48 audit fix #6 / #3).
 
 async function resolveOutcome(
   title: string,
   resolutionSource: string,
+  confidenceThreshold: number,
 ): Promise<{ outcome: 1 | 2; confidence: number; reasoning: string }> {
   let spot: number | null = null;
   try {
@@ -37,7 +46,7 @@ Respond ONLY JSON: {"outcome":"yes"|"no","confidence":0-100,"reasoning":"..."}`;
         confidence: number;
         reasoning: string;
       };
-      if (p.confidence >= CONFIDENCE_THRESHOLD) {
+      if (p.confidence >= confidenceThreshold) {
         return {
           outcome: p.outcome === "yes" ? 1 : 2,
           confidence: p.confidence,
@@ -67,6 +76,20 @@ Respond ONLY JSON: {"outcome":"yes"|"no","confidence":0-100,"reasoning":"..."}`;
 
 export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult> {
   const now = Date.now();
+  // R51 audit fix: read `RESOLVER_CONFIDENCE` here
+  // (function body) so a hot-patch takes effect
+  // on the next tick. Clamp to [0, 100] to
+  // defend against a misconfigured env value
+  // (`RESOLVER_CONFIDENCE=500` would have made
+  // every market "low confidence" and silently
+  // stopped resolutions).
+  const confidenceThresholdRaw = Number(
+    process.env.RESOLVER_CONFIDENCE ?? 85,
+  );
+  const confidenceThreshold = Math.max(
+    0,
+    Math.min(100, Number.isFinite(confidenceThresholdRaw) ? confidenceThresholdRaw : 85),
+  );
   const expired = listMarkets().filter(
     (m) => m.status === "active" && m.expiry_ms <= now,
   );
@@ -83,6 +106,7 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
   const { outcome, confidence, reasoning } = await resolveOutcome(
     market.title,
     market.resolution_source,
+    confidenceThreshold,
   );
 
   if (market.id.startsWith("demo-")) {

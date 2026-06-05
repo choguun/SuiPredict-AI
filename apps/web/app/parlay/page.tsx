@@ -12,6 +12,7 @@ import {
   DUSDC_TYPE,
   extractCreatedObjectId,
   listMarkets,
+  normalizeObjectId,
   readParlayLegsLost,
   readParlayLegsRecorded,
   readParlayMaxPayoutBps,
@@ -81,8 +82,16 @@ export default function ParlayPage() {
     if (!client || !account) return;
     setLoadingBalance(true);
     try {
+      // R51 audit fix: normalize the owner
+      // address. `listCoins` is case-sensitive
+      // on the wire; a mixed-case Enoki
+      // zkLogin session would otherwise
+      // silently return `{ objects: [] }`
+      // and the user would see "— DUSDC"
+      // for the duration of the tab even
+      // though they hold coins.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
       });
       const total = objects.reduce(
@@ -270,8 +279,17 @@ export default function ParlayPage() {
       // collateral (parlay::create_parlay takes one coin). A user
       // with several small coins would need a separate merge PTB —
       // simpler to demand they consolidate first.
+      // R51 audit fix: normalize the owner
+      // address. `listCoins` is case-sensitive
+      // on the wire; a mixed-case Enoki
+      // zkLogin session would otherwise
+      // silently return `{ objects: [] }`
+      // and the user would hit the
+      // "No DUSDC — request from DeepBook
+      // testnet form" branch even though
+      // they hold a balance.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
       });
       if (objects.length === 0) {

@@ -45,7 +45,7 @@ import {
   releaseSweepLock,
 } from "../gamification/store.js";
 import { getPosition } from "../markets/store.js";
-import { runPositionIndexer } from "./position-indexer.js";
+import { readCursor, runPositionIndexer, writeCursor } from "./position-indexer.js";
 
 const PTB_BATCH = 20;
 
@@ -222,9 +222,23 @@ type EventPageCursor = Parameters<SuiJsonRpcClient["queryEvents"]>[0]["cursor"];
 async function queryAllEvents(
   client: SuiJsonRpcClient,
   query: EventQuery,
+  stateKey: string,
 ): Promise<unknown[]> {
   const out: unknown[] = [];
-  let cursor: EventPageCursor = null;
+  // R51 audit fix: use the (network, package_id)-
+  // tagged cursor from `indexer_state` instead of
+  // re-pulling the full event history. The
+  // streak-sweeper's three `queryAllEvents` calls
+  // (MarketCreatedEvent, DailyResolvedEvent,
+  // BadgeMintedEvent) walked the entire history on
+  // every cron tick. A 6-month-old mainnet deploy
+  // with 100k+ events would burn 100MB of JSON-RPC
+  // response bandwidth per tick and OOM the Node
+  // process. `readCursor` is now network+package
+  // tagged (R50) so a hot-patch resets cleanly; the
+  // `readCursor`/`writeCursor` helpers live in
+  // `markets/store.ts`.
+  let cursor: EventPageCursor = readCursor(stateKey);
   do {
     const page = await client.queryEvents({
       query,
@@ -235,6 +249,13 @@ async function queryAllEvents(
     out.push(...page.data);
     cursor = page.nextCursor ?? null;
   } while (cursor);
+  // Persist the final cursor so the next tick starts
+  // here. `writeCursor` is a no-op when `cursor` is
+  // null (a one-shot history pull from the genesis
+  // cursor left the state in a "no resumable
+  // position" state, which is the same behavior as
+  // the pre-R51 sweep).
+  writeCursor(stateKey, cursor);
   return out;
 }
 
@@ -422,7 +443,7 @@ export async function resolveDayOutcomes(
   // 1. Daily markets
   const createdRaw = await queryAllEvents(client, {
     MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketCreatedEvent`,
-  });
+  }, "streak-sweeper:MarketCreatedEvent");
   const dailyMarketIds = new Set<string>();
   // `category` is read off the same `MarketCreatedEvent` stream and
   // forwarded to the per-user `ResolvedUser` so the off-chain
@@ -469,7 +490,7 @@ export async function resolveDayOutcomes(
   // 2. Resolutions for daily markets
   const resolvedRaw = await queryAllEvents(client, {
     MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MarketResolvedEvent`,
-  });
+  }, "streak-sweeper:MarketResolvedEvent");
   const resolvedMap = new Map<string, 1 | 2>();
   for (const e of resolvedRaw) {
     const ev = e as { parsedJson: { market_id?: string; outcome?: number } };
@@ -483,7 +504,7 @@ export async function resolveDayOutcomes(
   // 3. Mints on daily markets within the day window
   const mintedRaw = await queryAllEvents(client, {
     MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prediction_market::MintedEvent`,
-  });
+  }, "streak-sweeper:MintedEvent");
   const userMarkets = new Map<string, Set<string>>();
   for (const e of mintedRaw) {
     const ev = e as {

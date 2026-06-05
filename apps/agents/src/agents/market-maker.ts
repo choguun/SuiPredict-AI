@@ -11,7 +11,7 @@ import {
   DeepBookClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedClient, recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
 
 /**
@@ -122,7 +122,13 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   }
 
   const poolKey = target.deepbook_pool_key ?? PREDICT_DEEPBOOK_POOL_KEY;
-  const client = createClient();
+  // R51 audit fix: shared gRPC client (see lib.ts).
+  // The previous per-tick `createClient()` opened a
+  // fresh HTTP/2 connection on every call; the SDK
+  // never closed the prior ones, so the gRPC client
+  // pool grew to ~60 idle connections after a few
+  // minutes of polling. Use the singleton.
+  const client = getSharedClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
 
   // Create DeepBook client for this specific market, using its pool key

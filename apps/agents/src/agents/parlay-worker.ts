@@ -57,7 +57,7 @@ import { isMoveAbortInModule } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import { createClient, executeTransaction } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedClient, recordResult } from "../lib.js";
 import { getMarket } from "../markets/store.js";
 import {
   getParlayLegMarketIds,
@@ -221,7 +221,18 @@ export async function runParlayWorker(
       reasoning: "DUSDC_TYPE not set — worker inert.",
     });
   }
-  const client = createClient();
+  // R51 audit fix: use the shared gRPC client. The
+  // per-tick `createClient()` was redundant — every
+  // worker creates its own, and the gRPC client opens
+  // a fresh HTTP/2 connection on construction. After
+  // 5 min of polling at 5s intervals, the worker had
+  // opened 60 connections to the public RPC, half of
+  // which were still in the indexer's keepalive pool
+  // (the SDK never explicitly closes them on the
+  // Node.js side). Use the shared singleton from
+  // `lib.ts` so the gRPC client is constructed once
+  // per process and reused across all 7 workers.
+  const client = getSharedClient();
 
   // ---- 1. Record pending legs for unfinalized parlays --------------
   // Pull the full list once (not per-user) so a user with 5 parlays
@@ -235,7 +246,28 @@ export async function runParlayWorker(
   const scoped = WORKER_POOL_ID
     ? allUnfinalized.filter((p) => p.pool_id === WORKER_POOL_ID)
     : allUnfinalized;
-  if (scoped.length === 0) {
+  // R51 audit fix: cap the per-tick work list. A burst
+  // event (e.g. a DeepBook arbitrage or a coordinated
+  // sign-up campaign) can create thousands of parlays
+  // in a single block. The previous unbounded `for…of`
+  // loop would attempt to record every leg in one tick
+  // — a 5s tick can't PTB-record 1000 parlays before the
+  // next one fires, and the open wallet would run out of
+  // gas (we never refresh the sponsor's gas coin after
+  // a large batch). Cap at 25 per tick, picked as
+  // "comfortably fits a tick budget" from the R36 cron
+  // traces. Tail processing: the next tick picks up the
+  // remaining parlays, so worst-case latency is
+  // `n / 25 * 5s`. A `MAX_PARLAYS_PER_TICK` env override
+  // lets the operator tune for gas-bucket size.
+  const MAX_PARLAYS_PER_TICK = Number(
+    process.env.MAX_PARLAYS_PER_TICK ?? 25,
+  );
+  const scopedAndCapped =
+    scoped.length > MAX_PARLAYS_PER_TICK
+      ? scoped.slice(0, MAX_PARLAYS_PER_TICK)
+      : scoped;
+  if (scopedAndCapped.length === 0) {
     return recordResult("ParlayWorker", {
       action: "noop",
       reasoning:
@@ -252,7 +284,7 @@ export async function runParlayWorker(
   let legsTransientFailures = 0;
   const sampleFailures: string[] = [];
 
-  for (const parlay of scoped) {
+  for (const parlay of scopedAndCapped) {
     if (parlay.legs_recorded >= parlay.leg_count) continue;
     // R37 audit fix: read per-leg market_ids from the off-chain
     // mirror first. The position-indexer now persists `market_id`
@@ -410,6 +442,9 @@ export async function runParlayWorker(
     `Parlays: ${legsRecorded} legs recorded, ${legsSkippedUnresolved} skipped (unresolved/disputed), ` +
     `${legsPermanentFailures} permanent failures, ${legsTransientFailures} transient failures; ` +
     `${finalized} finalized, ${finalizeFailures} finalize failures. ` +
+    (scopedAndCapped.length < scoped.length
+      ? ` Capped at ${MAX_PARLAYS_PER_TICK}/${scoped.length} this tick.`
+      : "") +
     (sampleFailures.length > 0
       ? `Sample failures: ${sampleFailures.join(" | ")}.`
       : "") +

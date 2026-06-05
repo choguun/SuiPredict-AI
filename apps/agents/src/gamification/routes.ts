@@ -4,7 +4,8 @@
  *   GET /leaderboard/week?index=N&limit=M&category=K
  *   GET /leaderboard/country?code=us&index=N&limit=M&category=K
  *   GET /leaderboard/user/:addr?week=N
- *   GET /prize/signature?week=N&rank=R&user=:addr&amount=:a
+ *   GET /prize/signature/challenge?user=:addr
+ *   GET /prize/signature?week=N&rank=R&user=:addr&amount=:a&nonce=…&signature=…&publicKey=…
  *   GET /prize/claims?week=N
  *   GET /profile/:addr
  *   GET /parlay/:id
@@ -21,6 +22,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 import { keccak_256 } from "@noble/hashes/sha3";
 import {
   createClient,
@@ -46,6 +48,7 @@ import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
 import { corsFor } from "../http-cors.js";
 import { getSharedClient } from "../lib.js";
 import { tryConsume as tryRateLimit } from "../rate-limit.js";
+import { consumeNonce, issueNonce } from "./nonce-store.js";
 
 /**
  * Best-effort client-IP extraction. The agents
@@ -130,16 +133,27 @@ function serializeParlay(p: ParlayRow): {
   };
 }
 
-function json(res: ServerResponse, status: number, body: unknown, sideEffecting = true) {
+function json(res: ServerResponse, status: number, body: unknown, sideEffecting = true, extraHeaders?: Record<string, string>) {
   // R35 audit fix: every response previously set "*" regardless of
   // whether the endpoint was side-effecting. Use the shared helper
   // (env-driven allowlist) for everything in this file — the routes
   // here are prize signing, prize claim recording, parlay reads, and
   // leaderboard reads, all of which we want restricted to the
   // configured web origin in production.
+  //
+  // R51 audit fix: accept an `extraHeaders` bag for
+  // 429 `Retry-After` and any future per-route
+  // metadata. A 429 without a `Retry-After` header
+  // forces the client to retry with a hard-coded
+  // backoff (or worse, an exponential one without a
+  // cap), amplifying the original rate-limit
+  // pressure. RFC 6585 §4 specifies `Retry-After`
+  // for 429; the value is a delta-seconds integer
+  // derived from the bucket's refill rate.
   res.writeHead(status, {
     "Content-Type": "application/json",
     ...corsFor(sideEffecting),
+    ...(extraHeaders ?? {}),
   });
   res.end(JSON.stringify(body));
 }
@@ -293,6 +307,67 @@ export async function handleGamificationRoute(
     return true;
   }
 
+  // GET /prize/signature/challenge?user=:addr
+  //
+  // R51 audit fix: the wallet-challenge nonce flow. The
+  // previous `/prize/signature` accepted any `(user, rank)`,
+  // re-derived the leaderboard membership server-side, and
+  // signed for whoever showed up at rank-1. The remaining
+  // gap: a script that watched the leaderboard and knew a
+  // rank-1 address could request a signature for *that*
+  // user. If the user later signed whatever tx the server
+  // produced, the script controlled which tx the wallet
+  // signed (via a phishing page that pointed to the script's
+  // server), draining the pool.
+  //
+  // The fix is a 2-call challenge/response: this endpoint
+  // issues a 32-byte nonce bound to `user` (60s TTL,
+  // single-use, in-memory map); the client signs the
+  // canonical message with their wallet, then passes the
+  // signature back to `/prize/signature`. The signature
+  // proves the client holds the private key for `user`,
+  // closing the script-driven drain.
+  const challengeMatch = url.pathname.match(/^\/prize\/signature\/challenge$/);
+  if (challengeMatch) {
+    const user = url.searchParams.get("user") ?? "";
+    if (!/^0x[a-fA-F0-9]{64}$/.test(user)) {
+      json(res, 400, { error: "invalid user address" });
+      return true;
+    }
+    // Rate-limit per (ip) and per (user) on challenge
+    // issuance. A bot that hammers this endpoint to
+    // evict other users' unconsumed nonces (the
+    // issueNonce path evicts the prior nonce for the
+    // same user) should be capped.
+    if (
+      !tryRateLimit(`prize-chal:ip:${clientIp(req)}`, {
+        capacity: 20,
+        refillPerMinute: 20,
+      }) ||
+      !tryRateLimit(`prize-chal:user:${user}`, {
+        capacity: 5,
+        refillPerMinute: 5,
+      })
+    ) {
+      // R51 audit fix: emit `Retry-After` so the
+      // client can back off cleanly. The bucket
+      // refills at 5/min, so the next available
+      // slot is in `60s / 5 = 12s` minimum. Use
+      // 12s as the per-route constant.
+      json(
+        res,
+        429,
+        { error: "rate limit exceeded; try again later" },
+        true,
+        { "Retry-After": "12" },
+      );
+      return true;
+    }
+    const { nonce, message, expiresAtMs } = issueNonce(user);
+    json(res, 200, { nonce, message, expiresAtMs });
+    return true;
+  }
+
   // GET /prize/signature?week=N&rank=R&user=:addr&amount=:a
   //
   // Authorisation model: the on-chain `claim_prize` trusts whatever
@@ -342,7 +417,15 @@ export async function handleGamificationRoute(
         refillPerMinute: 5,
       })
     ) {
-      json(res, 429, { error: "rate limit exceeded; try again later" });
+      // R51 audit fix: emit `Retry-After`. The user
+      // bucket refills at 5/min (12s per token).
+      json(
+        res,
+        429,
+        { error: "rate limit exceeded; try again later" },
+        true,
+        { "Retry-After": "12" },
+      );
       return true;
     }
     // R49 audit fix: require integer week/rank. `NaN < 0` and
@@ -366,6 +449,69 @@ export async function handleGamificationRoute(
     }
     if (!Number.isInteger(category) || category < 0 || category > 3) {
       json(res, 400, { error: "category must be 0 (general), 1 (ai_news), 2 (crypto_price), or 3 (other)" });
+      return true;
+    }
+    // R51 audit fix: wallet-challenge nonce flow. The client
+    // must first call `/prize/signature/challenge?user=:addr`
+    // to obtain a 32-byte nonce bound to `user`, sign the
+    // canonical message with their wallet, and pass the
+    // resulting Sui-formatted signature here. The signature
+    // proves the caller holds the private key for `user`;
+    // without it, any caller who knew the user's address
+    // could request a rank-1 signature and hand the user a
+    // phishing tx to sign (closing the script-driven drain
+    // finding from R51).
+    const nonce = url.searchParams.get("nonce") ?? "";
+    const signatureB64 = url.searchParams.get("signature") ?? "";
+    if (!nonce || !signatureB64) {
+      json(res, 400, {
+        error: "wallet challenge required: call /prize/signature/challenge first, sign the returned message, then resubmit with nonce+signature",
+      });
+      return true;
+    }
+    // The signature is the Sui base64-encoded
+    // `flag || sig || pubkey` triple. The signature
+    // scheme for an ed25519 wallet is fixed (flag = 0x00),
+    // so the size is exactly 1 + 64 + 32 = 97 bytes
+    // before base64 encoding. Validate the length up
+    // front to fail fast on garbage input.
+    if (signatureB64.length !== 132) {
+      json(res, 400, { error: "signature has invalid length; expected 132 base64 chars" });
+      return true;
+    }
+    // The nonce is hex (32 bytes = 64 hex chars). Validate
+    // the format and look it up in the issued-nonce map.
+    // The map enforces the (nonce, user) binding, the
+    // single-use invariant, and the 60s TTL.
+    const nonceResult = consumeNonce(nonce, user);
+    if (!nonceResult.ok) {
+      json(res, 401, {
+        error: `wallet challenge failed: ${nonceResult.reason}`,
+        reason: nonceResult.reason,
+      });
+      return true;
+    }
+    // Build the canonical message the client signed
+    // (must match the format in `nonce-store.ts` exactly).
+    const message = `SuiPredict Prize Claim\nnonce: ${nonce}\nuser: ${user}`;
+    // Verify the signature over `message` recovers to
+    // `user`. `verifyPersonalMessageSignature` is the
+    // Sui SDK's wrapper for the ed25519 verifier with
+    // the PersonalMessage intent prefix; it throws on
+    // a bad signature or a pubkey that doesn't match
+    // the bound address.
+    try {
+      await verifyPersonalMessageSignature(
+        new TextEncoder().encode(message),
+        signatureB64,
+        { address: user },
+      );
+    } catch (err) {
+      const errorId = logAndCorrelate("/prize/signature", err);
+      json(res, 401, {
+        error: "wallet signature does not verify against user address",
+        errorId,
+      });
       return true;
     }
     // Membership check: prefer the archive (finalized weeks), fall
@@ -557,7 +703,15 @@ export async function handleGamificationRoute(
         refillPerMinute: 10,
       })
     ) {
-      json(res, 429, { error: "rate limit exceeded; try again later" });
+      // R51 audit fix: emit `Retry-After`. The
+      // bucket refills at 10/min (6s per token).
+      json(
+        res,
+        429,
+        { error: "rate limit exceeded; try again later" },
+        true,
+        { "Retry-After": "6" },
+      );
       return true;
     }
     //

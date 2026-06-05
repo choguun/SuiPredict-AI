@@ -9,7 +9,7 @@ import {
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { callLlm, recordResult } from "../lib.js";
+import { callLlm, getSharedClient, recordResult } from "../lib.js";
 import { listMarkets, upsertMarket } from "../markets/store.js";
 
 // R43 audit fix: removed the module-level MAX_ACTIVE and
@@ -167,8 +167,14 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     });
   }
 
-  const { createClient, executeTransaction } = await import("@suipredict/sdk");
-  const client = createClient();
+  const { executeTransaction } = await import("@suipredict/sdk");
+  // R51 audit fix: shared gRPC client (see lib.ts).
+  // The previous per-tick `createClient()` opened a
+  // fresh HTTP/2 connection on every call; the SDK
+  // never closed the prior ones, so the gRPC client
+  // pool grew to ~60 idle connections after a few
+  // minutes of polling. Use the singleton.
+  const client = getSharedClient();
 
   try {
     // Step 1: acquire a Coin<DEEP> with enough for pool creation fee (500 DEEP)

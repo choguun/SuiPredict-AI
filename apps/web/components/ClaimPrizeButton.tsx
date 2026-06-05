@@ -91,9 +91,53 @@ export function ClaimPrizeButton(props: Props) {
     const toastId = toast.loading("Fetching backend signature…");
     try {
       const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
-      // Path is `/prize/signature`; legacy `/prize/claim-payload` was
-      // an earlier draft that the server no longer recognises. Sending
-      // to it returns 404 and the user sees a confusing error.
+      // R51 audit fix: wallet-challenge nonce flow. The
+      // server's `/prize/signature` endpoint now requires
+      // a `nonce` and `signature` so a script that watches
+      // the leaderboard can't request a rank-1 signature
+      // for an address it doesn't own (the signature
+      // proves the caller holds the private key for
+      // `account.address`).
+      //
+      // Step 1: ask the server for a fresh challenge
+      // bound to our address.
+      const challengeUrl = new URL(`${base}/prize/signature/challenge`);
+      challengeUrl.searchParams.set("user", account.address);
+      const challengeRes = await fetch(challengeUrl.toString());
+      if (!challengeRes.ok) {
+        const text = await challengeRes.text().catch(() => "");
+        throw new Error(
+          `challenge endpoint ${challengeRes.status}: ${text.slice(0, 200) || "no body"}`,
+        );
+      }
+      const challenge = (await challengeRes.json()) as {
+        nonce: string;
+        message: string;
+        expiresAtMs: number;
+      };
+      if (!challenge.nonce || !challenge.message) {
+        throw new Error("challenge endpoint returned no nonce or message");
+      }
+      toast.loading("Sign challenge in your wallet…", { id: toastId });
+      // Step 2: sign the canonical message with the
+      // wallet. `dAppKit.signPersonalMessage({message})`
+      // is the Sui SDK's ed25519-with-PersonalMessage-
+      // intent sign; the result is the Sui-formatted
+      // base64 signature (`flag || sig || pubkey`).
+      // The server uses
+      // `verifyPersonalMessageSignature` to check the
+      // signature recovers to `account.address`.
+      const messageBytes = new TextEncoder().encode(challenge.message);
+      const signed = await dAppKit.signPersonalMessage({ message: messageBytes });
+      if (!signed?.signature) {
+        throw new Error("wallet returned no signature for the challenge");
+      }
+      // Step 3: POST the nonce + signature to the
+      // existing signature endpoint. Path is
+      // `/prize/signature`; legacy `/prize/claim-payload`
+      // was an earlier draft the server no longer
+      // recognises. Sending to it returns 404 and the
+      // user sees a confusing error.
       const url = new URL(`${base}/prize/signature`);
       url.searchParams.set("week", String(weekIndex));
       url.searchParams.set("rank", String(rank));
@@ -104,6 +148,13 @@ export function ClaimPrizeButton(props: Props) {
       // "crypto price" pool (round-17 audit finding #6). Defaults to
       // 0 (general) for callers that haven't been updated yet.
       url.searchParams.set("category", String(category ?? 0));
+      // R51 audit fix: pass nonce + signature so the
+      // server can verify the user actually controls
+      // the private key for `user` (the wallet-challenge
+      // nonce flow). Without these, the server returns
+      // 400 "wallet challenge required".
+      url.searchParams.set("nonce", challenge.nonce);
+      url.searchParams.set("signature", signed.signature);
       // `amount` is intentionally NOT sent — the server is the single
       // source of truth for the rank table (re-derives via
       // `expectedAmountForRank`) and re-derives the canonical value

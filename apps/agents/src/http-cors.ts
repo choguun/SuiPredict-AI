@@ -36,6 +36,42 @@ function resolveAllowedOrigin(): string {
   if (cachedOrigin !== null) return cachedOrigin;
   const fromEnv = process.env.ALLOWED_ORIGIN?.trim();
   if (fromEnv) {
+    // R51 audit fix: validate the env value is
+    // a well-formed http(s) origin. The previous
+    // shape accepted any string — `ALLOWED_ORIGIN=*`
+    // silently downgraded the allowlist to a
+    // literal `*` (the browser would set
+    // `Access-Control-Allow-Origin: *` for the
+    // matching request, defeating the R35
+    // lockdown). `ALLOWED_ORIGIN=example.com`
+    // (no scheme) gets emitted as
+    // `Access-Control-Allow-Origin: example.com`
+    // and the browser rejects the response
+    // outright. `ALLOWED_ORIGIN=null` is an
+    // attacker-controlled bypass for a
+    // permissive-browser-origin sandboxed iframe.
+    // Validate before caching.
+    try {
+      const u = new URL(fromEnv);
+      if (u.protocol !== "http:" && u.protocol !== "https:") {
+        throw new Error(
+          `[agents] ALLOWED_ORIGIN must be an http(s) URL, got protocol=${u.protocol}`,
+        );
+      }
+      if (u.pathname && u.pathname !== "/") {
+        throw new Error(
+          `[agents] ALLOWED_ORIGIN must be an origin (scheme + host[:port]); ` +
+            `got path=${u.pathname}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof TypeError) {
+        throw new Error(
+          `[agents] ALLOWED_ORIGIN is not a valid URL: ${fromEnv}`,
+        );
+      }
+      throw err;
+    }
     cachedOrigin = fromEnv;
     return cachedOrigin;
   }

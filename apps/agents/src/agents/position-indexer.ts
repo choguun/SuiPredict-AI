@@ -167,7 +167,7 @@ interface EventEnvelope {
   timestampMs?: string;
 }
 
-function readCursor(stateKey: string): EventCursor {
+export function readCursor(stateKey: string): EventCursor {
   // R50 audit fix: read the cursor only if the row's
   // stored (network, package_id) matches the current
   // runtime. The previous shape stored one row per
@@ -272,7 +272,7 @@ function u64ToSafeNumber(
   return Number(value);
 }
 
-function writeCursor(stateKey: string, cursor: EventCursor): void {
+export function writeCursor(stateKey: string, cursor: EventCursor): void {
   if (cursor == null) return;
   // R50 audit fix: stamp the row with the current
   // (network, package_id) so a future

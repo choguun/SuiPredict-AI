@@ -107,6 +107,20 @@ export function getDb(): Database.Database {
       CREATE TABLE IF NOT EXISTS indexer_state (
         key TEXT PRIMARY KEY,
         cursor TEXT,
+        -- R51 audit fix: stamp each cursor row with the
+        -- (network, package_id) it was captured under. The
+        -- position-indexer compares these against the
+        -- runtime env on readCursor() and discards the
+        -- cursor on a mismatch (e.g. testnet -> mainnet
+        -- hot-patch, or agent_policy republished under a
+        -- new id on the same network). Pre-R51 rows
+        -- (created before this migration ran) had no
+        -- columns at all; migrateIndexerStateColumns()
+        -- adds them below with empty defaults so the
+        -- mismatch check fires and re-bootstraps from
+        -- the genesis cursor.
+        network TEXT NOT NULL DEFAULT '',
+        package_id TEXT NOT NULL DEFAULT '',
         updated_at_ms INTEGER NOT NULL
       );
 
@@ -151,6 +165,7 @@ export function getDb(): Database.Database {
         ON registered_markets(market_index);
     `);
     migrateMarketColumns();
+    migrateIndexerStateColumns();
     // R46 audit fix: only seed demo markets in dev / test
     // environments. The previous code ran on every fresh DB
     // regardless of `NODE_ENV`, which meant a production
@@ -264,6 +279,41 @@ function migrateMarketColumns() {
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) {
       getDb().exec(`ALTER TABLE markets ADD COLUMN ${name} ${type}`);
+    }
+  }
+}
+
+/**
+ * R51 audit fix: add the `network` and `package_id` columns to
+ * pre-existing `indexer_state` tables. The R50 audit introduced
+ * the (network, package_id) cursor tag in `position-indexer.ts`
+ * but didn't ship the schema migration; a fresh DB has the
+ * columns via CREATE TABLE, but a pre-R51 DB throws
+ * `SqliteError: no such column: network` on the first cursor
+ * read, breaking all 30 event subscriptions.
+ *
+ * Empty defaults mean pre-R51 cursor rows compare as mismatched
+ * against the runtime env (which has SUI_NETWORK /
+ * AGENT_POLICY_PACKAGE_ID set), and `readCursor` discards them,
+ * re-bootstrapping from the genesis cursor. The empty defaults
+ * are also safe for fresh rows written by R50 code that didn't
+ * supply the columns — those rows just look mismatched and are
+ * re-bootstrapped on the next read, which is exactly the
+ * pre-R51 behavior.
+ */
+function migrateIndexerStateColumns() {
+  const existing = new Set(
+    (getDb().prepare(`PRAGMA table_info(indexer_state)`).all() as { name: string }[]).map(
+      (row) => row.name,
+    ),
+  );
+  const columns: Record<string, string> = {
+    network: "TEXT NOT NULL DEFAULT ''",
+    package_id: "TEXT NOT NULL DEFAULT ''",
+  };
+  for (const [name, type] of Object.entries(columns)) {
+    if (!existing.has(name)) {
+      getDb().exec(`ALTER TABLE indexer_state ADD COLUMN ${name} ${type}`);
     }
   }
 }

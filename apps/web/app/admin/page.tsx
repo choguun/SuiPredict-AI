@@ -98,7 +98,22 @@ const ADMIN_ADDRESS = process.env.NEXT_PUBLIC_ADMIN_ADDRESS ?? "";
 // the testnet URL, which is the most likely to actually resolve for
 // dev machines. The `as` cast on a raw env value would silently accept
 // any string; narrow via runtime membership check.
-const SUI_NETWORKS = ["testnet", "mainnet", "devnet", "localnet"] as const;
+//
+// R51 audit fix: drop "localnet" from the allowlist.
+// SuiVision only indexes mainnet/testnet/devnet; a
+// `https://localnet.suivision.xyz/...` link 404s
+// (the subdomain does not resolve). Pre-R51, a
+// developer running `sui start --with-faucet` would
+// see every "View on SuiVision" button in the
+// admin dashboard link to a useless 404. With
+// "localnet" removed, the membership check now
+// falls through to the "testnet" default, and the
+// SuiVision link points to a real (testnet)
+// page that surfaces a clear "tx not found" if
+// the operator copied a localnet digest. Local
+// operators can still get the digest from the
+// CLI without the web UI.
+const SUI_NETWORKS = ["testnet", "mainnet", "devnet"] as const;
 type SuiNetwork = (typeof SUI_NETWORKS)[number];
 const rawNetwork = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
 const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(rawNetwork)

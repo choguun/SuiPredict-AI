@@ -19,6 +19,7 @@ import {
   DUSDC_TYPE,
   QUOTE_SCALE,
   extractCreatedObjectId,
+  normalizeObjectId,
   buildRedeemNoTx,
   buildRedeemNoWithStreakTx,
   buildRedeemTx,
@@ -495,18 +496,58 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     setBusy("mint");
     const toastId = toast.loading("Minting YES + NO from DUSDC…");
     try {
+      // R51 audit fix: normalize the owner
+      // address. The gRPC `listCoins` is
+      // case-sensitive on the wire; a
+      // mixed-case Enoki zkLogin session
+      // (uppercased in the OAuth claim)
+      // would not match the on-chain
+      // `Address` field and silently return
+      // `{ objects: [] }`.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: QUOTE_COIN,
       });
-      const coin = objects[0];
-      if (!coin) throw new Error("No DUSDC — request from DeepBook testnet form");
+      if (objects.length === 0) {
+        throw new Error("No DUSDC — request from DeepBook testnet form");
+      }
+      // R51 audit fix: pick the largest coin, not
+      // `objects[0]`. The previous code took the first
+      // coin in the indexer's response order, which is
+      // not necessarily the largest. A user with five
+      // small DUSDC coins (gas refunds, prior redeem
+      // dust) would have `coin.balance < amountAtoms`
+      // and the PTB would abort with
+      // `EInsufficientBalance`, paying gas for a
+      // doomed tx. The sibling parlay flow at
+      // `app/parlay/page.tsx:280-292` already does
+      // this sort; this was the survivor.
+      const sorted = [...objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const coin = sorted[0]!;
+      // Pre-flight balance check: the sorted coin's
+      // balance must be >= `amountAtoms`. The PTB
+      // also implicitly checks this via
+      // `EInsufficientBalance`, but a clean error
+      // before signing saves the user gas + the wallet
+      // a confusing abort.
+      const totalBalance = objects.reduce(
+        (s, c) => s + BigInt(c.balance),
+        BigInt(0),
+      );
+      const amountAtoms = dollarsToDusdc(qty);
+      if (BigInt(coin.balance) < amountAtoms && totalBalance < amountAtoms) {
+        throw new Error(
+          `Insufficient DUSDC: need ${(Number(amountAtoms) / 1e6).toFixed(2)} DUSDC, ` +
+            `have ${(Number(totalBalance) / 1e6).toFixed(2)} DUSDC across ${objects.length} coin(s).`,
+        );
+      }
       // Convert the displayed `qty` (in dollars) to DUSDC atoms
       // (6 decimals). The SDK's `buildMintSharesTx` splits that
       // amount off the user's DUSDC bag in-PTB and passes only the
       // split coin to `mint_shares` — the whole bag is never
       // deposited.
-      const amountAtoms = dollarsToDusdc(qty);
       const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId, amountAtoms);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       // R38 audit fix: same R30/R32/R37 pattern. The previous
@@ -847,8 +888,16 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     const toastId = toast.loading("Fetching your winning position...");
     try {
       const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
+      // R51 audit fix: normalize the owner
+      // address. `listCoins` is case-sensitive
+      // on the wire — a mixed-case Enoki
+      // zkLogin session would otherwise
+      // silently return `{ objects: [] }`
+      // and trigger the "You don't hold
+      // any ..." toast for a user who
+      // actually holds winning tokens.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: winningCoinType,
       });
       const coin = objects[0];

@@ -23,7 +23,7 @@
  */
 import { createClient, readPrizePoolBalance } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedClient, recordResult } from "../lib.js";
 import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
 
 // Env reads live inside `runPrizeDistributor` so a late write by
@@ -58,7 +58,13 @@ export async function runPrizeDistributor(
   // on the user's claim tx. Reading the balance first lets us skip
   // the whole week with a clear message instead of paying gas for N
   // doomed PTBs.
-  const client = createClient();
+  // R51 audit fix: shared gRPC client (see lib.ts).
+  // The previous per-tick `createClient()` opened a
+  // fresh HTTP/2 connection on every call; the SDK
+  // never closed the prior ones, so the gRPC client
+  // pool grew to ~60 idle connections after a few
+  // minutes of polling. Use the singleton.
+  const client = getSharedClient();
   let poolBalance = 0n;
   try {
     // R39 audit fix: replaced the inline shape detection with

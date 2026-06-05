@@ -6,6 +6,25 @@ import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+/**
+ * R51 audit fix: validate `NEXT_PUBLIC_SUI_NETWORK`
+ * against the Sui allowlist before passing to the
+ * Enoki zkLogin flow. A typo (e.g. `mantinet`) would
+ * otherwise cast to a string and mint a testnet
+ * zkLogin session for a mainnet deploy. The same
+ * allowlist exists in `app/admin/page.tsx:101-107`
+ * and `lib/dapp-kit.ts`; the Enoki flow was the
+ * sole survivor without it.
+ */
+const SUI_LOGIN_NETWORKS = ["testnet", "mainnet", "devnet"] as const;
+type SuiLoginNetwork = typeof SUI_LOGIN_NETWORKS[number];
+function resolveSuiNetworkForLogin(raw: string | undefined): SuiLoginNetwork {
+  if (raw && (SUI_LOGIN_NETWORKS as readonly string[]).includes(raw)) {
+    return raw as SuiLoginNetwork;
+  }
+  return "testnet";
+}
+
 export function ConnectModal() {
   const [isOpen, setIsOpen] = useState(false);
   // R48 audit fix: track which connect button (Google or
@@ -62,12 +81,19 @@ export function ConnectModal() {
         // OAuth round-trip would succeed, but every subsequent
         // signAndExecuteTransaction would target the wrong
         // chain.
-        network:
-          (process.env.NEXT_PUBLIC_SUI_NETWORK as
-            | "testnet"
-            | "mainnet"
-            | "devnet"
-            | undefined) ?? "testnet",
+        //
+        // R51 audit fix: validate the env value against
+        // the Sui network allowlist instead of a raw
+        // `as` cast. A typo in `.env`
+        // (`NEXT_PUBLIC_SUI_NETWORK=mantinet`) previously
+        // passed the cast and minted a testnet zkLogin
+        // session for a mainnet deploy. The admin page
+        // and `lib/dapp-kit.ts` already use the same
+        // allowlist check (R34/R39); the Enoki zkLogin
+        // flow here was the survivor.
+        network: resolveSuiNetworkForLogin(
+          process.env.NEXT_PUBLIC_SUI_NETWORK,
+        ),
       })
       .then((url) => {
         // Note: the user is navigating away; no need to clear
@@ -128,11 +154,28 @@ export function ConnectModal() {
       // data while React Query refetches. Clear on success
       // only — a failed disconnect keeps the cache as-is so
       // the user can retry without losing UI state.
-      queryClient.removeQueries({ queryKey: ["portfolio"] });
-      queryClient.removeQueries({ queryKey: ["marketsList"] });
-      queryClient.removeQueries({ queryKey: ["dailyMarkets"] });
-      queryClient.removeQueries({ queryKey: ["userStreakId"] });
-      queryClient.removeQueries({ queryKey: ["profile"] });
+      //
+      // R51 audit fix: add `type: "active"` to match
+      // the project convention (R43/R44/R45/R50
+      // closed the same pattern in parlay, vault,
+      // and markets/[id]). TanStack Query v5
+      // defaults to `"all"` (matches inactive
+      // subscribers too) — a future SSR-hydration
+      // strategy that registers an `["marketsList"]`
+      // query with `type: "inactive"` would have its
+      // cache nuked on every disconnect, surprising
+      // the next user.
+      const keys = [
+        "portfolio",
+        "marketsList",
+        "dailyMarkets",
+        "userStreakId",
+        "streakInfo",
+        "profile",
+      ];
+      for (const k of keys) {
+        queryClient.removeQueries({ queryKey: [k], type: "active" });
+      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "unknown error";

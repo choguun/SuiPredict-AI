@@ -12,6 +12,7 @@ import {
   getMarketOrderBook,
   buildMintSharesBatchTx,
   DUSDC_TYPE,
+  normalizeObjectId,
   type MarketInfo,
 } from "@suipredict/sdk";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
@@ -119,8 +120,16 @@ export function DailyPredictionCard() {
     }
     setSubmitting(true);
     try {
+      // R51 audit fix: normalize the owner
+      // address. `listCoins` is case-sensitive
+      // on the wire — a mixed-case Enoki
+      // zkLogin session would otherwise
+      // silently return `{ objects: [] }`
+      // and the user would hit the "No
+      // DUSDC" branch even though they
+      // hold a balance.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: QUOTE_COIN,
       });
       if (objects.length === 0) {

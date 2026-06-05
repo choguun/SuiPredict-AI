@@ -73,8 +73,12 @@ export function tryConsume(
       b.lastRefillMs = now;
     }
   }
-  if (b.tokens <= 0) return false;
+  if (b.tokens <= 0) {
+    opportunisticSweep();
+    return false;
+  }
   b.tokens -= 1;
+  opportunisticSweep();
   return true;
 }
 
@@ -92,4 +96,35 @@ export function tokensAvailable(key: string): number {
  */
 export function _resetForTests(): void {
   buckets.clear();
+}
+
+/**
+ * R51 audit fix: opportunistic sweep of idle buckets.
+ * The `buckets` Map is keyed by `(ip|user):route:address`
+ * and grows unbounded — a long-running process with many
+ * distinct user addresses (e.g. a bot that rotates through
+ * fake user IDs to evade the per-user rate limit) would
+ * fill memory with one-token-full buckets that never get
+ * touched again.
+ *
+ * Strategy: when the Map exceeds `EVICT_THRESHOLD`, walk
+ * the entries and drop any whose `lastRefillMs` is more
+ * than `IDLE_MS` ago. A bucket that hasn't been touched
+ * in an hour is overwhelmingly likely to be from a
+ * different user/IP; the active callers have new buckets
+ * by now. The sweep runs in O(n) but only when the Map is
+ * already at 80% capacity, so the amortized cost is
+ * O(1) per `tryConsume` call. A future Redis-backed
+ * limiter would be a strict tightening (TTL on the keys
+ * instead of an in-process sweep).
+ */
+const EVICT_THRESHOLD = 8_000;
+const IDLE_MS = 60 * 60 * 1000;
+
+function opportunisticSweep(): void {
+  if (buckets.size < EVICT_THRESHOLD) return;
+  const cutoff = Date.now() - IDLE_MS;
+  for (const [k, b] of buckets) {
+    if (b.lastRefillMs < cutoff) buckets.delete(k);
+  }
 }

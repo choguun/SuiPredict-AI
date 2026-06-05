@@ -129,6 +129,31 @@ export async function mergeAndSplitDusdc(
   owner: string,
   amount: bigint,
 ) {
+  // R51 audit fix: validate `amount > 0` and that
+  // the type is a bigint. The previous shape accepted
+  // `amount = 0n`, which would build a `splitCoins`
+  // PTB with a `pure.u64(0)` arg. Sui's BCS encoder
+  // accepts 0u64 (it's a valid u64), so the PTB
+  // submits successfully and the user pays gas for a
+  // zero-value split that yields a zero-balance coin
+  // — the downstream `transferObjects` or `deposit`
+  // call then aborts with an opaque Move error. A
+  // non-bigint (e.g. a `number`) reaches the same
+  // `tx.pure.u64(amount)` and the TS compiler
+  // bails (the Sui SDK signature requires bigint),
+  // but at runtime a forced-cast number reaching
+  // here would silently truncate. Validate both
+  // up front and throw with a clear error.
+  if (typeof amount !== "bigint") {
+    throw new Error(
+      `mergeAndSplitDusdc: amount must be bigint, got ${typeof amount}`,
+    );
+  }
+  if (amount <= 0n) {
+    throw new Error(
+      `mergeAndSplitDusdc: amount must be > 0, got ${amount}`,
+    );
+  }
   const { objects } = await client.core.listCoins({ owner, coinType: DUSDC_TYPE });
   if (objects.length === 0) {
     throw new Error(`No DUSDC found for ${owner}`);

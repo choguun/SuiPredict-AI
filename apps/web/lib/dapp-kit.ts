@@ -2,6 +2,7 @@
 
 import { createDAppKit } from "@mysten/dapp-kit-react";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
+import type { Transaction } from "@mysten/sui/transactions";
 import {
   AGENT_POLICY_PACKAGE_ID,
   PREDICT_PACKAGE_ID,
@@ -70,4 +71,105 @@ declare module "@mysten/dapp-kit-react" {
   interface Register {
     dAppKit: typeof dAppKit;
   }
+}
+
+/**
+ * Local mirror of the dAppKit
+ * `TransactionResultWithEffects` discriminated union.
+ * The shape is `{ $kind: "Transaction", Transaction: { digest, ... } }`
+ * or `{ $kind: "Failed" | "EffectsCert", ... }` — see the
+ * dAppKit types for the upstream definition. Defined
+ * here as a structural type so we don't depend on a
+ * path that may move between dAppKit versions.
+ */
+interface TransactionResultLike {
+  $kind: "Transaction" | "Failed" | "EffectsCert";
+  Transaction?: { digest: string };
+  [k: string]: unknown;
+}
+
+/**
+ * Result of a `submitAndWait` call. Mirrors the
+ * `TransactionResultWithEffects` discriminated union from
+ * dAppKit but flattens the post-wait digest onto the
+ * success variant so callers can render the digest
+ * without a second type-narrow. See
+ * https://sdk.mystenlabs.com/dapp-kit for the upstream
+ * shape.
+ */
+export type SubmitResult =
+  | { $kind: "Transaction"; digest: string }
+  | { $kind: "Failed" | "EffectsCert"; digest?: string; error?: unknown };
+
+/**
+ * R51 audit fix: wrap `dAppKit.signAndExecuteTransaction`
+ * to `await client.waitForTransaction` after a
+ * successful sign.
+ *
+ * The previous flow at every call site was:
+ *
+ *   const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+ *   if (r.$kind === "Transaction") {
+ *     toast.success(`… ${r.Transaction.digest.slice(0, 16)}`);
+ *     // ← no wait. invalidateQueries fires immediately
+ *     // and the React Query refetch races the on-chain
+ *     // finalization. A slow RPC (or a node that hasn't
+ *     // seen the tx yet) returns the old balance for
+ *     // ~1-2s, and the user sees a stale portfolio.
+ *   }
+ *
+ * `submitAndWait` adds an explicit
+ * `client.waitForTransaction({ digest, timeout: 30_000 })`
+ * after a successful sign, so the next `invalidateQueries`
+ * hits a node that has already finalized the tx. The
+ * timeout is 30s — Sui's BFT finality is ~3-5s in
+ * practice, so 30s is 6-10x the typical wait and only
+ * fires on a real outage. The legacy
+ * `app/legacy/predict/trade/page.tsx:103` is the only
+ * pre-R51 call site that already did the right thing
+ * (wait, then invalidate); every modern flow
+ * (markets/[id], parlay, vault, settings, admin) is
+ * fixed in this round.
+ */
+export async function submitAndWait(
+  // The `dAppKit` is the singleton created above;
+  // pass the `useDAppKit()` value from the component
+  // so tests can swap it.
+  dappKit: { signAndExecuteTransaction: (args: { transaction: Transaction }) => Promise<TransactionResultLike> },
+  // The `client` is the `useCurrentClient()` result;
+  // it carries the `waitForTransaction` helper bound
+  // to the user's current network.
+  client: { waitForTransaction: (args: { digest: string; timeout?: number; signal?: AbortSignal }) => Promise<unknown> },
+  tx: Transaction,
+  options?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<SubmitResult> {
+  const r = await dappKit.signAndExecuteTransaction({ transaction: tx });
+  if (r.$kind !== "Transaction") {
+    return { $kind: r.$kind as "Failed" | "EffectsCert" };
+  }
+  const digest = r.Transaction?.digest;
+  if (!digest) {
+    // The $kind narrows to Transaction but the
+    // Transaction object is missing — a contract
+    // violation from the SDK. Surface a failure
+    // rather than NPE.
+    return { $kind: "Failed", error: new Error("missing digest on Transaction result") };
+  }
+  try {
+    await client.waitForTransaction({
+      digest,
+      timeout: options?.timeoutMs ?? 30_000,
+      signal: options?.signal,
+    });
+  } catch (err) {
+    // The tx has been signed and accepted (the wallet
+    // returned a digest). The wait may time out only
+    // on a real RPC outage. Return the digest so the
+    // caller can still show a "submitted, will land
+    // shortly" toast rather than "failed". The
+    // follow-up `invalidateQueries` will still fire
+    // and pick up the tx once the RPC is back.
+    console.warn(`[submitAndWait] waitForTransaction(${digest}) failed:`, err);
+  }
+  return { $kind: "Transaction", digest };
 }

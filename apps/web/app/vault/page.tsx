@@ -12,6 +12,7 @@ import {
   buildVaultWithdrawTx,
   DUSDC_TYPE,
   getVaultSummaryClob,
+  normalizeObjectId,
   VLP_TYPE,
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
@@ -48,8 +49,19 @@ export default function VaultPage() {
   // `DailyPredictionCard.tsx:198-206` pattern.
   const invalidateCrossPageCaches = useCallback(() => {
     if (!account?.address) return;
+    // R51 audit fix: also invalidate the streak
+    // queries. A vault deposit / withdraw advances
+    // the user's daily streak (the agents
+    // `streak-sweeper` keys off "did the user do
+    // anything today" and a vault tx is one of the
+    // signals) so the home-page streak badge and
+    // the `/profile` page need to refresh too.
+    // R50 added marketsList / portfolio; the
+    // streak layer was missed.
     void queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
     void queryClient.invalidateQueries({ queryKey: ["portfolio", account.address], type: "active" });
+    void queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+    void queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
   }, [queryClient, account?.address]);
 
   async function refresh() {
@@ -75,8 +87,18 @@ export default function VaultPage() {
 
   useEffect(() => {
     if (!account || !client) return;
+    // R51 audit fix: normalize the owner
+    // address. `listCoins` is case-sensitive
+    // on the wire — a mixed-case Enoki
+    // zkLogin session would otherwise
+    // silently return `{ objects: [] }`,
+    // leaving `vlpBalance` at 0 and
+    // `vlpCoinId` empty. The "No VLP
+    // coin to withdraw" toast would
+    // then fire even when the user
+    // holds VLP from a prior deposit.
     client.core
-      .listCoins({ owner: account.address, coinType: VLP_TYPE })
+      .listCoins({ owner: normalizeObjectId(account.address), coinType: VLP_TYPE })
       .then(({ objects }) => {
         setVlpBalance(objects.reduce((s, c) => s + Number(c.balance), 0));
         setVlpCoinId(objects[0]?.objectId ?? "");
@@ -96,8 +118,17 @@ export default function VaultPage() {
     setLoading(true);
     const toastId = toast.loading("Depositing...");
     try {
+      // R51 audit fix: normalize the owner
+      // address. `listCoins` is case-sensitive
+      // on the wire — a mixed-case Enoki
+      // zkLogin session would otherwise
+      // silently return `{ objects: [] }`
+      // and the "No DUSDC" branch would
+      // fire even when the user holds
+      // DUSDC from a faucet or prior
+      // redeem.
       const { objects } = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
       });
       const coin = objects[0];
