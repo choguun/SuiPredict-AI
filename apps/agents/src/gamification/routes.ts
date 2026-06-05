@@ -186,8 +186,22 @@ export async function handleGamificationRoute(
   // GET /leaderboard/week?index=N&limit=M&category=K
   const weekMatch = url.pathname.match(/^\/leaderboard\/week$/);
   if (weekMatch) {
+    // R49 audit fix: require an integer week index and a
+    // finite, positive limit. The previous code accepted `NaN`
+    // (falsy `??` fallback when the param was an unparseable
+    // string), which silently returned an empty `rows` array —
+    // a UI consumer would render an empty leaderboard with no
+    // signal that the input was malformed.
     const idx = Number(url.searchParams.get("index") ?? weekIndexFor(Date.now()));
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), 500);
+    if (!Number.isInteger(idx) || idx < 0) {
+      json(res, 400, { error: "index must be a non-negative integer" });
+      return true;
+    }
+    const rawLimit = Number(url.searchParams.get("limit") ?? 100);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, 500)
+        : 100;
     const category = url.searchParams.get("category");
     const cat = category != null ? Number(category) : undefined;
     const rows = liveRollup(idx, cat);
@@ -211,8 +225,18 @@ export async function handleGamificationRoute(
       json(res, 400, { error: "code param must be 2-8 lowercase letters" });
       return true;
     }
+    // R49 audit fix: same NaN/integer validation as the
+    // /leaderboard/week route above.
     const idx = Number(url.searchParams.get("index") ?? weekIndexFor(Date.now()));
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 100), 500);
+    if (!Number.isInteger(idx) || idx < 0) {
+      json(res, 400, { error: "index must be a non-negative integer" });
+      return true;
+    }
+    const rawLimit = Number(url.searchParams.get("limit") ?? 100);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, 500)
+        : 100;
     const category = url.searchParams.get("category");
     const cat = category != null ? Number(category) : undefined;
     const rows = countryRollup(idx, code, cat);
@@ -225,6 +249,17 @@ export async function handleGamificationRoute(
   if (userMatch) {
     const addr = userMatch[1]!;
     const idx = Number(url.searchParams.get("week") ?? weekIndexFor(Date.now()));
+    // R49 audit fix: require a non-negative integer week index.
+    // The previous code accepted `NaN` (the `??` fallback fires
+    // when the param is missing, not when it's a non-numeric
+    // string — `Number("abc")` is `NaN`) and the SQL `WHERE
+    // week_index = ?` quietly returned no rows. The user
+    // looked up a malformed week and got a 404 with no
+    // actionable signal.
+    if (!Number.isInteger(idx) || idx < 0) {
+      json(res, 400, { error: "week must be a non-negative integer" });
+      return true;
+    }
     // Accept `category` so the per-user lookup matches the
     // leaderboard's category filter — without it, a user with
     // rank-1 in "AI news" shows up as rank-1 in the "crypto price"
@@ -272,8 +307,19 @@ export async function handleGamificationRoute(
     const category = Number(url.searchParams.get("category") ?? 0);
     const poolId = process.env.PRIZE_POOL_ID ?? "";
     const adminPk = process.env.PRIZE_ADMIN_PRIVATE_KEY ?? "";
-    if (week < 0 || rank <= 0 || !user || !poolId || !adminPk) {
-      json(res, 400, { error: "missing required params" });
+    // R49 audit fix: require integer week/rank. `NaN < 0` and
+    // `NaN <= 0` are both false, so a fuzzing client could pass
+    // `?week=abc&rank=xyz` and reach the SDK's `pure.u64(NaN)`,
+    // which fails at sign time with a confusing wallet error.
+    // The `category` guard below already uses `Number.isInteger`;
+    // apply the same to week and rank. Also enforce rank ≤ 100 to
+    // match on-chain `MAX_RANK` and the existing /prize/claims cap.
+    if (
+      !Number.isInteger(week) || week < 0 ||
+      !Number.isInteger(rank) || rank <= 0 || rank > 100 ||
+      !user || !poolId || !adminPk
+    ) {
+      json(res, 400, { error: "missing or invalid params (week/rank must be integers, rank ≤ 100)" });
       return true;
     }
     if (!/^0x[a-fA-F0-9]{64}$/.test(user)) {
@@ -769,7 +815,13 @@ export async function handleGamificationRoute(
     const allRows: ParlayRow[] = includeFinalized
       ? listAllParlaysForUser(addr)
       : listUnfinalizedParlaysForUser(addr);
-    const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
+    // R49 audit fix: NaN-safe limit. Same pattern as
+    // /leaderboard/week above.
+    const rawLimit = Number(url.searchParams.get("limit") ?? 50);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, 200)
+        : 50;
     // Map the SQL row shape to the wire shape the web's ParlayHistory
     // component expects. The on-chain / DB column names diverge from
     // the web's ParlayRow interface (e.g. `user` vs `owner`,

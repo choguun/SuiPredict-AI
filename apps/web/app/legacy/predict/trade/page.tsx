@@ -139,6 +139,18 @@ export default function TradePage() {
       );
       return;
     }
+    // R49 audit fix: confirm the fund-locking mint before
+    // signing. `withdrawPosition` already prompts, and the
+    // new `markets/[id]` page does the same — `mintPosition`
+    // was the asymmetric survivor. A misclick costs the user
+    // a real PTB fee.
+    if (
+      !window.confirm(
+        `Mint ${quantity + 1} YES shares for ${(quantity + 1) * 1} DUSDC?`,
+      )
+    ) {
+      return;
+    }
     setLoading(true);
     const toastId = toast.loading("Building mint transaction...");
     try {
@@ -147,22 +159,36 @@ export default function TradePage() {
         owner: account.address,
         coinType: DUSDC_TYPE,
       });
-      const topup = BigInt(quantity + 1) * BigInt(1_000_000);
-      if (coins.objects.length > 0) {
-        const primary = tx.object(coins.objects[0]!.objectId);
-        if (coins.objects.length > 1) {
-          tx.mergeCoins(
-            primary,
-            coins.objects.slice(1).map((c) => tx.object(c.objectId)),
-          );
-        }
-        const [depositCoin] = tx.splitCoins(primary, [tx.pure.u64(topup)]);
-        tx.moveCall({
-          target: `${PREDICT_PACKAGE_ID}::predict_manager::deposit`,
-          typeArguments: [DUSDC_TYPE],
-          arguments: [tx.object(managerId), depositCoin],
-        });
+      // R49 audit fix: when the user has zero DUSDC, the old
+      // code fell through and called `predict::mint` anyway,
+      // which then aborted opaquely inside the wallet spinner.
+      // Match the `DailyPredictionCard` pattern: throw a
+      // friendly error the catch can toast.
+      if (coins.objects.length === 0) {
+        throw new Error(
+          "No DUSDC — request from DeepBook testnet form before minting.",
+        );
       }
+      const topup = BigInt(quantity + 1) * BigInt(1_000_000);
+      // R49 audit fix: the previous code wrapped this block in
+      // `if (coins.objects.length > 0)` to silently skip the
+      // deposit when the user had no DUSDC. The new throw above
+      // already rejects the no-coin case, so the conditional is
+      // now redundant; unwrap it so the deposit path is the
+      // only code path.
+      const primary = tx.object(coins.objects[0]!.objectId);
+      if (coins.objects.length > 1) {
+        tx.mergeCoins(
+          primary,
+          coins.objects.slice(1).map((c) => tx.object(c.objectId)),
+        );
+      }
+      const [depositCoin] = tx.splitCoins(primary, [tx.pure.u64(topup)]);
+      tx.moveCall({
+        target: `${PREDICT_PACKAGE_ID}::predict_manager::deposit`,
+        typeArguments: [DUSDC_TYPE],
+        arguments: [tx.object(managerId), depositCoin],
+      });
 
       const strikeScaled = BigInt(strike) * BigInt(1_000_000_000);
       const keyFn = direction === "up" ? "up" : "down";

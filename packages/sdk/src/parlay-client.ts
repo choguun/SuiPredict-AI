@@ -22,11 +22,21 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { TransactionObjectInput } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, isValidSuiAddress } from "./utils.js";
 import type { SuiClient } from "./predict-client.js";
 import { asBalance } from "./protocol-reads.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
+// Basis points denominator (10_000 = 100%). Mirrored from the
+// on-chain `parlay::BPS` constant in the Move module. Used by the
+// builder-time pre-checks (R49) so a typo surfaces here instead
+// of as `EInvalidPayoutBps` inside the wallet spinner.
+const BPS = 10_000;
+// `parlay.move` accepts 2–5 legs per parlay. Hard-cap at the
+// builder so a UI bug (or a future "add 10 legs" feature flag)
+// can't ship a tx that aborts on `EInvalidLegCount`.
+const MIN_LEGS = 2;
+const MAX_LEGS = 5;
 
 // ============================================================
 // Pool admin
@@ -50,11 +60,20 @@ export function buildCreateParlayPoolTx(
   maxPayoutBps: number | bigint,
   coinType: string,
 ): Transaction {
+  // R49 audit fix: on-chain `parlay::create_pool` aborts with
+  // `EInvalidPayoutBps` when `max_payout_bps < BPS` (10_000, the
+  // breakeven multiplier). Catch the typo at the build boundary.
+  const bps = BigInt(maxPayoutBps);
+  if (bps < BigInt(BPS)) {
+    throw new Error(
+      `buildCreateParlayPoolTx: maxPayoutBps must be >= BPS (${BPS}), got ${maxPayoutBps}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::create_pool`,
     typeArguments: [coinType],
-    arguments: [tx.pure.u64(maxPayoutBps)],
+    arguments: [tx.pure.u64(bps)],
   });
   return tx;
 }
@@ -160,7 +179,12 @@ export function buildRotateParlayAdminTx(
   // R48 audit fix: pre-validate `newAdmin` so a typo (`""`,
   // `"0x0"`) surfaces as a build-time error instead of a Move
   // abort at execute time. Mirror the R37 streak guard.
-  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+  // R49 audit fix: route through `isValidSuiAddress` for
+  // consistency with the other builders and to also reject
+  // whitespace, mixed-case-with-trailing-space, and the
+  // all-zeros placeholder (the previous inline check missed
+  // e.g. `"  0x0…0  "` and a paste with a leading newline).
+  if (!isValidSuiAddress(newAdmin)) {
     throw new Error(
       `buildRotateParlayAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
     );
@@ -188,6 +212,16 @@ export function buildSetMaxPayoutBpsTx(
   newMaxBps: number | bigint,
   coinType: string,
 ): Transaction {
+  // R49 audit fix: on-chain `parlay::set_max_payout_bps` aborts
+  // with `EInvalidPayoutBps` when `new_max_bps < BPS`. The
+  // comment above the function already says the new cap must
+  // be `>= BPS` — enforce it at the build boundary so a
+  // misconfigured admin script doesn't burn gas on a doomed tx.
+  if (BigInt(newMaxBps) < BigInt(BPS)) {
+    throw new Error(
+      `buildSetMaxPayoutBpsTx: newMaxBps must be >= BPS (${BPS}) (got ${newMaxBps})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::set_max_payout_bps`,
@@ -239,10 +273,31 @@ export function buildCreateParlayTx(args: {
         `predictions (${args.predictions.length}) must have the same length`,
     );
   }
+  // R49 audit fix: enforce the 2–5 leg cap at the build boundary.
+  // The on-chain `parlay::create_parlay` aborts with
+  // `EInvalidLegCount` outside this range. Catching it here gives
+  // the user a friendlier error than a Move abort inside the
+  // wallet spinner.
+  if (args.marketIds.length < MIN_LEGS || args.marketIds.length > MAX_LEGS) {
+    throw new Error(
+      `buildCreateParlayTx: marketIds must have ${MIN_LEGS}–${MAX_LEGS} legs (got ${args.marketIds.length})`,
+    );
+  }
   const collateral = BigInt(args.collateralAtoms);
   if (collateral <= 0n) {
     throw new Error(
       `buildCreateParlayTx: collateralAtoms must be > 0 (got ${args.collateralAtoms})`,
+    );
+  }
+  // R49 audit fix: validate `payoutBps`. On-chain requires
+  // `> BPS` and `<= pool.max_payout_bps`. We can't read the pool
+  // from this builder, so just enforce the lower bound here and
+  // let the on-chain check reject over-cap values. The `<= BPS`
+  // case would still abort with `EPayoutTooLarge`.
+  const payoutBps = BigInt(args.payoutBps);
+  if (payoutBps <= BigInt(BPS)) {
+    throw new Error(
+      `buildCreateParlayTx: payoutBps must be > BPS (${BPS}) (got ${args.payoutBps})`,
     );
   }
   const tx = new Transaction();

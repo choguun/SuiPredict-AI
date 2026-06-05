@@ -15,7 +15,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { fromBase64 } from "@mysten/sui/utils";
 import { AGENT_POLICY_PACKAGE_ID, DUSDC_TYPE } from "./constants.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, isValidSuiAddress } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -186,6 +186,22 @@ export function buildClaimPrizeTx(params: {
         "the signature was generated against a different pool. Pass the same id for both.",
     );
   }
+  // R49 audit fix: validate `rank` and `amount` at the build
+  // boundary. On-chain `prize_pool::claim_prize` aborts with
+  // `EInvalidRank` for `rank < 1 || rank > MAX_RANK` and with
+  // `EInvalidAmount` for `amount == 0`. The check matches the
+  // `/prize/claims` agents-side cap (R48) and the /prize/signature
+  // R49 fix.
+  if (!Number.isInteger(params.rank) || params.rank < 1 || params.rank > MAX_RANK) {
+    throw new Error(
+      `buildClaimPrizeTx: rank must be an integer in [1, ${MAX_RANK}] (got ${params.rank})`,
+    );
+  }
+  if (params.amount <= 0n) {
+    throw new Error(
+      `buildClaimPrizeTx: amount must be > 0 (got ${params.amount})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
@@ -265,7 +281,11 @@ export function buildRotateAdminTx(
   // R48 audit fix: pre-validate `newAdmin` so a typo (`""`,
   // `"0x0"`) surfaces as a build-time error instead of a Move
   // abort at execute time. Mirror the R37 streak guard.
-  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+  // R49 audit fix: route through `isValidSuiAddress` for
+  // consistency with the other builders and to also reject
+  // whitespace, mixed-case-with-trailing-space, and the
+  // all-zeros placeholder.
+  if (!isValidSuiAddress(newAdmin)) {
     throw new Error(
       `buildRotateAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
     );
@@ -284,6 +304,18 @@ export function buildSetDistributionTx(
   bps: number[],
   prizeCoinType: string = DUSDC_TYPE,
 ): Transaction {
+  // R49 audit fix: on-chain `prize_pool::set_distribution` aborts
+  // with `EInvalidDistribution` when the bps vector doesn't sum to
+  // exactly 10_000. The module-load `DEFAULT_DISTRIBUTION_BPS`
+  // check covers the constant, but a caller's override could
+  // ship a sum != 10_000 and only learn about it at execute
+  // time. Catch it at the build boundary.
+  const sumBps = bps.reduce((acc, b) => acc + BigInt(b), 0n);
+  if (sumBps !== BigInt(BPS)) {
+    throw new Error(
+      `buildSetDistributionTx: bps must sum to BPS (${BPS}) (got ${sumBps})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::set_distribution`,

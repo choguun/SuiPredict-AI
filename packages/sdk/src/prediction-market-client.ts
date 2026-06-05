@@ -36,7 +36,7 @@ import {
 } from "./deepbook/client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
 import type { SuiClient } from "./predict-client.js";
-import { normalizeObjectId } from "./utils.js";
+import { normalizeObjectId, isValidSuiAddress } from "./utils.js";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -536,6 +536,14 @@ export function buildInitFeeVaultTx(
   adminCapId: string,
   vaultAdmin: string,
 ): Transaction {
+  // R49 audit fix: validate `vaultAdmin` at the build boundary.
+  // A typo here aborts the tx inside the wallet spinner with a
+  // less helpful error than a build-time throw.
+  if (!isValidSuiAddress(vaultAdmin)) {
+    throw new Error(
+      `buildInitFeeVaultTx: vaultAdmin must be a non-zero Sui address (got "${vaultAdmin}")`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::init_fee_vault`,
@@ -574,57 +582,20 @@ export async function getMarketMidPrice(
   return getMidPrice(dbClient, poolId);
 }
 
-// ─── Balance manager setup ───────────────────────────────────────────────────
-
-/**
- * Build transaction to create and share a BalanceManager for the protocol.
- * The BalanceManager holds DEEP for pool creation fees and trading.
- */
-export function buildCreateBalanceManagerTx(owner?: string): Transaction {
-  // R37 audit fix: the previous hardcoded `0xdee9` is the
-  // historical Mysten testnet DeepBook address. If a redeploy
-  // ever points `DEEPBOOK_PACKAGE_ID` at a different package
-  // (the constant already supports that), this builder would
-  // silently keep calling the old one. The function isn't
-  // exported from the SDK barrel today, but the constant is
-  // the source of truth.
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::create_balance_manager`,
-    arguments: owner ? [tx.pure.address(owner)] : [],
-  });
-  return tx;
-}
-
-/**
- * Build transaction to deposit funds into the protocol's BalanceManager.
- *
- * @param coinKey - 'DEEP' or 'DBUSDC'
- * @param amount  - Amount to deposit
- * @param managerId - BalanceManager object ID (from DEEPBOOK_REGISTRY_ID lookup)
- */
-export function buildDepositIntoBalanceManagerTx(
-  managerId: string,
-  coinKey: "DEEP" | "DBUSDC",
-  amount: number | bigint,
-): Transaction {
-  // R37 audit fix: switch `amount` to `number | bigint` and coerce
-  // via BigInt at the boundary. The previous `number` type silently
-  // truncated above Number.MAX_SAFE_INTEGER; a self-hosted DEEP
-  // treasury with >9e15 atoms would have hit the ceiling.
-  // R37 also: same package-id fix as buildCreateBalanceManagerTx
-  // above (use the env-driven constant, not the hardcoded `0xdee9`).
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${DEEPBOOK_PACKAGE_ID}::balance_manager::deposit_into_manager`,
-    arguments: [
-      tx.object(normalizeObjectId(managerId)),
-      tx.pure.string(coinKey),
-      tx.pure.u64(BigInt(amount)),
-    ],
-  });
-  return tx;
-}
+// R49 audit fix: the previous `buildCreateBalanceManagerTx` and
+// `buildDepositIntoBalanceManagerTx` lived here but targeted
+// `balance_manager::create_balance_manager` and
+// `balance_manager::deposit_into_manager` — neither exists in the
+// live DeepBook V3 `balance_manager` module. The real builder is
+// `buildDeepBookCreateBalanceManagerTx` in `deepbook/client.ts`,
+// which calls `new_with_custom_owner`. Any caller that grep'd
+// this file and copy-pasted the dead builder would have hit a
+// "function not found" linker error at PTB-execute time. The
+// functions were also not exported from the SDK barrel
+// (`index.ts`), so the only consumer was the file's own module.
+// Deleted to remove the footgun; if a future caller needs a
+// BalanceManager setup builder, the live one in `deepbook/client.ts`
+// is the source of truth.
 
 // ─── Coin type helpers ───────────────────────────────────────────────────────
 

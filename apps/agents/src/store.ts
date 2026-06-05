@@ -22,6 +22,16 @@ export function getDb(): Database.Database {
     db.pragma("journal_mode = WAL");
     db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
+    // R49 audit fix: cap the `reasoning` length at 4 KiB. The
+    // column is a free-text field that the agent loop fills
+    // with LLM-style output. A misbehaving prompt (or a
+    // deliberately adversarial LLM via prompt injection in a
+    // future model upgrade) could write a 10 MB string per
+    // decision; 4 agents × 1 cycle/min = ~575 MB/day of
+    // unindexed text. The CHECK only applies to *new* tables
+    // (CREATE TABLE IF NOT EXISTS is a no-op on existing
+    // schemas); the runtime truncation in `logDecision` is
+    // the enforcement that actually fires today.
     db.exec(`
       CREATE TABLE IF NOT EXISTS decisions (
         id TEXT PRIMARY KEY,
@@ -30,7 +40,8 @@ export function getDb(): Database.Database {
         reasoning TEXT NOT NULL,
         confidence REAL,
         tx_digest TEXT,
-        timestamp INTEGER NOT NULL
+        timestamp INTEGER NOT NULL,
+        CHECK(length(reasoning) <= 4096)
       )
     `);
     // Policy audit trail — appended by position-indexer on each
@@ -122,7 +133,18 @@ export function getRecentPolicyEvents(limit = 50): PolicyEventLog[] {
 
 export function logDecision(entry: Omit<AgentDecisionLog, "id">): AgentDecisionLog {
   const id = `${entry.agent}-${entry.timestamp}-${Math.random().toString(36).slice(2, 8)}`;
-  const record: AgentDecisionLog = { ...entry, id };
+  // R49 audit fix: truncate `reasoning` at the 4 KiB cap to
+  // match the new schema CHECK. The CHECK only applies to
+  // freshly-created tables, so an existing DB without the
+  // constraint would still accept an oversize write — this
+  // truncation is the source of truth. Use a 16-byte UTF-8
+  // ellipsis marker so a reader can tell the string was cut.
+  const MAX_REASONING_BYTES = 4096;
+  const reasoning =
+    entry.reasoning.length > MAX_REASONING_BYTES
+      ? entry.reasoning.slice(0, MAX_REASONING_BYTES - 16) + "…[truncated]"
+      : entry.reasoning;
+  const record: AgentDecisionLog = { ...entry, id, reasoning };
   getDb()
     .prepare(
       `INSERT INTO decisions (id, agent, action, reasoning, confidence, tx_digest, timestamp)

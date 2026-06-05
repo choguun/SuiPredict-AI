@@ -12,6 +12,7 @@ import {
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { DBUSDC_TYPE } from "./constants.js";
+import { isValidSuiAddress } from "../utils.js";
 
 export type { BalanceManager, CoinMap, DeepBookClient, PoolMap };
 
@@ -108,6 +109,19 @@ export function buildDeepBookCreateBalanceManagerTx(
   dbClient: DeepBookClient,
   owner?: string,
 ): Transaction {
+  // R49 audit fix: validate `owner` at the build boundary. An
+  // empty string would fall through to the no-arg branch below
+  // (the previous code treated `""` as "no owner", which is
+  // wrong — a user who submitted an accidentally blank field
+  // got an unowned BalanceManager). A malformed non-empty
+  // string would have aborted inside the wallet spinner.
+  if (owner !== undefined) {
+    if (!isValidSuiAddress(owner)) {
+      throw new Error(
+        `buildDeepBookCreateBalanceManagerTx: owner must be a non-zero Sui address when provided (got "${owner}")`,
+      );
+    }
+  }
   const tx = new Transaction();
   if (owner) {
     const manager = dbClient.balanceManager.createBalanceManagerWithOwner(owner)(tx);

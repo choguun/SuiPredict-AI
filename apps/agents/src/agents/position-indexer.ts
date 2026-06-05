@@ -51,11 +51,14 @@ import {
   recordBadgeMint,
 } from "../gamification/store.js";
 
-const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
-  | "testnet"
-  | "mainnet"
-  | "devnet"
-  | "localnet";
+// R49 audit fix: `SUI_NETWORK` was captured once at module load
+// and used inside the gRPC + JSON-RPC constructors in the polling
+// loop. The position indexer is the most likely worker to be
+// hot-patched (testnet → mainnet, or a new RPC URL), and a
+// hot-patch to `process.env.SUI_NETWORK` was silently ignored
+// because the import-time capture froze the value. Read it inside
+// `runPositionIndexer` instead, matching the pattern the other
+// workers adopted in R48.
 // Read AGENT_POLICY_PACKAGE_ID at call time, not at module load. The
 // `bootstrapEnv()` function in index.ts syncs `PREDICT_PACKAGE_ID`
 // from this value (legacy alias for the old DeepBook Predict
@@ -328,6 +331,13 @@ export async function runPositionIndexer(
         "Set DUSDC_TYPE in .env (full type string e.g. 0x…::dusdc::DUSDC).",
     });
   }
+  // R49 audit fix: read the network inside the function body. See
+  // the module-level note for the rationale.
+  const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
+    | "testnet"
+    | "mainnet"
+    | "devnet"
+    | "localnet";
   const client = new SuiJsonRpcClient({
     url: getJsonRpcFullnodeUrl(SUI_NETWORK),
     network: SUI_NETWORK,
@@ -382,7 +392,16 @@ export async function runPositionIndexer(
       // R36 audit fix: `winning_amount` is a u64. Coerce through
       // BigInt first to preserve precision for any downstream
       // arithmetic (the floor() check at <= 0 stays the same).
-      const burned = Number(BigInt(j.winning_amount ?? 0));
+      // R49 audit fix: route through `u64ToSafeNumber` for the
+      // 2^53-1 boundary check. The on-chain `winning_amount` is
+      // unbounded (it scales with market size + multiplier), so
+      // this is the highest-risk of the 8 hot paths called out in
+      // the audit.
+      const burned = u64ToSafeNumber(
+        BigInt(j.winning_amount ?? 0),
+        "RedeemedEvent.winning_amount",
+        j.market_id,
+      );
       if (burned <= 0) return;
       // Both `redeem` and `redeem_no` emit the same RedeemedEvent
       // struct, so the only way to know which side was burned is to
@@ -452,8 +471,12 @@ export async function runPositionIndexer(
         // exact precision; the cast to Number happens at the
         // recordChainOrder boundary (the store still takes `number`
         // today — bumping that to bigint is a separate change).
-        price: Number(BigInt(j.price ?? 0)),
-        quantity: Number(BigInt(j.quantity ?? 0)),
+        // R49 audit fix: route both through `u64ToSafeNumber` so a
+        // value > 2^53-1 logs a warning at the boundary instead of
+        // silently corrupting the row. Pass the order_id as the
+        // context string (the helper just uses it for the log).
+        price: u64ToSafeNumber(BigInt(j.price ?? 0), "OrderPlacedEvent.price", String(j.order_id)),
+        quantity: u64ToSafeNumber(BigInt(j.quantity ?? 0), "OrderPlacedEvent.quantity", String(j.order_id)),
         timestamp_ms: ts,
       });
     },
@@ -513,7 +536,20 @@ export async function runPositionIndexer(
         title: existing?.title ?? j.title ?? "",
         description: existing?.description ?? "",
         category: existing?.category ?? onChainCategory ?? "general",
-        expiry_ms: existing?.expiry_ms ?? Number(BigInt(j.expiry_ms ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber` for the
+        // 2^53-1 boundary check (the right-hand `BigInt(...)` cast
+        // was unconditional even when `existing` was set; even
+        // though the `??` short-circuits the value, the
+        // `Number(BigInt(...))` expression still ran). Split the
+        // two paths so the helper is only invoked when we need
+        // the conversion.
+        expiry_ms:
+          existing?.expiry_ms ??
+          u64ToSafeNumber(
+            BigInt(j.expiry_ms ?? 0),
+            "MarketCreatedEvent.expiry_ms",
+            j.market_id,
+          ),
         resolution_source: existing?.resolution_source ?? "",
         status: existing?.status ?? "active",
         pool_id: existing?.pool_id ?? j.pool_id ?? null,
@@ -810,8 +846,10 @@ export async function runPositionIndexer(
         actor: j.user ?? undefined,
         // R36 audit fix: vault u64 amounts (DUSDC base units) coerced
         // via BigInt to preserve precision above 2^53-1.
-        amount: Number(BigInt(j.amount ?? 0)),
-        vlp_delta: Number(BigInt(j.vlp_minted ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber` so a
+        // value > 2^53-1 logs a warning at the boundary.
+        amount: u64ToSafeNumber(BigInt(j.amount ?? 0), "VaultDeposited.amount", j.vault_id),
+        vlp_delta: u64ToSafeNumber(BigInt(j.vlp_minted ?? 0), "VaultDeposited.vlp_minted", j.vault_id),
         ts_ms: ts,
       });
     },
@@ -835,8 +873,10 @@ export async function runPositionIndexer(
         kind: "withdraw",
         actor: j.user ?? undefined,
         // R36 audit fix: BigInt round-trip preserves u64 precision.
-        amount: Number(BigInt(j.amount ?? 0)),
-        vlp_delta: -Number(BigInt(j.vlp_burned ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber` for the
+        // 2^53-1 boundary check.
+        amount: u64ToSafeNumber(BigInt(j.amount ?? 0), "VaultWithdrawn.amount", j.vault_id),
+        vlp_delta: -u64ToSafeNumber(BigInt(j.vlp_burned ?? 0), "VaultWithdrawn.vlp_burned", j.vault_id),
         ts_ms: ts,
       });
     },
@@ -858,8 +898,11 @@ export async function runPositionIndexer(
         vault_id: j.vault_id,
         kind: "allocate",
         // R36 audit fix: BigInt round-trip preserves u64 precision.
-        amount: Number(BigInt(j.amount ?? 0)),
-        total_allocated: Number(BigInt(j.total_allocated ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber`. The
+        // `total_allocated` field is the one most likely to cross
+        // 2^53-1 within a busy month (it sums every allocation).
+        amount: u64ToSafeNumber(BigInt(j.amount ?? 0), "VaultAllocated.amount", j.vault_id),
+        total_allocated: u64ToSafeNumber(BigInt(j.total_allocated ?? 0), "VaultAllocated.total_allocated", j.vault_id),
         ts_ms: ts,
       });
     },
@@ -881,8 +924,9 @@ export async function runPositionIndexer(
         vault_id: j.vault_id,
         kind: "deallocate",
         // R36 audit fix: BigInt round-trip preserves u64 precision.
-        amount: Number(BigInt(j.amount ?? 0)),
-        total_allocated: Number(BigInt(j.total_allocated ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber`.
+        amount: u64ToSafeNumber(BigInt(j.amount ?? 0), "VaultDeallocated.amount", j.vault_id),
+        total_allocated: u64ToSafeNumber(BigInt(j.total_allocated ?? 0), "VaultDeallocated.total_allocated", j.vault_id),
         ts_ms: ts,
       });
     },
@@ -912,7 +956,8 @@ export async function runPositionIndexer(
         kind: "withdraw",
         actor: j.admin,
         // R36 audit fix: BigInt round-trip preserves u64 precision.
-        amount: Number(BigInt(j.amount ?? 0)),
+        // R49 audit fix: route through `u64ToSafeNumber`.
+        amount: u64ToSafeNumber(BigInt(j.amount ?? 0), "FeesWithdrawn.amount", vaultId),
         ts_ms: ts,
       });
     },
@@ -1228,7 +1273,11 @@ export async function runPositionIndexer(
         parlay_id: j.parlay_id,
         pool_id: j.pool_id ?? "",
         user: j.user,
-        collateral_amount: Number(BigInt(j.collateral ?? 0)),
+        // R49 audit fix: route `collateral` through `u64ToSafeNumber`
+        // (the comment above cites R37 but the original `Number(...)`
+        // cast silently truncates above 2^53-1 — exactly what the
+        // helper exists to warn on).
+        collateral_amount: u64ToSafeNumber(BigInt(j.collateral ?? 0), "ParlayCreatedEvent.collateral", j.parlay_id),
         leg_count: Number(j.leg_count ?? 0),
         payout_bps: Number(j.payout_bps ?? 0),
         created_at_ms: ts,

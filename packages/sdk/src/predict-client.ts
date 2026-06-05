@@ -16,7 +16,7 @@ import {
 } from "./constants.js";
 import type { Direction, MintParams, RedeemParams } from "./types.js";
 import { getManagerForOwner } from "./predict-server.js";
-import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
 
 export type SuiClient = SuiGrpcClient;
 
@@ -338,6 +338,16 @@ export function buildCreatePolicyTx(
 ): Transaction {
   if (!packageId) {
     throw new Error("AGENT_POLICY_PACKAGE_ID not set");
+  }
+  // R49 audit fix: route `agentAddress` through `isValidSuiAddress`
+  // for consistency with the rotate-admin builders. The on-chain
+  // `agent_policy::create_policy` aborts with `EInvalidAgent` on a
+  // malformed address; the build-time check costs nothing and
+  // gives a friendlier error.
+  if (!isValidSuiAddress(agentAddress)) {
+    throw new Error(
+      `buildCreatePolicyTx: agentAddress must be a non-zero Sui address (got "${agentAddress}")`,
+    );
   }
   const tx = new Transaction();
   tx.moveCall({

@@ -308,7 +308,12 @@ export default function ParlayPage() {
       // so the user can distinguish gas-exhaustion from a
       // Move abort from an effects-cert mismatch.
       if (r.$kind !== "Transaction") {
-        toast.error(`Parlay create failed on-chain (${r.$kind})`);
+        // R49 audit fix: drop the `(r.$kind)` interpolation. The
+        // SDK variant names (`"Failed"`, `"EffectsCert"`,
+        // `"Transaction"`) are internal and leaked to the user on
+        // every failure. Match the `markets/[id]` page's clean
+        // "Parlay create failed on-chain" toast.
+        toast.error("Parlay create failed on-chain");
         return;
       }
       // Pull the new Parlay<Q> object ID from the tx effects via

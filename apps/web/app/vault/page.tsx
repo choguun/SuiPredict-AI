@@ -5,7 +5,8 @@ import {
   useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
 import {
   buildVaultDepositTx,
   buildVaultWithdrawTx,
@@ -24,6 +25,7 @@ export default function VaultPage() {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
+  const queryClient = useQueryClient();
   const [summary, setSummary] = useState<{
     vault_id: string;
     total_balance: number;
@@ -35,6 +37,20 @@ export default function VaultPage() {
   const [vlpCoinId, setVlpCoinId] = useState("");
   const [loading, setLoading] = useState(false);
   const [refreshCounter, setRefreshCounter] = useState(0);
+
+  // R49 audit fix: a vault deposit/withdraw changes the user's
+  // free DUSDC balance and (for a deposit) the position-indexer
+  // mirrors a `VaultDeposited` row into the `positions` table.
+  // Without invalidating the portfolio + markets list queries
+  // the home page subtitle ("X active markets") and the
+  // /portfolio positions stay stale for up to 60s after the user
+  // returns from this page. Mirrors the
+  // `DailyPredictionCard.tsx:198-206` pattern.
+  const invalidateCrossPageCaches = useCallback(() => {
+    if (!account?.address) return;
+    void queryClient.invalidateQueries({ queryKey: ["marketsList"], type: "active" });
+    void queryClient.invalidateQueries({ queryKey: ["portfolio", account.address], type: "active" });
+  }, [queryClient, account?.address]);
 
   async function refresh() {
     const s = await getVaultSummaryClob();
@@ -113,6 +129,7 @@ export default function VaultPage() {
       }
       toast.success(`Deposited: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
+      invalidateCrossPageCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Deposit failed", { id: toastId });
     } finally {
@@ -146,6 +163,7 @@ export default function VaultPage() {
       }
       toast.success(`Withdrawn: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
       setRefreshCounter(c => c + 1);
+      invalidateCrossPageCaches();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Withdraw failed", { id: toastId });
     } finally {

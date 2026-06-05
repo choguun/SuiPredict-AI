@@ -13,6 +13,10 @@
     "./prediction-market-client": {
       "types": "./dist/prediction-market-client.d.ts",
       "import": "./dist/prediction-market-client.js"
+    },
+    "./move-errors": {
+      "types": "./dist/move-errors.d.ts",
+      "import": "./dist/move-errors.js"
     }
   },
   "scripts": {

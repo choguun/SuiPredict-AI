@@ -59,6 +59,17 @@ import {
   readParlayTotalPaidOut,
   DUSDC_TYPE,
 } from "@suipredict/sdk";
+// R49 audit fix: route the admin card catch blocks through a
+// helper that surfaces Move aborts (`EUnauthorized`,
+// `ETooSoon`, `EBpsTooHigh`, etc.) with their symbolic name
+// instead of a hard-coded "Resolve failed" / "Distribution
+// update failed" string. The SDK's `@suipredict/sdk/move-errors`
+// barrel exports `moveAbortSymbolAny` (no friendly wrapper
+// exists in the SDK today), so the helper lives here. The
+// dispute page's `friendlyDisputeError` and the markets/[id]
+// page's `friendlyMoveError` follow the same shape; lift to
+// a shared util if a third caller adopts it.
+import { moveAbortSymbolAny } from "@suipredict/sdk/move-errors";
 import { useCurrentClient } from "@mysten/dapp-kit-react";
 import { Card, Stat, Badge } from "@/components/ui";
 
@@ -106,6 +117,32 @@ const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 function shortAddr(a: string | null | undefined): string {
   if (!a) return "—";
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
+}
+
+// R49 audit fix: local helper for the admin catch blocks. If
+// the error is a Move abort with a symbolic name in one of our
+// packages, surface the symbol + abort code; otherwise pass the
+// underlying message through. This avoids the "Resolve failed"
+// / "Distribution update failed" hard-coded strings that hide
+// `EUnauthorized` / `ETooSoon` / `EBpsTooHigh` from the operator.
+function friendlyAdminError(err: unknown, action: string): string {
+  const base = err instanceof Error ? err.message : String(err);
+  // Try to extract a Move abort code from the message; if found
+  // and the SDK's `MODULE_CODES` table has a symbolic name, show
+  // it. `moveAbortSymbolAny` walks every registered module and
+  // returns the first match (acceptable here because the admin
+  // page is the one place where the operator benefits from any
+  // symbolic name over a raw code).
+  const m = /MoveAbort[^\n]*\)\s*,\s*(\d+)\s*\)/.exec(base);
+  if (m) {
+    const code = Number(m[1]);
+    const sym = moveAbortSymbolAny(code);
+    if (sym) {
+      return `${action} failed: ${sym} (abort code ${code})`;
+    }
+    return `${action} failed: Move abort ${code}`;
+  }
+  return `${action} failed: ${base}`;
 }
 
 export default function AdminPage() {
@@ -580,7 +617,7 @@ function WithdrawFeesCard(props: {
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(false);
     }
@@ -761,7 +798,7 @@ function SetDistributionCard(props: {
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(false);
     }
@@ -872,7 +909,7 @@ function ResolveDisputeCard(props: {
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(false);
     }
@@ -1012,7 +1049,7 @@ function CreateMarketCard(props: {
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(false);
     }
@@ -1198,7 +1235,7 @@ function SetMaxPayoutBpsCard(props: {
       setDigest(d);
       props.onSubmit(d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(false);
     }
@@ -1415,7 +1452,7 @@ function ParlayAdminCard(props: {
       setDigest(d);
       props.onSubmit("Parlay admin withdraw", d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(null);
     }
@@ -1480,7 +1517,7 @@ function ParlayAdminCard(props: {
       setDigest(d);
       props.onSubmit("Rotate parlay admin", d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(null);
     }
@@ -1700,7 +1737,7 @@ function VaultAdminCard(props: {
       setDigest(d);
       props.onSubmit("Allocate for MM", d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(null);
     }
@@ -1763,7 +1800,7 @@ function VaultAdminCard(props: {
       setDigest(d);
       props.onSubmit("Return from MM", d);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(friendlyAdminError(e, "Admin action"));
     } finally {
       setBusy(null);
     }

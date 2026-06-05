@@ -222,6 +222,25 @@ function assertMainnetHasExplicitIds(): void {
       );
     }
   }
+  // R49 audit fix: `INDEXER_URL` / `NEXT_PUBLIC_AGENTS_URL` are
+  // the URL the SDK's `markets/indexer-client.ts` hits for
+  // every list/get/order-book call. They default to
+  // `http://localhost:3001` and were the only env-driven value
+  // with no mainnet guard — a mainnet deploy that forgot to
+  // set either would silently try to hit the local dev server,
+  // hang on TCP, and surface as a generic
+  // "indexer /markets: fetch failed" in the browser. Mirror
+  // the r47Ids pattern.
+  if (
+    !process.env.INDEXER_URL &&
+    !process.env.NEXT_PUBLIC_AGENTS_URL
+  ) {
+    throw new Error(
+      "[sdk] SUI_NETWORK=mainnet but neither INDEXER_URL nor " +
+        "NEXT_PUBLIC_AGENTS_URL is set. Refusing to silently fall " +
+        "back to http://localhost:3001. Set the env var and rebuild.",
+    );
+  }
 }
 
 export const DUSDC_TYPE = `${DUSDC_PACKAGE_ID}::dusdc::DUSDC`;

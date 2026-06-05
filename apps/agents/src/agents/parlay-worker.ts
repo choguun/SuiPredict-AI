@@ -66,15 +66,21 @@ import {
   type ParlayRow,
 } from "../gamification/store.js";
 
-const PKG = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
-// R37 audit fix: this worker is the deployer-keypair admin for the
-// `PARLAY_POOL_ID` pool. On a multi-pool deploy it must NOT
-// `record_leg` / `finalize_parlay` parlays that belong to a
-// different pool — the on-chain check would abort and we'd burn
-// gas on a doomed tx. Default to the env value; an empty string
-// means "cross-pool" (the previous behaviour, kept for backward
-// compat but documented as unsupported on a multi-pool deploy).
-const WORKER_POOL_ID = process.env.PARLAY_POOL_ID ?? "";
+// R49 audit fix: R48 claimed to move module-level env reads
+// inside the worker functions. The parlay worker's `PKG` and
+// `WORKER_POOL_ID` were missed; both were captured once at
+// import time and the import happens before `bootstrapEnv()`
+// patches `process.env`. Move both into `runParlayWorker` so a
+// hot-patch (e.g. rotating to a different prize pool, or
+// testnet → mainnet) takes effect on the next tick.
+// R37 audit fix (preserved): this worker is the deployer-keypair
+// admin for the `PARLAY_POOL_ID` pool. On a multi-pool deploy it
+// must NOT `record_leg` / `finalize_parlay` parlays that belong
+// to a different pool — the on-chain check would abort and we'd
+// burn gas on a doomed tx. Default to the env value; an empty
+// string means "cross-pool" (the previous behaviour, kept for
+// backward compat but documented as unsupported on a multi-pool
+// deploy).
 
 /**
  * Per-leg retry cap for transient RPC errors. Permanent errors
@@ -199,6 +205,10 @@ async function recordOneLeg(
 export async function runParlayWorker(
   ctx: AgentContext,
 ): Promise<AgentResult> {
+  // R49 audit fix: read env inside the function body. See the
+  // module-level note above for the rationale.
+  const PKG = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+  const WORKER_POOL_ID = process.env.PARLAY_POOL_ID ?? "";
   if (!PKG) {
     return recordResult("ParlayWorker", {
       action: "skip",

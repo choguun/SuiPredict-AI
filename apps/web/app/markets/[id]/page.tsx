@@ -234,6 +234,20 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       queryKey: ["dailyMarkets"],
       type: "active",
     });
+    // R49 audit fix: also invalidate the streak queries. A
+    // `redeemWinner` (and any other successful side effect) can
+    // advance the user's daily streak on-chain via the
+    // `record_participation` flow — the home page streak badge
+    // stays stale for 30s otherwise. Pattern mirrors
+    // `DailyPredictionCard.tsx:198-201`.
+    void queryClient.invalidateQueries({
+      queryKey: ["userStreakId"],
+      type: "active",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["streakInfo"],
+      type: "active",
+    });
   }, [queryClient, account?.address]);
   const initializedPrice = useRef(false);
   // R36 audit fix: a single AbortController for the component's
@@ -1276,7 +1290,25 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={loading || !account || market.id.startsWith("demo-")}
+                  // R49 audit fix: also gate on `market.outcome`. The
+                  // off-chain mirror can briefly report
+                  // `status = "resolved"` before the indexer records
+                  // the winning side (the `MarketResolvedEvent` and
+                  // the resolution-row write are two separate
+                  // transactions). Submitting a redeem in that
+                  // window makes the on-chain `redeem` abort with
+                  // `EMarketNotResolved`, paying gas for nothing.
+                  // The sibling `redeemWinner` body (line 777-779)
+                  // still throws a toast on the same condition; this
+                  // gate avoids the wallet-prompt round trip
+                  // entirely. The button label stays the same so
+                  // the disabled state is the only signal.
+                  disabled={
+                    loading ||
+                    !account ||
+                    market.id.startsWith("demo-") ||
+                    market.outcome === null
+                  }
                   onClick={redeemWinner}
                   className="w-fit rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:opacity-50"
                 >

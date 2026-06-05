@@ -11,9 +11,11 @@ export default function AuthCallbackPage() {
 
   useEffect(() => {
     // Process the OAuth redirect containing the JWT hash
+    let cancelled = false;
     const handleAuth = async () => {
       try {
         await enokiFlow.handleAuthCallback();
+        if (cancelled) return;
         // R28: honor a `?return=/some/path` query so a deep-link
         // (e.g. /markets/<id>) that bounced through the auth gate
         // comes back to the originating page after zkLogin finishes.
@@ -25,12 +27,22 @@ export default function AuthCallbackPage() {
         const safe = raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
         router.push(safe);
       } catch (err) {
+        // R49 audit fix: don't update state on an unmounted
+        // component (React strict-mode in dev mounts the effect
+        // twice; without the cancelled guard, the second mount
+        // races the first and the OAuth callback fires twice,
+        // creating two zkLogin sessions and throwing an opaque
+        // error on the second `handleAuthCallback` call).
+        if (cancelled) return;
         console.error("Auth callback failed:", err);
         setError("Authentication failed. Please try again.");
       }
     };
 
     handleAuth();
+    return () => {
+      cancelled = true;
+    };
   }, [enokiFlow, router]);
 
   return (

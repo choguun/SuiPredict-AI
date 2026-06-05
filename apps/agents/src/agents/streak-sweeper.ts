@@ -69,13 +69,15 @@ const PER_USER_BATCH_TIMEOUT_MS = 10 * 60 * 1000;
 // sweep lock so the next-day sweep can take over.
 const MAX_CONSECUTIVE_FAILURES = 5;
 
-const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
-const STREAK_ADMIN_ID = process.env.STREAK_ADMIN_ID ?? "";
-const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
-  | "testnet"
-  | "mainnet"
-  | "devnet"
-  | "localnet";
+// R49 audit fix: R48 claimed to move module-level env reads
+// inside `runStreakSweeper` (and the other workers) but the
+// streak sweeper's `STREAK_REGISTRY_ID`, `STREAK_ADMIN_ID`, and
+// `SUI_NETWORK` were still captured once at module load. The
+// workers are imported well before `bootstrapEnv()` patches
+// `process.env`, so a redeploy that swaps the env values in
+// place (e.g. testnet → mainnet, or rotating to a new prize
+// pool) silently operates against the old IDs. Move all three
+// into the function bodies that actually consume them.
 
 const OUTCOME_NOT_SUBMITTED = 0;
 const OUTCOME_ALL_CORRECT = 1;
@@ -391,6 +393,16 @@ export async function resolveDayOutcomes(
   dayIndex: number,
 ): Promise<ResolvedUser[]> {
   if (!AGENT_POLICY_PACKAGE_ID) return [];
+  // R49 audit fix: read the network inside the function body so a
+  // hot-patch to `process.env.SUI_NETWORK` takes effect on the
+  // next sweep. `bootstrapEnv()` in `index.ts` mutates the env
+  // after import, so the previous module-level capture often
+  // resolved to the empty default at boot.
+  const SUI_NETWORK = (process.env.SUI_NETWORK ?? "testnet") as
+    | "testnet"
+    | "mainnet"
+    | "devnet"
+    | "localnet";
   const client = new SuiJsonRpcClient({
     url: getJsonRpcFullnodeUrl(SUI_NETWORK),
     network: SUI_NETWORK,
@@ -619,6 +631,11 @@ function buildSweepTx(
 export async function runStreakSweeper(
   ctx: AgentContext,
 ): Promise<AgentResult> {
+  // R49 audit fix: read env inside the function body so a
+  // hot-patch of `process.env` (e.g. via a redeploy that doesn't
+  // restart the worker) takes effect on the next tick.
+  const STREAK_REGISTRY_ID = process.env.STREAK_REGISTRY_ID ?? "";
+  const STREAK_ADMIN_ID = process.env.STREAK_ADMIN_ID ?? "";
   if (!STREAK_REGISTRY_ID || !STREAK_ADMIN_ID) {
     return recordResult("StreakSweeper", {
       action: "skip",

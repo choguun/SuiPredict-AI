@@ -17,7 +17,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
-import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -104,10 +104,15 @@ export function buildRotateStreakAdminTx(
   adminCapId: string,
   newAdmin: string,
 ): Transaction {
-  if (!newAdmin || newAdmin === "0x0" || newAdmin === "@0x0") {
+  if (!isValidSuiAddress(newAdmin)) {
     // R37 audit fix: pre-validate the new-admin address here so
     // a typo (`""`, `"0x0"`) surfaces as a build-time error
     // instead of a Move abort at execute time.
+    // R49 audit fix: route through `isValidSuiAddress` (was
+    // inline `!newAdmin || newAdmin === "0x0" || newAdmin ===
+    // "@0x0"`) so the check matches the parlay + prize builders
+    // and catches whitespace, mixed-case-with-trailing-space,
+    // and the all-zeros placeholder.
     throw new Error(
       `buildRotateStreakAdminTx: newAdmin must be a non-zero Sui address (got "${newAdmin}")`,
     );

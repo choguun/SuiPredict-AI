@@ -73,6 +73,18 @@ export default function VaultPage() {
 
   async function supplyPLP() {
     if (!account || !client) return;
+    // R49 audit fix: confirm the fund-locking supply before
+    // signing. `withdrawPLP` (line 110) already prompts; the
+    // supply side was the asymmetric survivor. A misclick
+    // costs the user a real PTB fee and locks the DUSDC for
+    // the vault's lockup period.
+    if (
+      !window.confirm(
+        `Supply ${amount} DUSDC to the PLP vault?`,
+      )
+    ) {
+      return;
+    }
     setLoading(true);
     setStatus("Supplying to PLP vault...");
     try {

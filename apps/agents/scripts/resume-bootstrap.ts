@@ -382,9 +382,19 @@ async function main() {
       log("Creating PrizePool<DBUSDC>...");
       const createPoolDigest = await (async () => {
         // R28: use SDK builder. Mirrors bootstrap-gamification.
+        // R49 audit fix: R48 added a mandatory `seedAtoms: bigint`
+        // to `buildCreatePoolTx` (a PTB-side `splitCoins` to size
+        // the seed). `bootstrap-gamification.ts:566-570` was
+        // updated in lockstep; this resume path was missed and a
+        // user resuming with `--only prize_pool` hit
+        // `TypeError: Cannot read properties of undefined (reading
+        // 'toString')` from the SDK's `pure.u64(params.seedAtoms)`.
+        // Pass the same `PRIZE_WEEKLY_AMOUNT` the bootstrap path uses
+        // so a half-deployed env can finish without divergence.
         const tx = buildCreatePoolTx({
           initialCoinId: seedCoinId,
           initialWeek: BigInt(INITIAL_WEEK),
+          seedAtoms: PRIZE_WEEKLY_AMOUNT,
         });
         const res = await executeTransaction(txClient, tx, signer);
         return res.digest;
