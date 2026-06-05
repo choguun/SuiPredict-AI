@@ -13,6 +13,7 @@ import { runReferralKeeper } from "./agents/referral-keeper.js";
 import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
+import { closeSharedClient } from "./lib.js";
 import { getRecentDecisions } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
@@ -508,10 +509,27 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[agents] Caught ${sig}, draining scheduler (max 5s)...`);
-    stopScheduler(5_000).then(() => {
-      console.log(`[agents] Exiting after ${sig}.`);
-      process.exit(0);
-    });
+    // R52 audit fix: close the gRPC
+    // singleton before exit. Without
+    // this, the SuiGrpcClient's HTTP/2
+    // session and the indexer's
+    // `queryEvents` stream are torn
+    // down with a RST_STREAM, which the
+    // gRPC server logs as an error and
+    // can trigger the Sui public node's
+    // per-IP rate-limiter on the next
+    // deploy. `closeSharedClient()` is
+    // best-effort: it resolves
+    // immediately if no client was
+    // ever created (e.g. SIGTERM during
+    // boot before the first tick).
+    stopScheduler(5_000)
+      .then(() => closeSharedClient())
+      .catch(() => {})
+      .finally(() => {
+        console.log(`[agents] Exiting after ${sig}.`);
+        process.exit(0);
+      });
   };
   process.on("SIGTERM", handleSignal);
   process.on("SIGINT", handleSignal);

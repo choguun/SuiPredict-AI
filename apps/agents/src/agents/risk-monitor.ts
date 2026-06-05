@@ -2,14 +2,13 @@ import {
   AGENT_POLICY_PACKAGE_ID,
   buildAuthorizeSpendTx,
   buildPausePolicyTx,
-  createClient,
   dusdcToDollars,
   executeTransaction,
   getPolicyState,
 } from "@suipredict/sdk";
 import { getVaultSummaryFromEnv } from "../markets/store.js";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedClient, recordResult } from "../lib.js";
 
 // R44 audit fix: `RISK_PAUSE_UTILIZATION` is a runtime-tunable
 // knob that an operator might hot-patch via `bootstrap-env.ts`
@@ -35,7 +34,10 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   // product — so it always returns 0/404 here.
   const vault = getVaultSummaryFromEnv();
   const utilization = vault.total_balance > 0 ? vault.allocated / vault.total_balance : 0;
-  const client = createClient();
+  // R52 audit fix: use the singleton
+  // gRPC client. The R51 sweep missed
+  // this worker.
+  const client = getSharedClient();
 
   let policySpent = 0;
   let policyBudget = ctx.maxBudgetUsdc;

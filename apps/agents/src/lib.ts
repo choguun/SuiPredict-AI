@@ -98,9 +98,38 @@ export { createClient, pickAtmStrike };
 // tests can still mock `createClient` via the
 // barrel re-export. The `SuiClient` type lives in
 // the SDK barrel.
+//
+// R52 audit fix: expose `closeSharedClient()`
+// so the SIGTERM handler in `index.ts` can
+// drain the gRPC channel before the process
+// exits. Without it, every Railway redeploy
+// (and every `kill -TERM`) leaks one
+// HTTP/2 connection: the gRPC server sees a
+// RST_STREAM and logs an error, the kernel
+// eventually reaps the socket after a
+// keepalive timeout, and the Sui public node
+// rate-limits the leaked pings. The
+// `SuiGrpcClient` exposes a `close()` method
+// that flushes pending unary calls and aborts
+// the stream.
 import type { SuiClient } from "@suipredict/sdk";
 let cachedClient: SuiClient | null = null;
 export function getSharedClient(): SuiClient {
   if (!cachedClient) cachedClient = createClient();
   return cachedClient;
+}
+export async function closeSharedClient(): Promise<void> {
+  if (!cachedClient) return;
+  const client = cachedClient;
+  cachedClient = null;
+  // The SuiGrpcClient's `close()` returns
+  // once the HTTP/2 session is fully torn
+  // down. It's safe to call on a fresh
+  // client too (it just resolves).
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (client as any).close?.();
+  } catch {
+    /* shutdown best-effort */
+  }
 }

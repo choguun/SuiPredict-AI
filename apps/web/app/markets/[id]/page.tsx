@@ -507,6 +507,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: QUOTE_COIN,
+        // R52 audit fix: the gRPC `listCoins` defaults to
+        // a 50-coin page. A user with a long history of
+        // gas-refund / redeem dust can have hundreds of
+        // DUSDC coins; the default silently truncates and
+        // the "largest coin" sort below picks a
+        // representative but the total-balance preflight
+        // under-counts. 100 is a small bump that covers
+        // ~5y of normal activity on a single Sui address.
+        limit: 100,
       });
       if (objects.length === 0) {
         throw new Error("No DUSDC — request from DeepBook testnet form");
@@ -537,10 +546,32 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         BigInt(0),
       );
       const amountAtoms = dollarsToDusdc(qty);
-      if (BigInt(coin.balance) < amountAtoms && totalBalance < amountAtoms) {
+      // R52 audit fix: pre-flight
+      // using OR, not AND. The
+      // previous `&&` required *both*
+      // the largest single coin and
+      // the total balance to be below
+      // `amountAtoms` to throw. A user
+      // with five 0.5 DUSDC dust coins
+      // (largest < 1 DUSDC, total =
+      // 2.5 DUSDC) would pass the
+      // check, then the PTB would
+      // build against a 0.5 DUSDC
+      // coin and abort on-chain with
+      // an opaque Move error. The
+      // contract's `splitCoins` takes
+      // a single input coin — it
+      // can't merge across coins
+      // without a separate merge PTB
+      // — so the largest-coin gate
+      // is the right correctness
+      // check.
+      if (BigInt(coin.balance) < amountAtoms) {
         throw new Error(
-          `Insufficient DUSDC: need ${(Number(amountAtoms) / 1e6).toFixed(2)} DUSDC, ` +
-            `have ${(Number(totalBalance) / 1e6).toFixed(2)} DUSDC across ${objects.length} coin(s).`,
+          `Insufficient DUSDC in a single coin: need ${(Number(amountAtoms) / 1e6).toFixed(2)} DUSDC ` +
+            `in one coin, largest is ${(Number(coin.balance) / 1e6).toFixed(2)} ` +
+            `(total across ${objects.length} coin(s) is ${(Number(totalBalance) / 1e6).toFixed(2)}). ` +
+            `Consolidate via a merge tx or deposit more DUSDC.`,
         );
       }
       // Convert the displayed `qty` (in dollars) to DUSDC atoms
@@ -899,6 +930,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: winningCoinType,
+        // R52 audit fix: same `limit: 100` rationale
+        // as `splitCollateral` above. A winner with
+        // 50+ winning-coin fragments would see
+        // `objects[0]` and assume that's the only
+        // coin; if the chain has more, the
+        // unredeemed remainder stays in the wallet
+        // because the redeemer only handles one
+        // objectId.
+        limit: 100,
       });
       const coin = objects[0];
       if (!coin) {

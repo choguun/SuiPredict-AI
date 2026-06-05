@@ -20,6 +20,7 @@ import {
   isValidSuiAddress,
   MAX_COUNTRY_BYTES,
   dusdcToDollars,
+  isMoveAbortInModule,
   type AgentPolicyState,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
@@ -33,6 +34,22 @@ interface MirrorProfile {
 }
 
 const PROFILE_REGISTRY_ID = process.env.NEXT_PUBLIC_PROFILE_REGISTRY_ID ?? "";
+// R52 audit fix: source the streak
+// registry id from the same env var
+// that `useUserStreakId.ts` reads
+// (`NEXT_PUBLIC_STREAK_REGISTRY_ID`).
+// The previous `PROFILE_REGISTRY_ID`
+// mismatch meant the
+// `invalidateStreakCache` invalidation
+// targeted a different TanStack key
+// than the hook actually registered,
+// so the success path silently
+// no-op'd the streak refresh — the
+// home page's streak panel would
+// show "no streak" for 30s after
+// the user started a streak from
+// the settings page.
+const STREAK_REGISTRY_ID = process.env.NEXT_PUBLIC_STREAK_REGISTRY_ID ?? "";
 const AGENTS_URL = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 
 const KIND_LABELS: Record<number, string> = {
@@ -40,6 +57,41 @@ const KIND_LABELS: Record<number, string> = {
   [FORECASTER_AI]: "AI-assisted",
   [FORECASTER_BOT]: "Bot",
 };
+
+// R52 audit fix: replace the previous generic
+// "Transaction failed" toasts with abort-aware
+// messages. The settings page drives `agent_policy`
+// and `user_profile` Move modules, both of which
+// have rich abort codes that the user can act on
+// (e.g. "agent cap exceeded" → top up the policy;
+// "country code too long" → trim input). Without
+// this helper the catch blocks were emitting a
+// blanket string and the user had no signal which
+// input to fix.
+function friendlyMoveError(err: unknown, action: string): string {
+  if (isMoveAbortInModule(err, "agent_policy")) {
+    return `${action} failed: agent policy paused, revoked, or out of budget.`;
+  }
+  if (isMoveAbortInModule(err, "user_profile")) {
+    return `${action} failed: profile invariant violated (invalid input or wrong owner?).`;
+  }
+  if (isMoveAbortInModule(err, "streak_system")) {
+    return `${action} failed: streak registry rejected the call.`;
+  }
+  return `${action} failed on-chain`;
+}
+
+function failedTxToError(
+  r: { FailedTransaction?: { status?: { success: false; error?: { message?: string } } | { success: true } } },
+): Error {
+  const failed = r.FailedTransaction;
+  if (!failed) return new Error("Move transaction failed");
+  const status = failed.status;
+  if (!status || status.success !== false) {
+    return new Error("Move transaction failed");
+  }
+  return new Error(status.error?.message ?? "Move transaction failed");
+}
 
 export default function SettingsPage() {
   const account = useCurrentAccount();
@@ -57,12 +109,17 @@ export default function SettingsPage() {
   const { streakId } = useUserStreakId(account?.address);
   const invalidateStreakCache = useCallback(() => {
     if (!account?.address) return;
+    // R52 audit fix: use the streak
+    // registry id (matching the
+    // `useUserStreakId` hook's
+    // `queryKey`) instead of the
+    // profile registry id. TanStack's
+    // prefix-match is exact on the
+    // tuple `[..., REGISTRY_ID, address]`
+    // — a different id is a different
+    // key.
     void queryClient.invalidateQueries({
-      queryKey: ["userStreakId", PROFILE_REGISTRY_ID, account.address],
-      type: "active",
-    });
-    void queryClient.invalidateQueries({
-      queryKey: ["profile", PROFILE_REGISTRY_ID, account.address],
+      queryKey: ["userStreakId", STREAK_REGISTRY_ID, account.address],
       type: "active",
     });
     // R51 audit fix: also invalidate the
@@ -191,7 +248,14 @@ export default function SettingsPage() {
         result.$kind === "Transaction"
           ? result.Transaction.digest
           : null;
-      if (!digest) throw new Error("Transaction failed");
+      if (!digest) {
+        // R52 audit fix: surface a friendly
+        // Move-abort message (e.g. "agent
+        // cap exceeded") instead of a
+        // generic "Transaction failed".
+        setStatus(friendlyMoveError(failedTxToError(result), "Create policy"));
+        return;
+      }
 
       const createdId = await extractCreatedObjectId(
         client,
@@ -207,7 +271,7 @@ export default function SettingsPage() {
       }
       invalidateStreakCache();
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(friendlyMoveError(e, "Create policy"));
     } finally {
       setLoading(false);
     }
@@ -250,7 +314,7 @@ export default function SettingsPage() {
       setStatus(`Revoked! Tx: ${digest.slice(0, 16)}…`);
       await loadPolicyInfo(policyId);
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(friendlyMoveError(e, "Revoke policy"));
     } finally {
       setLoading(false);
     }
@@ -282,7 +346,7 @@ export default function SettingsPage() {
       await loadPolicyInfo(policyId);
       invalidateStreakCache();
     } catch (e) {
-      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(friendlyMoveError(e, pause ? "Pause policy" : "Unpause policy"));
     } finally {
       setLoading(false);
     }
@@ -296,14 +360,22 @@ export default function SettingsPage() {
       const tx = buildCreateProfileTx(PROFILE_REGISTRY_ID);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (r.$kind !== "Transaction") {
-        throw new Error("Transaction failed");
+        // R52 audit fix: friendly abort
+        // message instead of a generic
+        // throw. The `user_profile` module
+        // aborts include "country code
+        // too long" (R44) and "profile
+        // already exists" (R47) which
+        // the user needs to act on.
+        setProfileStatus(friendlyMoveError(failedTxToError(r), "Create profile"));
+        return;
       }
       setProfileStatus(
         `Profile created! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {
-      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setProfileStatus(friendlyMoveError(e, "Create profile"));
     } finally {
       setProfileBusy(false);
     }
@@ -317,14 +389,15 @@ export default function SettingsPage() {
       const tx = buildSetCountryCodeTx(profile.user, country);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (r.$kind !== "Transaction") {
-        throw new Error("Transaction failed");
+        setProfileStatus(friendlyMoveError(failedTxToError(r), "Save country"));
+        return;
       }
       setProfileStatus(
         `Country saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {
-      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setProfileStatus(friendlyMoveError(e, "Save country"));
     } finally {
       setProfileBusy(false);
     }
@@ -338,14 +411,15 @@ export default function SettingsPage() {
       const tx = buildSetForecasterKindTx(profile.user, forecasterKind);
       const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       if (r.$kind !== "Transaction") {
-        throw new Error("Transaction failed");
+        setProfileStatus(friendlyMoveError(failedTxToError(r), "Save forecaster kind"));
+        return;
       }
       setProfileStatus(
         `Forecaster kind saved! Tx: ${r.Transaction.digest.slice(0, 16)}…`,
       );
       invalidateStreakCache();
     } catch (e) {
-      setProfileStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setProfileStatus(friendlyMoveError(e, "Save forecaster kind"));
     } finally {
       setProfileBusy(false);
     }

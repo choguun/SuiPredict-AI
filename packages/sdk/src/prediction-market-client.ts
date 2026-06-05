@@ -118,7 +118,105 @@ export function buildCreateMarketTx(params: {
   deepCoinId: string;
   category?: number;
 }): Transaction {
-  if (!params.deepCoinId) throw new Error("deepCoinId is required for pool creation");
+  // R52 audit fix: reject empty / missing
+  // `deepCoinId` AND route through
+  // `normalizeObjectId` for consistency
+  // with the rest of the SDK. The
+  // previous `if (!params.deepCoinId)`
+  // accepted a truthy mixed-case paste
+  // (e.g. `0xAbC…`) which then aborted
+  // the PTB at BCS resolution with
+  // `invalid input object`.
+  if (!params.deepCoinId) {
+    throw new Error("deepCoinId is required for pool creation");
+  }
+  // R52 audit fix: validate `expiryMs`
+  // is in the future and positive.
+  // A `0n` value would make the market
+  // immediately resolvable; the creator
+  // (or anyone with admin keys) could
+  // resolve-and-pin it instantly.
+  if (typeof params.expiryMs !== "bigint") {
+    throw new Error(
+      `buildCreateMarketTx: expiryMs must be bigint, got ${typeof params.expiryMs}`,
+    );
+  }
+  if (params.expiryMs <= 0n) {
+    throw new Error(
+      `buildCreateMarketTx: expiryMs must be > 0 (got ${params.expiryMs})`,
+    );
+  }
+  if (params.expiryMs <= BigInt(Date.now())) {
+    throw new Error(
+      `buildCreateMarketTx: expiryMs must be in the future ` +
+        `(got ${params.expiryMs}, now=${BigInt(Date.now())})`,
+    );
+  }
+  // R52 audit fix: bound the title and
+  // resolution-source vector lengths.
+  // The on-chain `vector<u8>` is
+  // unbounded, but a 1MB title bloat
+  // the `MarketCreatedEvent` payload
+  // (the title is duplicated in the
+  // event) and every indexer that
+  // hydrates the title from the event.
+  // 256 / 1024 bytes are comfortable
+  // upper bounds for human-readable
+  // market questions and resolution
+  // sources.
+  const MAX_TITLE_BYTES = 256;
+  const MAX_RESOLUTION_SOURCE_BYTES = 1024;
+  if (!params.title || !params.title.trim()) {
+    throw new Error("buildCreateMarketTx: title is required");
+  }
+  const titleBytes = encodeUtf8(params.title).length;
+  if (titleBytes > MAX_TITLE_BYTES) {
+    throw new Error(
+      `buildCreateMarketTx: title length ${titleBytes} bytes exceeds ${MAX_TITLE_BYTES} (max)`,
+    );
+  }
+  if (!params.resolutionSource || !params.resolutionSource.trim()) {
+    throw new Error("buildCreateMarketTx: resolutionSource is required");
+  }
+  const resBytes = encodeUtf8(params.resolutionSource).length;
+  if (resBytes > MAX_RESOLUTION_SOURCE_BYTES) {
+    throw new Error(
+      `buildCreateMarketTx: resolutionSource length ${resBytes} bytes exceeds ${MAX_RESOLUTION_SOURCE_BYTES} (max)`,
+    );
+  }
+  // R52 audit fix: validate `category`
+  // is in `[0, 3]`. The on-chain
+  // `category: u8` is unbounded, but
+  // the indexer / leaderboard code
+  // treats anything outside the four
+  // documented values as "other"; a
+  // typo (e.g. `200`) would silently
+  // mis-categorize the market in every
+  // leaderboard that filters on
+  // `category`.
+  const category = params.category ?? 0;
+  if (!Number.isInteger(category) || category < 0 || category > 3) {
+    throw new Error(
+      `buildCreateMarketTx: category must be 0..3 (0=none, 1=AI, 2=crypto, 3=other), got ${category}`,
+    );
+  }
+  // R52 audit fix: validate tick/lot/min
+  // sizes are positive. A 0n value
+  // would make DeepBook's pool creation
+  // accept a 0-tick pool that no order
+  // can match against.
+  const tickSize = params.tickSize ?? 1_000_000n;
+  const lotSize = params.lotSize ?? 1_000_000n;
+  const minSize = params.minSize ?? 1_000_000n;
+  if (tickSize <= 0n) {
+    throw new Error(`buildCreateMarketTx: tickSize must be > 0 (got ${tickSize})`);
+  }
+  if (lotSize <= 0n) {
+    throw new Error(`buildCreateMarketTx: lotSize must be > 0 (got ${lotSize})`);
+  }
+  if (minSize <= 0n) {
+    throw new Error(`buildCreateMarketTx: minSize must be > 0 (got ${minSize})`);
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::create_market`,
@@ -128,11 +226,11 @@ export function buildCreateMarketTx(params: {
       tx.pure.vector("u8", encodeUtf8(params.title)),
       tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),
       tx.pure.u64(params.expiryMs),
-      tx.pure.u64(params.tickSize ?? 1_000_000n),       // 0.001 DUSDC tick
-      tx.pure.u64(params.lotSize ?? 1_000_000n),        // 1 YES minimum
-      tx.pure.u64(params.minSize ?? 1_000_000n),        // 1 YES minimum
+      tx.pure.u64(tickSize),                            // 0.001 DUSDC tick
+      tx.pure.u64(lotSize),                             // 1 YES minimum
+      tx.pure.u64(minSize),                             // 1 YES minimum
       tx.object(normalizeObjectId(params.deepCoinId)),
-      tx.pure.u8(params.category ?? 0),
+      tx.pure.u8(category),
     ],
   });
   return tx;

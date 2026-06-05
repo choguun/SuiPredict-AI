@@ -283,6 +283,27 @@ export function buildCreateParlayTx(args: {
       `buildCreateParlayTx: marketIds must have ${MIN_LEGS}–${MAX_LEGS} legs (got ${args.marketIds.length})`,
     );
   }
+  // R52 audit fix: validate per-element
+  // `predictions` are 1 (YES) or 2 (NO).
+  // The TS type is `Array<1 | 2>` but
+  // this is a structural type — at
+  // runtime a `[1, 2, 99]` vector
+  // compiles and runs, and the on-chain
+  // `parlay.move` asserts per-element
+  // `pred == PREDICT_YES ||
+  // pred == PREDICT_NO` (i.e. `1|2`).
+  // A `0` or `3` aborts the entire PTB
+  // with `ELegPredictionMismatch`,
+  // losing the user's collateral gas.
+  if (!args.predictions.every((p) => p === 1 || p === 2)) {
+    const bad = args.predictions
+      .map((p, i) => (p === 1 || p === 2 ? null : i))
+      .filter((i) => i !== null);
+    throw new Error(
+      `buildCreateParlayTx: predictions must be 1 (YES) or 2 (NO) for every leg ` +
+        `(bad indices: ${bad.join(", ")})`,
+    );
+  }
   const collateral = BigInt(args.collateralAtoms);
   if (collateral <= 0n) {
     throw new Error(

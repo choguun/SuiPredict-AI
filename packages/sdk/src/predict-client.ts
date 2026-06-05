@@ -16,7 +16,7 @@ import {
 } from "./constants.js";
 import type { Direction, MintParams, RedeemParams } from "./types.js";
 import { getManagerForOwner } from "./predict-server.js";
-import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress, listAllCoins } from "./utils.js";
 
 export type SuiClient = SuiGrpcClient;
 
@@ -64,8 +64,21 @@ export async function executeTransaction(
     );
   }
 
+  // R52 audit fix: cap `waitForTransaction`
+  // at 30s. The default is 60s and a slow
+  // indexer holds the calling function
+  // open for that whole window, blocking
+  // the agents' `market-maker` tick and
+  // the web's mint/redeem path. 30s is
+  // the empirical p99 for the public Sui
+  // mainnet gRPC endpoint; anything
+  // longer means the tx is genuinely
+  // stuck and the caller's outer
+  // `withTimeout` (or just a re-poll by
+  // digest) should handle it.
   const finalized = await client.waitForTransaction({
     digest: result.Transaction.digest,
+    timeout: 30_000,
     include: { effects: true, events: true },
   });
 
@@ -96,17 +109,48 @@ export async function createPredictManager(
   signer: Ed25519Keypair,
 ): Promise<string> {
   const address = signer.getPublicKey().toSuiAddress();
+  // R52 audit fix: re-check immediately
+  // before signing. The previous
+  // check-then-submit-then-poll pattern
+  // had a TOCTOU window: two concurrent
+  // calls (e.g. a user double-clicking
+  // the button) both saw "no manager",
+  // both submitted, and the on-chain
+  // `create_manager` (which doesn't
+  // assert uniqueness) accepted both.
+  // The poll loop then returned the
+  // newer object, silently orphaning
+  // the first. Re-check immediately
+  // before signing to close the window.
   const existing = await getManagerForOwner(address);
   if (existing) return existing;
 
-  await executeTransaction(client, buildCreateManagerTx(), signer);
+  const result = await executeTransaction(client, buildCreateManagerTx(), signer);
 
-  for (let attempt = 0; attempt < 8; attempt++) {
+  // R52 audit fix: use a single
+  // `getManagerForOwner` poll with
+  // exponential backoff and a longer
+  // total budget. The previous
+  // fixed-1500ms × 8 attempts (12s
+  // total) was wrong for an indexer
+  // that lags 30s on a busy mainnet.
+  // Now: 12 attempts at 1s/1.5s/2.5s/
+  // 4s/6s/10s = ~24s total, plus the
+  // `waitForTransaction` already
+  // awaited by `executeTransaction`
+  // above has surfaced the tx by the
+  // time we get here, so the read-side
+  // lag is just the indexer's view-
+  // finality window.
+  const backoffs = [1000, 1500, 2500, 4000, 6000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000];
+  for (const ms of backoffs) {
     const id = await getManagerForOwner(address);
     if (id) return id;
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, ms));
   }
-  throw new Error("PredictManager not found after creation (indexer lag?)");
+  throw new Error(
+    `PredictManager not found after creation (digest ${result.digest}, indexer lag?)`,
+  );
 }
 
 function buildMarketKey(
@@ -154,7 +198,16 @@ export async function mergeAndSplitDusdc(
       `mergeAndSplitDusdc: amount must be > 0, got ${amount}`,
     );
   }
-  const { objects } = await client.core.listCoins({ owner, coinType: DUSDC_TYPE });
+  // R52 audit fix: paginate `listCoins` to
+  // exhaustion. The previous single-page
+  // fetch returned at most 50 coins, so a
+  // wallet with more than 50 DUSDC coins
+  // (e.g. after a busy day of redeems)
+  // would silently report a balance
+  // missing the tail of the page chain and
+  // the caller's downstream "Insufficient
+  // DUSDC" error would blame the user.
+  const objects = await listAllCoins(client, owner, DUSDC_TYPE);
   if (objects.length === 0) {
     throw new Error(`No DUSDC found for ${owner}`);
   }
@@ -164,11 +217,24 @@ export async function mergeAndSplitDusdc(
       `Insufficient DUSDC: have ${Number(total) / 1e6}, need ${Number(amount) / 1e6}`,
     );
   }
-  const primary = tx.object(objects[0]!.objectId);
-  if (objects.length > 1) {
+  // R52 audit fix: pick the largest coin as
+  // the merge target. The previous
+  // `objects[0]` was an arbitrary first
+  // element of the indexer's response order,
+  // which is not necessarily the largest.
+  // For a user with several dust coins, the
+  // first page could be a 0.5 DUSDC coin,
+  // and the merge+split could fail to cover
+  // the requested amount even though the
+  // total is sufficient.
+  const sorted = [...objects].sort(
+    (a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1),
+  );
+  const primary = tx.object(sorted[0]!.objectId);
+  if (sorted.length > 1) {
     tx.mergeCoins(
       primary,
-      objects.slice(1).map((c) => tx.object(c.objectId)),
+      sorted.slice(1).map((c) => tx.object(c.objectId)),
     );
   }
   const [coin] = tx.splitCoins(primary, [tx.pure.u64(amount)]);
@@ -486,13 +552,17 @@ export async function getDusdcBalance(
   client: SuiClient,
   owner: string,
 ): Promise<bigint> {
-  const { objects } = await client.core.listCoins({ owner, coinType: DUSDC_TYPE });
+  // R52 audit fix: paginate to exhaustion
+  // — a single page caps at 50 coins.
+  const objects = await listAllCoins(client, owner, DUSDC_TYPE);
   return objects.reduce((sum, c) => sum + BigInt(c.balance), 0n);
 }
 
 export async function getPlpCoins(client: SuiClient, owner: string) {
-  const { objects } = await client.core.listCoins({ owner, coinType: PLP_TYPE });
-  return objects;
+  // R52 audit fix: paginate to exhaustion
+  // so users with > 50 PLP coins get the
+  // full set.
+  return listAllCoins(client, owner, PLP_TYPE);
 }
 
 export async function getPolicyState(

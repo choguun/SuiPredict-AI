@@ -30,10 +30,23 @@
  * serve the wrong access-control allowlist to a different origin.
  */
 
-let cachedOrigin: string | null = null;
+// R52 audit fix: don't memoize the
+// resolved origin for the process
+// lifetime. The previous cache
+// meant a hot-patch via
+// `bootstrap-env.ts` (which mutates
+// `process.env.ALLOWED_ORIGIN` at
+// runtime) silently failed on the
+// next `corsFor` call — the patched
+// value was never seen until the
+// agents process restarted. This is
+// the same pattern the SDK builders
+// were retrofitted for in R48. The
+// `URL` parse is O(small string) so
+// re-running it on every request is
+// negligible.
 
 function resolveAllowedOrigin(): string {
-  if (cachedOrigin !== null) return cachedOrigin;
   const fromEnv = process.env.ALLOWED_ORIGIN?.trim();
   if (fromEnv) {
     // R51 audit fix: validate the env value is
@@ -72,8 +85,7 @@ function resolveAllowedOrigin(): string {
       }
       throw err;
     }
-    cachedOrigin = fromEnv;
-    return cachedOrigin;
+    return fromEnv;
   }
   if (process.env.NODE_ENV === "production") {
     throw new Error(
@@ -82,8 +94,7 @@ function resolveAllowedOrigin(): string {
         "side-effecting endpoints (/prize/signature, /prize/claims).",
     );
   }
-  cachedOrigin = "http://localhost:3000";
-  return cachedOrigin;
+  return "http://localhost:3000";
 }
 
 /** Resolve once on first call; expose for tests/diagnostics. */

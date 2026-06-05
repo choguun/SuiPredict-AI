@@ -131,6 +131,15 @@ export function DailyPredictionCard() {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: QUOTE_COIN,
+        // R52 audit fix: bump default 50-coin
+        // page to 100. The pre-flight sum
+        // (`totalBalance`) under-counts beyond
+        // the page size, so a user with 60
+        // DUSDC fragments would be wrongly told
+        // they have insufficient funds for a
+        // 1-coin mint and the wallet spinner
+        // would burn a gas fee on a doomed PTB.
+        limit: 100,
       });
       if (objects.length === 0) {
         throw new Error("No DUSDC — request from DeepBook testnet form");

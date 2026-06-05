@@ -62,7 +62,33 @@ import { consumeNonce, issueNonce } from "./nonce-store.js";
 function clientIp(req: IncomingMessage): string {
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.length > 0) {
-    return xff.split(",")[0]!.trim();
+    // R52 audit fix: take the
+    // *right-most* untrusted
+    // entry from
+    // `X-Forwarded-For`. The
+    // previous left-most
+    // behavior used the
+    // client's claimed
+    // address, which is
+    // trivially spoofable —
+    // a script setting
+    // `X-Forwarded-For:
+    // 1.2.3.4` in every
+    // request would have
+    // every request land
+    // in a fresh bucket
+    // and bypass the rate
+    // limiter entirely.
+    // The right-most entry
+    // is the closest to
+    // the application
+    // (the last proxy
+    // hop), which is
+    // what Railway's edge
+    // sets. Trust only
+    // the last comma-
+    // separated value.
+    return xff.split(",").pop()!.trim();
   }
   return req.socket?.remoteAddress ?? "unknown";
 }

@@ -13,6 +13,7 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   buildCreateManagerTx,
+  normalizeObjectId,
   getManagerForOwner,
   getActiveOracles,
   getManagerPositions,
@@ -156,7 +157,7 @@ export default function TradePage() {
     try {
       const tx = new Transaction();
       const coins = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
       });
       // R49 audit fix: when the user has zero DUSDC, the old

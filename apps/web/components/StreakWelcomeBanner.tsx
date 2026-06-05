@@ -1,6 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { buildCreateStreakTx } from "@suipredict/sdk";
 import { toast } from "sonner";
@@ -19,6 +20,22 @@ export function StreakWelcomeBanner() {
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
   const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
+  // R52 audit fix: hook up a
+  // `useQueryClient` so the success
+  // path can invalidate the
+  // streak-related queries. Without
+  // this, after `startStreak` the
+  // home page's streak panel
+  // (`["streakInfo", streakId]`,
+  // `["userStreakId", REGISTRY_ID,
+  // address]`) stays stale for the
+  // hook's 30s `staleTime`, and the
+  // banner itself dismisses via
+  // `setDismissed(true)` after a
+  // successful click — so the user
+  // has no visual cue that anything
+  // happened.
+  const queryClient = useQueryClient();
   const [dismissed, setDismissed] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -71,6 +88,41 @@ export function StreakWelcomeBanner() {
         toast.success(`Streak created: ${r.Transaction.digest.slice(0, 16)}…`, {
           id: toastId,
         });
+        // R52 audit fix: invalidate
+        // the streak-related
+        // queries so the home
+        // page's streak panel,
+        // DailyPredictionCard's
+        // streak badge, and the
+        // /profile page all
+        // refresh immediately
+        // (the hook's `staleTime`
+        // is 30s otherwise). Use
+        // `type: "active"` to
+        // match the R43 project-
+        // wide convention so
+        // inactive SSR preloaded
+        // entries are not refetched.
+        if (account?.address) {
+          void queryClient.invalidateQueries({
+            queryKey: ["userStreakId", REGISTRY_ID, account.address],
+            type: "active",
+          });
+        }
+        void queryClient.invalidateQueries({
+          queryKey: ["streakInfo"],
+          type: "active",
+        });
+        if (account?.address) {
+          void queryClient.invalidateQueries({
+            queryKey: ["portfolio", account.address],
+            type: "active",
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["marketsList"],
+            type: "active",
+          });
+        }
       } else {
         toast.error("Streak creation failed", { id: toastId });
       }

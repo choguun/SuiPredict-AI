@@ -1,12 +1,11 @@
 import {
   buildResolveMarketTx,
-  createClient,
   executeTransaction,
   getSpotPrice,
   findNearestActiveOracle,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { callLlm, recordResult } from "../lib.js";
+import { callLlm, getSharedClient, recordResult } from "../lib.js";
 import { getMarket, listMarkets, upsertMarket } from "../markets/store.js";
 
 // R51 audit fix: moved the `RESOLVER_CONFIDENCE` read
@@ -123,7 +122,19 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
   }
 
   try {
-    const client = createClient();
+    // R52 audit fix: use the
+    // singleton gRPC client so the
+    // resolver shares the agents
+    // process's single connection
+    // pool. The previous
+    // `createClient()` instantiates
+    // a new `SuiGrpcClient` per
+    // resolve tx, which under
+    // batched expirations churns
+    // the Sui node's per-IP rate
+    // limiter. The R51 sweep
+    // missed this worker.
+    const client = getSharedClient();
     const tx = buildResolveMarketTx(market.id, outcome);
     const result = await executeTransaction(client, tx, ctx.signer);
     upsertMarket({

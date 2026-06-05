@@ -15,7 +15,6 @@
  *   `apps/agents/scripts/rotate-prize-pubkey.ts`
  */
 import {
-  createClient,
   executeTransaction,
   DUSDC_TYPE,
   buildFundPoolTx,

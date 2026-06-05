@@ -14,6 +14,7 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   getVaultSummary,
+  normalizeObjectId,
   type VaultSummary,
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
@@ -38,8 +39,16 @@ export default function VaultPage() {
 
   const refreshPlp = useCallback(async () => {
     if (!account || !client) return;
+    // R52 audit fix: normalize the
+    // owner address. `listCoins` is
+    // case-sensitive on the wire;
+    // a mixed-case Enoki zkLogin
+    // session would otherwise
+    // silently return `{ objects: [] }`
+    // and the PLP-balance display
+    // would always read 0.
     const { objects } = await client.core.listCoins({
-      owner: account.address,
+      owner: normalizeObjectId(account.address),
       coinType: PLP_TYPE,
     });
     const total = objects.reduce((s, c) => s + Number(c.balance), 0);
@@ -90,8 +99,11 @@ export default function VaultPage() {
     try {
       const tx = new Transaction();
       const supplyAmount = BigInt(amount) * BigInt(1_000_000);
+      // R52 audit fix: normalize the
+      // owner address (see comment on
+      // `refreshPlp`).
       const coins = await client.core.listCoins({
-        owner: account.address,
+        owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
       });
       if (coins.objects.length === 0) throw new Error("No dUSDC in wallet");

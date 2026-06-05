@@ -72,7 +72,22 @@ interface IssuedNonce {
 }
 
 const issuedNonces = new Map<string, IssuedNonce>();
-/** Map `user` → `nonce` so we can also look up by user (for the rate limit + debug). */
+/**
+ * Map `user` → `nonce` so we can also look up by user
+ * (for the rate limit + debug).
+ *
+ * R52 audit fix: also store the
+ * `user` on the `IssuedNonce` row so
+ * the `opportunisticSweep` can clean
+ * up the reverse map. The previous
+ * shape left stale entries in
+ * `userToNonce` after a sweep, and a
+ * bot that hammers
+ * `/prize/signature/challenge` with
+ * random user addresses grew the
+ * reverse map unboundedly — a slow
+ * OOM over weeks of uptime.
+ */
 const userToNonce = new Map<string, string>();
 
 /**
@@ -155,15 +170,25 @@ export function _resetForTests(): void {
 function opportunisticSweep(): void {
   if (issuedNonces.size < MAX_NONCES * EVICT_THRESHOLD_RATIO) return;
   const cutoff = Date.now() - NONCE_TTL_MS;
+  // R52 audit fix: build a set of
+  // the nonces that are about to be
+  // evicted, then walk `userToNonce`
+  // and drop any entry whose value
+  // is in the set. Without this the
+  // reverse map grew unboundedly as
+  // a bot issued challenges for
+  // random addresses — a slow OOM
+  // over weeks of uptime.
+  const evicting: string[] = [];
   for (const [k, v] of issuedNonces) {
     if (v.issuedAtMs < cutoff) {
+      evicting.push(k);
       issuedNonces.delete(k);
-      // Also clear the user→nonce reverse map. We don't
-      // know which user the nonce was bound to without
-      // scanning, so we leave stale entries in
-      // `userToNonce`; they're harmless (lookup returns a
-      // nonce that no longer exists in the forward map
-      // and `consumeNonce` returns `not_found`).
     }
+  }
+  if (evicting.length === 0) return;
+  const evictSet = new Set(evicting);
+  for (const [u, n] of userToNonce) {
+    if (evictSet.has(n)) userToNonce.delete(u);
   }
 }

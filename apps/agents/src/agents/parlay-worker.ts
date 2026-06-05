@@ -55,7 +55,7 @@ import {
 } from "@suipredict/sdk";
 import { isMoveAbortInModule } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
-import { createClient, executeTransaction } from "@suipredict/sdk";
+import { executeTransaction } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult } from "../lib.js";
 import { getMarket } from "../markets/store.js";

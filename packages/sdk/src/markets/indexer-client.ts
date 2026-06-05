@@ -1,13 +1,56 @@
 import type { MarketInfo, OrderBookSnapshot, PortfolioPosition, VaultSummaryClob } from "./types.js";
 
-const INDEXER_URL =
-  process.env.INDEXER_URL ??
-  process.env.NEXT_PUBLIC_AGENTS_URL ??
-  "http://localhost:3001";
+/**
+ * Resolve the indexer URL at call time so a
+ * hot-patch via `bootstrap-env.ts` takes
+ * effect on the next request. R52 audit fix:
+ * the previous module-level `const` froze
+ * the URL at SDK import time, so an env
+ * patch made after the agents process was
+ * up (e.g. via `setenv` from the
+ * `bootstrap-env.ts` hot-reload) was
+ * silently lost until the next restart.
+ *
+ * The `getIndexerUrl()` indirection costs
+ * one property access per call; the web
+ * bundle inlines `NEXT_PUBLIC_AGENTS_URL`
+ * at build time, so the call resolves to a
+ * frozen string in the browser. The agents
+ * process pays the env-read cost on every
+ * request, which is the cost we want.
+ */
+function getIndexerUrl(): string {
+  return (
+    process.env.INDEXER_URL ??
+    process.env.NEXT_PUBLIC_AGENTS_URL ??
+    "http://localhost:3001"
+  );
+}
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${INDEXER_URL}${path}`);
-  if (!res.ok) throw new Error(`indexer ${path}: ${res.status}`);
+  // R52 audit fix: bound the fetch with an
+  // 8s timeout. A mainnet indexer behind a
+  // 502 gateway (Sui infra outage) would
+  // otherwise hang the web's home page and
+  // the agents' tick loop for the full TCP
+  // keepalive (~minutes). Also validate the
+  // content-type so a 200 with a Vite dev
+  // page (`Content-Type: text/html`) doesn't
+  // blow up on `res.json()`.
+  const url = `${getIndexerUrl()}${path}`;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`indexer ${path}: ${res.status}${body ? " — " + body.slice(0, 256) : ""}`);
+  }
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) {
+    throw new Error(
+      `indexer ${path}: expected application/json, got ${ct || "(none)"}`,
+    );
+  }
   return res.json() as Promise<T>;
 }
 

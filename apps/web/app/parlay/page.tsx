@@ -93,6 +93,13 @@ export default function ParlayPage() {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
+        // R52 audit fix: bump the default 50-coin
+        // page to 100. A user with many DUSDC
+        // fragments would have the total balance
+        // under-count, the balance card would read
+        // 0 even though they hold funds, and the
+        // "consolidate" CTA wouldn't fire.
+        limit: 100,
       });
       const total = objects.reduce(
         (acc, c) => acc + BigInt(c.balance),
@@ -291,6 +298,12 @@ export default function ParlayPage() {
       const { objects } = await client.core.listCoins({
         owner: normalizeObjectId(account.address),
         coinType: DUSDC_TYPE,
+        // R52 audit fix: same `limit: 100`
+        // rationale as the balance-card read above.
+        // Without it, a 60+ fragment user would
+        // hit the "No DUSDC" branch even though
+        // `totalBalance` is positive.
+        limit: 100,
       });
       if (objects.length === 0) {
         throw new Error("No DUSDC — request from DeepBook testnet form");

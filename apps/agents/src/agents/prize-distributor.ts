@@ -21,7 +21,7 @@
  * impossible; for a sponsored demo, the user must sign their own PTB
  * (out of scope for this file).
  */
-import { createClient, readPrizePoolBalance } from "@suipredict/sdk";
+import { readPrizePoolBalance } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult } from "../lib.js";
 import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";

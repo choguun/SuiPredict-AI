@@ -590,8 +590,34 @@ export function listDailyScoresForDay(dayIndex: number): DailyScore[] {
 }
 
 export function listAllDailyScores(): DailyScore[] {
+  // R52 audit fix: bound the result set.
+  // The previous un-bounded
+  // `SELECT *` returned every row in
+  // the table — on a 1-year mainnet
+  // deploy with 4 daily markets × 1k
+  // active users × 365 days =
+  // 1.46M rows, the
+  // `leaderboard-worker` OOMed the
+  // heap (or stalled for 30s+)
+  // iterating them all into a Map,
+  // and the `liveRollup` route did
+  // the same on every `/parlay` page
+  // load. Cap at 10k rows — the
+  // leaderboard is a 7-day rolling
+  // window, and even a busy 7 days
+  // × 1k users × 4 markets = 28k
+  // rows, so 10k is a generous
+  // headroom for the typical case
+  // while preventing OOM in the
+  // tail. The full historical set
+  // is archived weekly into
+  // `weekly_archive` (R49) so a
+  // higher bound would just hit
+  // the cap without loss.
   return getDb()
-    .prepare(`SELECT * FROM daily_scores ORDER BY day_index DESC`)
+    .prepare(
+      `SELECT * FROM daily_scores ORDER BY day_index DESC LIMIT 10000`,
+    )
     .all() as DailyScore[];
 }
 

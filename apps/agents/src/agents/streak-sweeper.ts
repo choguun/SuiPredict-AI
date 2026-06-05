@@ -27,7 +27,6 @@ import { Transaction } from "@mysten/sui/transactions";
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "@suipredict/sdk";
 import {
-  createClient,
   executeTransaction,
   isMoveAbortCode,
   isMoveAbortSymbol,
@@ -35,7 +34,7 @@ import {
   type SuiClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { recordResult } from "../lib.js";
+import { getSharedClient, recordResult } from "../lib.js";
 import {
   acquireSweepLock,
   dayIndexFor,
@@ -720,7 +719,7 @@ export async function runStreakSweeper(
 
   // Look up each user's streakId. Users without a streak are skipped
   // (they need to call create_streak from the frontend first).
-  const client = createClient();
+  const client = getSharedClient();
   const withStreak: ResolvedUser[] = [];
   for (const u of users) {
     try {

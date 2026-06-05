@@ -133,3 +133,46 @@ export function u64ToSafeNumber(
   }
   return Number(asBig);
 }
+
+/**
+ * Iterate `client.core.listCoins` to exhaustion, returning every
+ * Coin<T> object owned by `owner`. The gRPC `listCoins` defaults to
+ * 50 objects per page; a wallet with more than 50 dust coins (e.g.
+ * after a busy day of redeems) would otherwise see only the first
+ * page, and the caller's `total = objects.reduce(...)` would report
+ * a balance missing the tail of the page chain.
+ *
+ * R52 audit fix: the previous callers (`mergeAndSplitDusdc`,
+ * `getDusdcBalance`, `getPlpCoins`) took the first page and assumed
+ * it was complete. A user with 51+ DUSDC coins was silently told
+ * "Insufficient DUSDC" when in fact they had plenty.
+ *
+ * @param client  SuiGrpcClient (or anything with a `core.listCoins`
+ *                method that returns `{ objects, nextCursor? }`)
+ * @param owner   Sui address
+ * @param coinType  fully-qualified coin type (e.g. DUSDC_TYPE)
+ * @param options.pageSize  how many coins to fetch per round-trip
+ *                          (default 50, max 1000)
+ * @param options.maxPages  safety cap on pagination depth
+ *                          (default 20 = 1000 coins; raise for
+ *                          pathological wallets)
+ */
+export async function listAllCoins<
+  T extends { core: { listCoins: (args: { owner: string; coinType: string; limit?: number; cursor?: string | null }) => Promise<{ objects: any[]; nextCursor?: string | null }> } },
+>(
+  client: T,
+  owner: string,
+  coinType: string,
+  options: { pageSize?: number; maxPages?: number } = {},
+): Promise<any[]> {
+  const { pageSize = 50, maxPages = 20 } = options;
+  const all: any[] = [];
+  let cursor: string | null | undefined = null;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await client.core.listCoins({ owner, coinType, limit: pageSize, cursor: cursor ?? undefined });
+    all.push(...res.objects);
+    cursor = res.nextCursor;
+    if (!cursor) break;
+  }
+  return all;
+}

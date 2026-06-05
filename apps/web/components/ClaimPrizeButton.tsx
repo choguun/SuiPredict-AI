@@ -1,6 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import { buildClaimPrizeTx, expectedAmountForRank } from "@suipredict/sdk";
 import { toast } from "sonner";
@@ -68,8 +69,35 @@ export function ClaimPrizeButton(props: Props) {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
+  // R52 audit fix: hook up a
+  // `useQueryClient` so the success
+  // path can invalidate the
+  // leaderboard and `userStreakId`
+  // queries. The previous code only
+  // invalidated `streakInfo`,
+  // `userStreakId`, `portfolio`,
+  // `marketsList`, and `dailyMarkets`
+  // — missing the home-page
+  // `["leaderboard", "week", limit,
+  // category]` key. A successful
+  // claim leaves the leaderboard
+  // stale for 30s (the hook's
+  // `staleTime`), and the user can
+  // re-click the button.
+  const queryClient = useQueryClient();
   const { streakId } = useUserStreakId(account?.address);
   const [loading, setLoading] = useState(false);
+  // R52 audit fix: track claimed
+  // (week, rank) tuples in local
+  // state so the button disables
+  // immediately on a successful
+  // click. Without this, a user who
+  // re-clicks within the 30s
+  // leaderboard-stale window would
+  // hit the on-chain `EAlreadyClaimed`
+  // abort and see a confusing
+  // error.
+  const [claimedSet, setClaimedSet] = useState<Set<string>>(() => new Set());
 
   const amount = expectedAmountForRank(weeklyPrize, rank);
   const amountUsdc = (Number(amount) / 1_000_000).toFixed(2);
@@ -217,6 +245,25 @@ export function ClaimPrizeButton(props: Props) {
         `Claimed ${amountUsdc} DUSDC: ${digest.slice(0, 16)}…`,
         { id: toastId },
       );
+      // R52 audit fix: invalidate the
+      // home-page leaderboard cache
+      // keyed on (week, limit, category)
+      // and mark this (week, rank) as
+      // locally claimed so the button
+      // disables immediately. Without
+      // these, the leaderboard stays
+      // stale for 30s and the user can
+      // re-click through to a confusing
+      // `EAlreadyClaimed` abort.
+      queryClient.invalidateQueries({
+        queryKey: ["leaderboard", "week"],
+        type: "active",
+      });
+      setClaimedSet((prev) => {
+        const next = new Set(prev);
+        next.add(`${weekIndex}:${rank}:${category ?? 0}`);
+        return next;
+      });
       // Notify the agents service so the off-chain `prize_claims` row
       // is updated — without this, `liveRollup` still annotates the
       // user as unclaimed and the leaderboard keeps showing the Claim
@@ -284,9 +331,26 @@ export function ClaimPrizeButton(props: Props) {
     amount,
     amountUsdc,
     category,
+    queryClient,
   ]);
 
   if (alreadyClaimed) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+        Claimed
+      </span>
+    );
+  }
+
+  // R52 audit fix: also short-circuit
+  // when this exact (week, rank,
+  // category) was just claimed in the
+  // current session. `alreadyClaimed`
+  // is a server-side flag that lags by
+  // the leaderboard TTL; `claimedSet`
+  // is the optimistic local mark.
+  const claimKey = `${weekIndex}:${rank}:${category ?? 0}`;
+  if (claimedSet.has(claimKey)) {
     return (
       <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300">
         Claimed

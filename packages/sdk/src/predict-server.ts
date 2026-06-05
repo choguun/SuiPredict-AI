@@ -15,9 +15,31 @@ import type {
 } from "./types.js";
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${PREDICT_SERVER_URL}${path}`);
+  // R52 audit fix: bound the fetch with a
+  // 5s timeout and validate the
+  // content-type. A hung predict-server
+  // (e.g. mainnet RPC down) was hanging
+  // the agents' `market-resolver` tick
+  // for the full TCP keepalive
+  // (~minutes). A 5s cap is tight enough
+  // to keep the tick loop responsive but
+  // loose enough for the 4-hop chain
+  // (predict-server → gRPC → node →
+  // fullnode) to converge under normal
+  // load. Also catches a 200 with
+  // `Content-Type: text/html` (Vite dev
+  // page) before `res.json()` throws.
+  const res = await fetch(`${PREDICT_SERVER_URL}${path}`, {
+    signal: AbortSignal.timeout(5_000),
+  });
   if (!res.ok) {
     throw new Error(`predict-server ${path}: ${res.status} ${await res.text()}`);
+  }
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("application/json")) {
+    throw new Error(
+      `predict-server ${path}: expected application/json, got ${ct || "(none)"}`,
+    );
   }
   return res.json() as Promise<T>;
 }
