@@ -246,6 +246,22 @@ export async function runParlayWorker(
   const scoped = WORKER_POOL_ID
     ? allUnfinalized.filter((p) => p.pool_id === WORKER_POOL_ID)
     : allUnfinalized;
+  // R54 audit fix: sort the unfinalized list by
+  // `created_at_ms` ascending (oldest-first, urgency proxy)
+  // BEFORE applying the per-tick cap. The previous code
+  // applied the cap to DB-iteration order, so a parlay
+  // created at the start of a high-traffic window could be
+  // skipped if 25 newer rows came first. A dedicated
+  // `settlement_deadline` column would be the ideal
+  // signal, but the schema doesn't have one — the
+  // `ParlayRow` interface (gamification/store.ts:1045)
+  // only tracks `created_at_ms`. Sort by that as the
+  // best-available urgency proxy; the oldest parlay is
+  // the one most likely to have its settlement window
+  // approaching.
+  const sortedByDeadline = [...scoped].sort(
+    (a, b) => a.created_at_ms - b.created_at_ms,
+  );
   // R51 audit fix: cap the per-tick work list. A burst
   // event (e.g. a DeepBook arbitrage or a coordinated
   // sign-up campaign) can create thousands of parlays
@@ -264,9 +280,19 @@ export async function runParlayWorker(
     process.env.MAX_PARLAYS_PER_TICK ?? 25,
   );
   const scopedAndCapped =
-    scoped.length > MAX_PARLAYS_PER_TICK
-      ? scoped.slice(0, MAX_PARLAYS_PER_TICK)
-      : scoped;
+    sortedByDeadline.length > MAX_PARLAYS_PER_TICK
+      ? sortedByDeadline.slice(0, MAX_PARLAYS_PER_TICK)
+      : sortedByDeadline;
+  if (scoped.length > sortedByDeadline.length) {
+    // R54 audit fix: log a warning when the per-tick cap
+    // clips rows so an operator sees a backlog building up.
+    // Without this, a stalled settlement window looks
+    // identical to a normal tick from the dashboard.
+    console.warn(
+      `[parlay-worker] ${scoped.length - sortedByDeadline.length} parlay(s) ` +
+        `deferred to next tick (cap ${MAX_PARLAYS_PER_TICK}).`,
+    );
+  }
   if (scopedAndCapped.length === 0) {
     return recordResult("ParlayWorker", {
       action: "noop",

@@ -2,12 +2,23 @@ import { getOraclePriceLatest, getOracleState } from "./predict-server.js";
 import { strikeToDollars } from "./constants.js";
 
 export async function getSpotPrice(oracleId: string): Promise<number | null> {
+  // R54 audit fix: log the underlying error on each failed call.
+  // The previous `catch {}` blocks silently swallowed every error;
+  // a 2-hour predict-server outage would silently degrade the
+  // web's strike-picker to the safest strike (`pickAtmStrike` line
+  // 32) without any operator alert. The drift-detector health
+  // check would never fire because nothing threw. Log so an
+  // operator grepping the agents' stdout can see the cause.
   try {
     const latest = await getOraclePriceLatest(oracleId);
     const spot = (latest as { spot?: number }).spot;
     if (spot != null) return spot / 1e9;
-  } catch {
-    // fall through
+  } catch (err) {
+    console.warn(
+      `[sdk] getSpotPrice(${oracleId}) /latest failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
   try {
     const state = await getOracleState(oracleId);
@@ -17,8 +28,12 @@ export async function getSpotPrice(oracleId: string): Promise<number | null> {
     };
     const raw = nested.latest_price?.spot ?? nested.spot;
     if (raw != null) return raw / 1e9;
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn(
+      `[sdk] getSpotPrice(${oracleId}) /state failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
   return null;
 }

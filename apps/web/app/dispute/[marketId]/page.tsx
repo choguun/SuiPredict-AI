@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   useCurrentAccount,
+  useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { buildDisputeMarketTx, getMarket, isMoveAbortCode } from "@suipredict/sdk";
+import { buildDisputeMarketTx, getMarket, isMoveAbortCode, normalizeObjectId } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 
 // On-chain `MAX_EVIDENCE_URI_BYTES` (packages/contracts/sources/prediction_market.move:51).
@@ -36,6 +38,7 @@ export default function DisputeMarketPage() {
   const { marketId: rawId } = useParams<{ marketId: string }>();
   const marketId = decodeURIComponent(rawId ?? "");
   const account = useCurrentAccount();
+  const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const router = useRouter();
   const [evidenceUri, setEvidenceUri] = useState("");
@@ -71,7 +74,7 @@ export default function DisputeMarketPage() {
     let cancelled = false;
     (async () => {
       try {
-        const m = await getMarket(marketId);
+        const m = await getMarket(normalizeObjectId(marketId));
         if (cancelled) return;
         setMarketStatus(m.status);
         setOutcome(m.outcome ?? null);
@@ -135,7 +138,16 @@ export default function DisputeMarketPage() {
     const toastId = toast.loading("Filing dispute...");
     try {
       const tx = buildDisputeMarketTx(marketId, evidenceUri.trim());
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R54 audit fix: route through `submitAndWait` so the
+      // subsequent `invalidateQueries` / state refetch hits a
+      // node that has already finalized the tx. The previous
+      // raw `signAndExecuteTransaction` returned the moment
+      // the wallet signed, so a user who navigated to
+      // `/markets/${marketId}` immediately after the dispute
+      // toast saw the pre-dispute `status === "resolved"`
+      // (stale indexer) and re-clicked "File dispute",
+      // hitting `EMarketDisputed` on-chain.
+      const r = await submitAndWait(dAppKit, client!, tx);
       // R37 audit fix: bail with an explicit error rather than
       // rendering the "Digest: submitted..." card on a Failed /
       // EffectsCert variant. The old code displayed "submitted" as
@@ -153,7 +165,7 @@ export default function DisputeMarketPage() {
         toast.error("Dispute failed on-chain", { id: toastId });
         return;
       }
-      setDigest(r.Transaction.digest);
+      setDigest(r.digest);
       toast.success("Dispute filed", { id: toastId });
     } catch (err) {
       const msg = friendlyDisputeError(err);

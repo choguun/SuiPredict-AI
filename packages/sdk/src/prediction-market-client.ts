@@ -55,6 +55,28 @@ export const PREDICT_MARKET_PACKAGE_ID = AGENT_POLICY_PACKAGE_ID;
 
 const PKG = () => PREDICT_MARKET_PACKAGE_ID;
 
+/**
+ * R54 audit fix: helper used by `buildCreateMarketTx` to validate
+ * DeepBook's "power of 10" invariants for `tickSize` / `lotSize` /
+ * `minSize`. The on-chain `pool::create_permissionless_pool`
+ * rejects non-power-of-10 values with `EInvalidTickSize` (5) and
+ * `EInvalidLotSize` (6); a build-time throw gives a friendlier
+ * error and saves the user the gas.
+ *
+ * Powers of 10 up to 10^18 cover the full u64 range.
+ */
+function isPowerOf10(n: bigint): boolean {
+  if (n <= 0n) return false;
+  const POWERS = [
+    1n, 10n, 100n, 1_000n, 10_000n, 100_000n, 1_000_000n,
+    10_000_000n, 100_000_000n, 1_000_000_000n, 10_000_000_000n,
+    100_000_000_000n, 1_000_000_000_000n, 10_000_000_000_000n,
+    100_000_000_000_000n, 1_000_000_000_000_000n,
+    10_000_000_000_000_000n, 1_000_000_000_000_000_000n,
+  ];
+  return POWERS.includes(n);
+}
+
 /** FeeVault<DUSDC> object ID — set after contract deployment. The
  *  NEXT_PUBLIC_ variant is read first so Next.js inlines it into the
  *  client bundle; the bare `FEE_VAULT_ID` is the server/agents variant.
@@ -216,6 +238,37 @@ export function buildCreateMarketTx(params: {
   }
   if (minSize <= 0n) {
     throw new Error(`buildCreateMarketTx: minSize must be > 0 (got ${minSize})`);
+  }
+  // R54 audit fix: validate DeepBook's power-of-10 + lotSize >= 1000
+  // + minSize % lotSize == 0 invariants. The on-chain
+  // `pool::create_permissionless_pool` enforces:
+  //   tick_size must be a power of 10
+  //   lot_size must be a power of 10 AND >= 1000
+  //   min_size must be a power of 10 AND a multiple of lot_size
+  // (`EInvalidTickSize`, `EInvalidLotSize` in pool.move). The R52
+  // audit added the positivity checks but missed the deeper
+  // constraints — a `lotSize: 500` burns gas on a guaranteed
+  // abort. The `market-creator` agent hardcodes safe values, but
+  // the admin / web caller could typo.
+  if (!isPowerOf10(tickSize)) {
+    throw new Error(
+      `buildCreateMarketTx: tickSize must be a power of 10 (got ${tickSize})`,
+    );
+  }
+  if (lotSize < 1000n || !isPowerOf10(lotSize)) {
+    throw new Error(
+      `buildCreateMarketTx: lotSize must be a power of 10 >= 1000 (got ${lotSize})`,
+    );
+  }
+  if (!isPowerOf10(minSize)) {
+    throw new Error(
+      `buildCreateMarketTx: minSize must be a power of 10 (got ${minSize})`,
+    );
+  }
+  if (minSize % lotSize !== 0n) {
+    throw new Error(
+      `buildCreateMarketTx: minSize (${minSize}) must be a multiple of lotSize (${lotSize})`,
+    );
   }
   const tx = new Transaction();
   tx.moveCall({
@@ -612,6 +665,17 @@ export function buildWithdrawFeesTx(
   vaultId: string,
   amount: bigint,
 ): Transaction {
+  // R54 audit fix: validate `amount > 0` at the build boundary.
+  // The on-chain `withdraw_fees` has no upper-bound check (the
+  // vault's `fee_balance` is the limit), but a `0n` withdraw is a
+  // guaranteed no-op that wastes gas; a negative `bigint` casts to
+  // a huge u64 and the BCS encoder emits a wrap-around. Mirror
+  // the R53 `buildAuthorizeSpendTx` pattern.
+  if (amount <= 0n) {
+    throw new Error(
+      `buildWithdrawFeesTx: amount must be > 0 (got ${amount})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::withdraw_fees`,
@@ -931,6 +995,16 @@ export function buildPlaceOrderTx(params: {
       `buildPlaceOrderTx: clientOrderId must be >= 0, got ${params.clientOrderId}`,
     );
   }
+  // R54 audit fix: also cap `clientOrderId` at u64::MAX. The
+  // on-chain `place_order` signature is `client_order_id: u64`; a
+  // larger value would silently wrap (BCS encoder for u128→u64)
+  // and could collide with a previously-issued order id, producing
+  // a confusing "duplicate" abort downstream.
+  if (params.clientOrderId > 0xFFFFFFFFFFFFFFFFn) {
+    throw new Error(
+      `buildPlaceOrderTx: clientOrderId must fit in u64 (got ${params.clientOrderId})`,
+    );
+  }
   // R53 audit fix: bound the
   // optional `orderType` to the
   // DeepBook enum (0..3). A
@@ -993,6 +1067,23 @@ export function buildCancelOrderTx(params: {
   balanceManagerId: string;
   orderId: bigint;
 }): Transaction {
+  // R54 audit fix: validate `orderId > 0` at the build boundary.
+  // The on-chain `prediction_market::cancel_order` does not check
+  // for `order_id == 0`; a typo / wrong-endian / negative value
+  // produces a guaranteed-abort PTB that surfaces as an opaque
+  // DeepBook abort. Mirror the R53 `buildPlaceMarketOrderTx`
+  // guard. Also reject values larger than u128::MAX (BCS would
+  // silently wrap otherwise).
+  if (params.orderId <= 0n) {
+    throw new Error(
+      `buildCancelOrderTx: orderId must be > 0 (got ${params.orderId})`,
+    );
+  }
+  if (params.orderId > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
+    throw new Error(
+      `buildCancelOrderTx: orderId must fit in u128 (got ${params.orderId})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::cancel_order`,
@@ -1020,6 +1111,26 @@ export function buildCancelOrdersTx(params: {
   balanceManagerId: string;
   orderIds: bigint[];
 }): Transaction {
+  // R54 audit fix: refuse an empty `orderIds` array at the build
+  // boundary. The on-chain `cancel_live_orders` accepts the empty
+  // vector (and emits an `OrdersBatchCancelledEvent { order_ids:
+  // [] }`), which the position-indexer observes and either no-ops
+  // or writes a zero-row to the `orders` table. The "cancel
+  // everything" use case has its own builder
+  // (`buildCancelAllOrdersTx`); an empty `orderIds` is always a
+  // caller bug.
+  if (params.orderIds.length === 0) {
+    throw new Error(
+      "buildCancelOrdersTx: orderIds must be non-empty; use buildCancelAllOrdersTx for that",
+    );
+  }
+  for (const id of params.orderIds) {
+    if (id <= 0n || id > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFn) {
+      throw new Error(
+        `buildCancelOrdersTx: every orderId must be in [1, u128::MAX] (got ${id})`,
+      );
+    }
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::cancel_orders`,
@@ -1277,6 +1388,15 @@ export function buildAllocateForMmTx(
   amount: bigint,
   quoteType: string = DUSDC_TYPE,
 ): Transaction {
+  // R54 audit fix: validate `amount > 0` at the build boundary.
+  // The on-chain `vault::allocate_for_mm` aborts with `EZeroAmount`
+  // for `amount == 0`; a zero-value allocation is a guaranteed
+  // abort that wastes gas.
+  if (amount <= 0n) {
+    throw new Error(
+      `buildAllocateForMmTx: amount must be > 0 (got ${amount})`,
+    );
+  }
   const tx = new Transaction();
   const coin = tx.moveCall({
     target: `${PKG()}::vault::allocate_for_mm`,

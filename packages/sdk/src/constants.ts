@@ -266,11 +266,27 @@ export const PLP_TYPE = `${PREDICT_PACKAGE_ID}::plp::PLP`;
 // found` on the first mint call. Resolve from
 // `NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID` with a hardcoded testnet
 // default for devnet/testnet/localnet.
+//
+// R54 audit fix: also export a call-time getter
+// `resolveDusdcTreasuryCapId()`. The previous module-level const
+// was frozen at SDK import time, so a `bootstrap-env.ts` hot-patch
+// of `DUSDC_TREASURY_CAP_ID` (e.g. for a treasury-cap migration)
+// was silently ignored for the process lifetime. Mirrors the
+// R49 `getIndexerUrl` and R53 `resolvePredictServerUrl` pattern.
+const DUSDC_TREASURY_CAP_ID_FALLBACK =
+  "0x64f8a47a0af0a3b14db3a7ce89aa206ff77a9c6b5ac0eaef6db2ea46da3ced94";
 export const DUSDC_TREASURY_CAP_ID = (
   process.env.NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID ??
   process.env.DUSDC_TREASURY_CAP_ID ??
-  "0x64f8a47a0af0a3b14db3a7ce89aa206ff77a9c6b5ac0eaef6db2ea46da3ced94"
+  DUSDC_TREASURY_CAP_ID_FALLBACK
 ).trim();
+export function resolveDusdcTreasuryCapId(): string {
+  return (
+    process.env.NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID ??
+    process.env.DUSDC_TREASURY_CAP_ID ??
+    DUSDC_TREASURY_CAP_ID_FALLBACK
+  ).trim();
+}
 
 export const CLOCK_OBJECT_ID = "0x6";
 

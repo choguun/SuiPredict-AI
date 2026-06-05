@@ -65,6 +65,18 @@ export function buildMintBadgeTx(args: {
   streakId: string;
   tier: number; // 1..5
 }): Transaction {
+  // R54 audit fix: validate `tier ∈ [1, 5]`. The on-chain
+  // `streak_system::claim_badge` (called by `badge_nft::mint_badge`)
+  // aborts with `EInvalidTier` (code 5) for `tier < 1 || tier > 5`
+  // (per `streak_system.move:212`). A `tier = 0` (the default for
+  // `Number(undefined)`) burns gas on a guaranteed abort. The
+  // web's settings page reads the tier from a user-controlled
+  // dropdown; a stale or NaN value silently aborts.
+  if (!Number.isInteger(args.tier) || args.tier < 1 || args.tier > 5) {
+    throw new Error(
+      `buildMintBadgeTx: tier must be an integer in [1, 5] (got ${args.tier})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::badge_nft::mint_badge`,

@@ -1,5 +1,4 @@
 import {
-  AGENT_POLICY_PACKAGE_ID,
   buildAuthorizeSpendTx,
   buildPausePolicyTx,
   dusdcToDollars,
@@ -27,6 +26,19 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   const pauseUtilization = Number(
     process.env.RISK_PAUSE_UTILIZATION ?? DEFAULT_PAUSE_UTILIZATION,
   );
+  // R54 audit fix: re-read `AGENT_POLICY_PACKAGE_ID` at function
+  // scope. The previous module-level import from `@suipredict/sdk`
+  // froze the value at SDK import time (which itself reads the
+  // env at module load). A `bootstrap-env.ts` hot-patch of
+  // `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID` was a no-op for the
+  // process lifetime — the risk monitor would silently monitor
+  // the wrong package. Reading `process.env` here (with the
+  // `NEXT_PUBLIC_` prefix first, then the bare one) honors the
+  // hot-patch.
+  const agentPolicyPkg =
+    process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
+    process.env.AGENT_POLICY_PACKAGE_ID ??
+    "";
   // Read the suipredict ProtocolVault utilization from the agents'
   // own /vault/summary source (backed by VAULT_TOTAL_BALANCE and
   // VAULT_ALLOCATED env vars). The legacy `getVaultSummary()` from
@@ -42,7 +54,7 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
   let policySpent = 0;
   let policyBudget = ctx.maxBudgetUsdc;
   if (ctx.policyId) {
-    const policy = await getPolicyState(client, ctx.policyId, AGENT_POLICY_PACKAGE_ID);
+    const policy = await getPolicyState(client, ctx.policyId, agentPolicyPkg);
     if (policy) {
       policySpent = dusdcToDollars(BigInt(policy.spent));
       policyBudget = dusdcToDollars(BigInt(policy.max_budget));
@@ -72,7 +84,7 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
       });
     }
     try {
-      const tx = buildPausePolicyTx(ctx.policyId, AGENT_POLICY_PACKAGE_ID);
+      const tx = buildPausePolicyTx(ctx.policyId, agentPolicyPkg);
       const result = await executeTransaction(client, tx, ctx.signer);
       return recordResult("RiskMonitor", {
         action: "pause_policy",

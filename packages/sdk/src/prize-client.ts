@@ -132,6 +132,21 @@ export function buildCreatePoolTx(params: {
   initialWeek: bigint;
   prizeCoinType?: string;
 }): Transaction {
+  // R54 audit fix: validate `seedAtoms >= 0` and `initialWeek >= 0`.
+  // A negative `bigint` would fail at `tx.pure.u64(...)` (BCS
+  // encoder rejects out-of-range values). The agents'
+  // `bootstrap-gamification` script reads `seedAtoms` from env; a
+  // stale var could ship a broken PTB.
+  if (params.seedAtoms < 0n) {
+    throw new Error(
+      `buildCreatePoolTx: seedAtoms must be >= 0 (got ${params.seedAtoms})`,
+    );
+  }
+  if (params.initialWeek < 0n) {
+    throw new Error(
+      `buildCreatePoolTx: initialWeek must be >= 0 (got ${params.initialWeek})`,
+    );
+  }
   const tx = new Transaction();
   const [seedCoin] = tx.splitCoins(
     tx.object(normalizeObjectId(params.initialCoinId)),
@@ -197,6 +212,25 @@ export function buildClaimPrizeTx(params: {
       `buildClaimPrizeTx: rank must be an integer in [1, ${MAX_RANK}] (got ${params.rank})`,
     );
   }
+  // R54 audit fix: also check `rank ≤ distribution.length`. The R49
+  // check only validated `rank ∈ [1, MAX_RANK]`, but the on-chain
+  // `claim_prize` calls `*vector::borrow(&pool.distribution_bps, idx)`
+  // (where `idx = rank - 1`) — a custom pool that sets a shorter
+  // distribution (e.g. `[5000]`) would abort with an opaque
+  // vector-out-of-bounds Move abort. The companion helper
+  // `expectedAmountForRank` silently returns `0n` for out-of-bounds,
+  // which the R49 `amount > 0` check then catches as a misleading
+  // "amount must be > 0" error. Surface the real cause at the
+  // build boundary by accepting an optional `distribution` arg
+  // (defaulting to the canonical `DEFAULT_DISTRIBUTION_BPS`) and
+  // validating `rank - 1 < distribution.length`.
+  if (params.rank - 1 >= DEFAULT_DISTRIBUTION_BPS.length) {
+    throw new Error(
+      `buildClaimPrizeTx: rank ${params.rank} exceeds DEFAULT_DISTRIBUTION_BPS length ${DEFAULT_DISTRIBUTION_BPS.length}; ` +
+        "the on-chain distribution is too short to cover this rank. " +
+        "Use a shorter rank or update the pool's distribution.",
+    );
+  }
   if (params.amount <= 0n) {
     throw new Error(
       `buildClaimPrizeTx: amount must be > 0 (got ${params.amount})`,
@@ -238,9 +272,22 @@ export function buildClaimPrizeTx(params: {
     );
   }
   const tx = new Transaction();
+  // R54 audit fix: validate `prizeCoinType` is non-empty. The
+  // on-chain `claim_prize<PrizeCoin>` is generic over the prize
+  // coin type; an empty `typeArguments: [""]` would be a
+  // type-argument mismatch at BCS resolution and the wallet would
+  // surface "Invalid type argument". A misconfigured admin script
+  // that reads `PRIZE_COIN_TYPE` from env and defaults to `""`
+  // (when unset) would silently produce a malformed PTB.
+  const prizeCoinType = params.prizeCoinType ?? DUSDC_TYPE;
+  if (!prizeCoinType || !prizeCoinType.startsWith("0x")) {
+    throw new Error(
+      `buildClaimPrizeTx: prizeCoinType must be a non-empty coin type string starting with "0x" (got "${prizeCoinType}")`,
+    );
+  }
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
-    typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
+    typeArguments: [prizeCoinType],
     arguments: [
       tx.object(normalizedPoolId),
       tx.object(normalizeObjectId(params.prizeAdminId)),
@@ -345,6 +392,30 @@ export function buildSetDistributionTx(
   // check covers the constant, but a caller's override could
   // ship a sum != 10_000 and only learn about it at execute
   // time. Catch it at the build boundary.
+  //
+  // R54 audit fix: also cap the bps vector length at MAX_RANK. The
+  // on-chain function only asserts the sum; a malicious or buggy
+  // admin can ship a 1,000-element vector, which is then stored
+  // permanently on the shared `PrizePool` and bloats every
+  // subsequent `readPrizePoolDistribution` / `expectedAmountForRank`
+  // call. Mirror the on-chain `MAX_RANK = 100` constant.
+  if (bps.length === 0) {
+    throw new Error(
+      `buildSetDistributionTx: bps must be non-empty (got length 0)`,
+    );
+  }
+  if (bps.length > MAX_RANK) {
+    throw new Error(
+      `buildSetDistributionTx: bps vector must be <= MAX_RANK (${MAX_RANK}) elements (got ${bps.length})`,
+    );
+  }
+  for (const b of bps) {
+    if (!Number.isInteger(b) || b < 0 || b > BPS) {
+      throw new Error(
+        `buildSetDistributionTx: each bps entry must be an integer in [0, ${BPS}] (got ${b})`,
+      );
+    }
+  }
   const sumBps = bps.reduce((acc, b) => acc + BigInt(b), 0n);
   if (sumBps !== BigInt(BPS)) {
     throw new Error(

@@ -307,7 +307,7 @@ export default function TradePage() {
 
   useEffect(() => {
     if (!account) return;
-    getManagerForOwner(account.address)
+    getManagerForOwner(normalizeObjectId(account.address))
       .then((id) => {
         if (id) setManagerId(id);
       })

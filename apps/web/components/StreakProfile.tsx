@@ -1,9 +1,10 @@
 "use client";
 
-import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { buildCreateStreakTx, buildMintBadgeTx } from "@suipredict/sdk";
 import { toast } from "sonner";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
 
@@ -34,6 +35,7 @@ function badgesEarnedCount(claimed: boolean[] | undefined): number {
 
 export function StreakProfile() {
   const account = useCurrentAccount();
+  const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const queryClient = useQueryClient();
   const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
@@ -57,14 +59,22 @@ export function StreakProfile() {
               const toastId = toast.loading("Creating your streak…");
               try {
                 const tx = buildCreateStreakTx(REGISTRY_ID);
-                const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                // R54 audit fix: route through `submitAndWait`
+                // so the subsequent `invalidateQueries` hits a
+                // node that has finalized the tx. The previous
+                // raw `signAndExecuteTransaction` returned the
+                // moment the wallet signed, so a markets-page
+                // navigation immediately after the toast saw a
+                // stale `useUserStreakId()` result and rendered
+                // the wrong "redeem" button.
+                const r = await submitAndWait(dAppKit, client!, tx);
                 // `$kind === "Transaction"` means the fullnode accepted
                 // the tx; other variants ("Failed", "EffectsCert")
                 // carry a different shape. Without this guard a failed
                 // streak-create would still invalidate the cache and
                 // toasting "created" — the round-17 L5 finding.
                 if (r.$kind === "Transaction") {
-                  toast.success(`Streak created: ${r.Transaction.digest.slice(0, 16)}…`, { id: toastId });
+                  toast.success(`Streak created: ${r.digest.slice(0, 16)}…`, { id: toastId });
                   // The registry dynamic field is updated by the tx, so
                   // any component currently reading the streak id needs
                   // to refetch — the markets page especially, which
@@ -183,10 +193,20 @@ export function StreakProfile() {
                     // finding (the previous "claim flag" path minted
                     // nothing visible to the user).
                     const tx = buildMintBadgeTx({ streakId: streakId!, tier });
-                    const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                    // R54 audit fix: route through `submitAndWait`
+                    // (and replace the local `streak.refetch()` with
+                    // an `invalidateQueries` so all components reading
+                    // the streak info key see the new claimed_tiers
+                    // state, not just this hook). The previous
+                    // raw sign returned before the tx finalized, so
+                    // the user saw the badge as "Claim" for ~5-30s
+                    // and could re-click, hitting the on-chain
+                    // `EAlreadyClaimed` abort.
+                    const r = await submitAndWait(dAppKit, client!, tx);
                     if (r.$kind === "Transaction") {
                       toast.success(`${TIER_LABELS[idx]} badge minted`, { id: toastId });
-                      streak.refetch();
+                      queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+                      queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
                     } else {
                       toast.error("Badge claim failed", { id: toastId });
                     }

@@ -18,12 +18,14 @@ import { listMarkets, upsertMarket } from "../markets/store.js";
 // `runMarketCreator` so an env-var hot-patch (e.g. via
 // `bootstrap-env.ts`) is honored without a process restart. The
 // operational ids (DEEPBOOK_REGISTRY_ID / MARKET_REGISTRY_ID /
-// FEE_VAULT_ID) stay module-level because they're deployment
-// configuration that doesn't change at runtime — surfacing them
-// as module-level constants keeps the call sites readable.
-const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
-const MARKET_REGISTRY_ID = process.env.MARKET_REGISTRY_ID ?? "";
-const FEE_VAULT_ID = process.env.FEE_VAULT_ID ?? "";
+// FEE_VAULT_ID) were also module-level; the R54 audit fix
+// re-reads them at the top of `runMarketCreator` too (see
+// `runMarketCreator` body) so a hot-patch via
+// `bootstrap-env.ts` is honored. The `bootstrap-env.ts` flow
+// does occasionally rotate `MARKET_REGISTRY_ID` and
+// `FEE_VAULT_ID` (e.g. after a `devnet` → `testnet` env
+// transition) and the previous module-level freeze kept the
+// process publishing to the wrong registry.
 
 /** Map the LLM's free-form category string to the gamification
  *  enum emitted on `MarketCreatedEvent.category`. The leaderboard
@@ -132,6 +134,15 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
   const initialMintAtoms = BigInt(
     process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? 10_000_000,
   );
+  // R54 audit fix: re-read the operational ids at function-body
+  // scope. They were module-level before, which froze them at
+  // import time and made a `bootstrap-env.ts` rotation
+  // ineffective until the process restarted.
+  const deepbookRegistryId =
+    process.env.DEEPBOOK_REGISTRY_ID ??
+    "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";
+  const marketRegistryId = process.env.MARKET_REGISTRY_ID ?? "";
+  const feeVaultId = process.env.FEE_VAULT_ID ?? "";
   const active = listMarkets().filter((m) => m.status === "active");
   if (active.length >= maxActive) {
     return recordResult("MarketCreator", {
@@ -148,7 +159,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       ? ` [FALLBACK: ${fallbackReason ?? "unknown reason"}]`
       : " [llm]";
 
-  if (!DEEPBOOK_REGISTRY_ID) {
+  if (!deepbookRegistryId) {
     // Demo mode — no on-chain
     const id = `demo-${Date.now()}`;
     upsertMarket({
@@ -275,9 +286,9 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     // off-chain or on-chain consumer can list all live markets. Only the
     // registry admin (this agent) may call. Silent no-op if the registry
     // id isn't configured — keeps demo/single-market environments clean.
-    if (MARKET_REGISTRY_ID) {
+    if (marketRegistryId) {
       try {
-        const registerTx = buildRegisterMarketTx(MARKET_REGISTRY_ID, marketId);
+        const registerTx = buildRegisterMarketTx(marketRegistryId, marketId);
         await executeTransaction(client, registerTx, ctx.signer);
       } catch (regErr) {
         console.warn(
@@ -307,14 +318,14 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
           .filter((c) => BigInt(c.balance) >= initialMintAtoms)
           .sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1))[0];
         if (dusdcCoin) {
-          if (!FEE_VAULT_ID) {
+          if (!feeVaultId) {
             console.warn(
               `[market-creator] FEE_VAULT_ID not configured — skipping initial mint for ${marketId}`,
             );
           } else {
             const mintTx = buildMintSharesTx(
               marketId,
-              FEE_VAULT_ID,
+              feeVaultId,
               dusdcCoin.objectId,
               initialMintAtoms,
             );

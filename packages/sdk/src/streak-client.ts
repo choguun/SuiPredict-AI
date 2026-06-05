@@ -75,6 +75,30 @@ export function buildRecordParticipationTx(params: {
   outcome: number;
   category: number;
 }): Transaction {
+  // R54 audit fix: validate `outcome` ∈ {0,1,2} and `category` ∈
+  // {0,1,2,3} at the build boundary. The on-chain
+  // `streak_system::record_participation` aborts with `EInvalidOutcome`
+  // for out-of-range `outcome`, but has **no** range check on
+  // `category` — a stray value (e.g. 200) is stored verbatim in
+  // `streak.market_category: u8` and the user silently disappears
+  // from every leaderboard filter (the off-chain
+  // `streak-sweeper.ts` filters on `category ∈ {0,1,2,3}`). Mirror
+  // the R52 `buildCreateMarketTx` category check.
+  if (!Number.isInteger(params.outcome) || params.outcome < 0 || params.outcome > 2) {
+    throw new Error(
+      `buildRecordParticipationTx: outcome must be 0 (NotSubmitted), 1 (AllCorrect), or 2 (SomeWrong) — got ${params.outcome}`,
+    );
+  }
+  if (!Number.isInteger(params.category) || params.category < 0 || params.category > 3) {
+    throw new Error(
+      `buildRecordParticipationTx: category must be 0 (none), 1 (AI news), 2 (crypto price), or 3 (other) — got ${params.category}`,
+    );
+  }
+  if (params.dayIndex < 0n) {
+    throw new Error(
+      `buildRecordParticipationTx: dayIndex must be >= 0 — got ${params.dayIndex}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::streak_system::record_participation`,

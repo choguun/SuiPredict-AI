@@ -39,6 +39,39 @@ export function createClient(): SuiClient {
   });
 }
 
+// R54 audit fix: a shared, process-wide gRPC client. The
+// `apps/agents/src/lib.ts` previously defined its own
+// `getSharedClient()` that opened a fresh `SuiGrpcClient` on
+// every tick. The SDK never closed the prior ones, so the gRPC
+// client pool grew to ~60 idle connections after a few minutes
+// of polling. Export the singleton from the SDK so the agents'
+// implementation shrinks to a re-export.
+let _sharedClient: SuiClient | null = null;
+export function getSharedClient(): SuiClient {
+  if (!_sharedClient) _sharedClient = createClient();
+  return _sharedClient;
+}
+
+/**
+ * R54 audit fix: typed `closeClient` wrapper. The agents'
+ * `lib.ts` previously did `(client as any).close?.()` because
+ * `SuiClient = SuiGrpcClient` doesn't declare `close()` in its
+ * public type — the `as any` cast is fragile and bypasses type
+ * safety. A future `@mysten/sui` SDK bump that renames `close()`
+ * to `destroy()` would break the agents' shutdown handler
+ * silently. The single typed escape hatch lives here; callers
+ * stay free of `as any`.
+ */
+export async function closeClient(c: SuiClient): Promise<void> {
+  try {
+    await (c as unknown as { close?: () => Promise<void> }).close?.();
+  } catch {
+    // Best-effort — a misbehaving close() must not block the
+    // process exit. The caller can still log if they want a
+    // signal of the failure.
+  }
+}
+
 export function keypairFromPrivateKey(privateKey: string): Ed25519Keypair {
   if (privateKey.startsWith("suiprivkey")) {
     return Ed25519Keypair.fromSecretKey(privateKey);
@@ -469,6 +502,22 @@ export function buildCreatePolicyTx(
       `buildCreatePolicyTx: agentAddress must be a non-zero Sui address (got "${agentAddress}")`,
     );
   }
+  // R54 audit fix: validate `maxBudgetDollars > 0` and
+  // `expiryMs > now`. The on-chain `authorize_spend` immediately
+  // rejects a `maxBudgetDollars = 0` policy with `EBudgetExceeded`
+  // (the `0 < 1e6` check on every authorize_spend call). A past
+  // `expiryMs` would create an instantly-expired policy that the
+  // first `authorize_spend` rejects with `EPolicyExpired`.
+  if (!Number.isFinite(maxBudgetDollars) || maxBudgetDollars <= 0) {
+    throw new Error(
+      `buildCreatePolicyTx: maxBudgetDollars must be a finite number > 0 (got ${maxBudgetDollars})`,
+    );
+  }
+  if (typeof expiryMs !== "bigint" || expiryMs <= 0n) {
+    throw new Error(
+      `buildCreatePolicyTx: expiryMs must be a bigint > 0 (got ${expiryMs})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${packageId}::agent_policy::create_policy`,
@@ -673,7 +722,26 @@ export async function extractCreatedObjectId(
     digest,
     include: { effects: true, objectTypes: true },
   });
-  if (result.$kind !== "Transaction") return null;
+  // R54 audit fix: distinguish "tx failed" from "object not in
+  // effects". The previous code returned `null` for both, so callers
+  // (notably `apps/agents/src/agents/market-creator.ts:240-272`)
+  // re-polled with a 60s timeout waiting for a `PredictionMarket`
+  // object that would never appear (the tx was finalized as a
+  // `FailedTransaction` and the on-chain object was never created).
+  // Surface the failure as a typed error so the operator sees the
+  // real cause; the `null` return is preserved for the "object not
+  // in effects" case (a successful tx that created *some* object
+  // but not the one the caller wanted).
+  if (result.$kind === "FailedTransaction") {
+    throw new Error(
+      `extractCreatedObjectId: tx ${digest} failed on-chain; ` +
+        "the requested object was never created. Check the digest in a Sui explorer for the abort reason.",
+    );
+  }
+  if (result.$kind !== "Transaction") {
+    // EffectsCert / future kinds — same null semantics as before.
+    return null;
+  }
   const effects = result.Transaction.effects;
   const types = result.Transaction.objectTypes ?? {};
   if (!effects) return null;

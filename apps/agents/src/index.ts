@@ -28,8 +28,19 @@ import { corsFor } from "./http-cors.js";
 // fallback. Operators reading the boot log thought the
 // scheduler polled at 15 s, not 60 s. Read the value through
 // the scheduler's exported helper so the log matches reality.
-const MAX_BUDGET = Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
-const LEGACY_PREDICT = process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
+// R54 audit fix: turn the `MAX_BUDGET` / `LEGACY_PREDICT` env reads
+// into call-time getters. The previous module-level `const`s were
+// frozen at import time, so a `bootstrap-env.ts` mid-flight update
+// to `AGENT_MAX_BUDGET_USDC` (e.g. an operator lowering the cap
+// during a security incident) was silently ignored. The `loadContext`
+// path (line 297) and the boot log (line 510) call these getters
+// instead of reading the frozen values.
+function readMaxBudget(): number {
+  return Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
+}
+function readLegacyPredict(): boolean {
+  return process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
+}
 
 /**
  * Boot-time config validator.
@@ -294,7 +305,7 @@ function loadContext(): AgentContext | null {
     signer: keypairFromPrivateKey(pk),
     managerId: process.env.AGENT_MANAGER_ID ?? "",
     policyId: process.env.AGENT_POLICY_ID,
-    maxBudgetUsdc: MAX_BUDGET,
+    maxBudgetUsdc: readMaxBudget(),
   };
 }
 
@@ -316,6 +327,12 @@ async function runCycle(ctx: AgentContext) {
   }
 }
 
+// R54 audit fix: module-level handle so the SIGTERM handler can
+// call `server.close()` and stop accepting new connections before
+// draining the SQLite handles. The previous code created the
+// server inside `startHealthServer()` and lost the handle.
+let healthServer: ReturnType<typeof createServer> | null = null;
+
 function startHealthServer() {
   const port = Number(process.env.PORT ?? 3001);
   // R35 audit fix: every response set `Access-Control-Allow-Origin: *`
@@ -329,7 +346,7 @@ function startHealthServer() {
   // open read-only access (operator dashboards may pull them from
   // a different origin) — only the side-effecting handlers inherit
   // the restriction.
-  createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     if (handleMarketsRoute(req, res, url)) return;
     if (await handleGamificationRoute(req, res, url)) return;
@@ -475,7 +492,28 @@ function startHealthServer() {
     }
     res.writeHead(404);
     res.end();
-  }).listen(port, () => console.log(`[agents] API on :${port}`));
+  })
+  // R54 audit fix: capture
+  // the `http.Server` handle
+  // so the SIGTERM handler
+  // can `server.close()` it
+  // and stop accepting new
+  // connections cleanly. The
+  // previous code discarded
+  // the return value of
+  // `createServer()` and the
+  // `listen()` chain, so the
+  // process kept the socket
+  // open and the SIGTERM
+  // drain (closeDb +
+  // closeSharedClient) ran
+  // while new requests were
+  // still arriving. A request
+  // mid-drain would hit
+  // "database is closed".
+  .listen(port, () => console.log(`[agents] API on :${port}`));
+  healthServer = server;
+  return server;
 }
 
 async function main() {
@@ -507,7 +545,7 @@ async function main() {
   }
 
   console.log(`[agents] Agent address: ${ctx.signer.getPublicKey().toSuiAddress()}`);
-  if (LEGACY_PREDICT) console.log(`[agents] Legacy Predict agents enabled`);
+  if (readLegacyPredict()) console.log(`[agents] Legacy Predict agents enabled`);
 
   // Per-agent UTC scheduling — see scheduler.ts and buildSchedule() above.
   // Override any entry with AGENT_CRON_<NAME>=<expr> for tests.
@@ -544,7 +582,21 @@ async function main() {
     // immediately if no client was
     // ever created (e.g. SIGTERM during
     // boot before the first tick).
+    // R54 audit fix: close the HTTP server first so no new
+    // requests arrive while we drain the SQLite handles. A
+    // request that lands between `closeDb()` and `process.exit`
+    // would throw "database is closed". `server.close()`
+    // resolves once the in-flight queue is empty; if it stalls
+    // (a wedged client), the 5s timeout below keeps the
+    // process exit bounded.
+    const closeServer = healthServer
+      ? new Promise<void>((resolve) => {
+          healthServer!.close(() => resolve());
+          setTimeout(() => resolve(), 5_000).unref();
+        })
+      : Promise.resolve();
     stopScheduler(5_000)
+      .then(() => closeServer)
       .then(() => closeSharedClient())
       .then(() => Promise.allSettled([
         closeDecisionsDb(),

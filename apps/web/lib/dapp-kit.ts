@@ -108,8 +108,9 @@ declare module "@mysten/dapp-kit-react" {
  * path that may move between dAppKit versions.
  */
 interface TransactionResultLike {
-  $kind: "Transaction" | "Failed" | "EffectsCert";
+  $kind: "Transaction" | "FailedTransaction" | "EffectsCert";
   Transaction?: { digest: string };
+  FailedTransaction?: { digest?: string };
   [k: string]: unknown;
 }
 
@@ -124,7 +125,7 @@ interface TransactionResultLike {
  */
 export type SubmitResult =
   | { $kind: "Transaction"; digest: string }
-  | { $kind: "Failed" | "EffectsCert"; digest?: string; error?: unknown };
+  | { $kind: "FailedTransaction" | "EffectsCert"; digest?: string; error?: unknown };
 
 /**
  * R51 audit fix: wrap `dAppKit.signAndExecuteTransaction`
@@ -170,7 +171,7 @@ export async function submitAndWait(
 ): Promise<SubmitResult> {
   const r = await dappKit.signAndExecuteTransaction({ transaction: tx });
   if (r.$kind !== "Transaction") {
-    return { $kind: r.$kind as "Failed" | "EffectsCert" };
+    return { $kind: r.$kind as "FailedTransaction" | "EffectsCert" };
   }
   const digest = r.Transaction?.digest;
   if (!digest) {
@@ -178,7 +179,7 @@ export async function submitAndWait(
     // Transaction object is missing — a contract
     // violation from the SDK. Surface a failure
     // rather than NPE.
-    return { $kind: "Failed", error: new Error("missing digest on Transaction result") };
+    return { $kind: "FailedTransaction", error: new Error("missing digest on Transaction result") };
   }
   try {
     await client.waitForTransaction({

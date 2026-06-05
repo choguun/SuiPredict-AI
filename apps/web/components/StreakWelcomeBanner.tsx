@@ -1,6 +1,7 @@
 "use client";
 
-import { useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-react";
+import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
+import { submitAndWait } from "@/lib/dapp-kit";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { buildCreateStreakTx } from "@suipredict/sdk";
@@ -18,6 +19,7 @@ const DISMISS_KEY = "suipredict.streak.banner.dismissed";
  */
 export function StreakWelcomeBanner() {
   const account = useCurrentAccount();
+  const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
   // R52 audit fix: hook up a
@@ -79,13 +81,20 @@ export function StreakWelcomeBanner() {
     const toastId = toast.loading("Creating your streak…");
     try {
       const tx = buildCreateStreakTx(REGISTRY_ID);
-      const r = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // R54 audit fix: route through `submitAndWait` so the
+      // banner dismissal + cache invalidation hit a node
+      // that has finalized the tx. The previous raw sign
+      // returned before finalization, so a user navigating
+      // away in the same tick saw a stale
+      // `useUserStreakId()` and the banner re-appeared on
+      // the next page load.
+      const r = await submitAndWait(dAppKit, client!, tx);
       // `$kind === "Transaction"` means the fullnode accepted the tx;
       // other variants (`"Failed"`, `"EffectsCert"`) carry a different
       // shape. Without this guard, a failed ttx would still toast
       // "Streak created: ok…" (the audit's round-15 L5 finding).
       if (r.$kind === "Transaction") {
-        toast.success(`Streak created: ${r.Transaction.digest.slice(0, 16)}…`, {
+        toast.success(`Streak created: ${r.digest.slice(0, 16)}…`, {
           id: toastId,
         });
         // R52 audit fix: invalidate

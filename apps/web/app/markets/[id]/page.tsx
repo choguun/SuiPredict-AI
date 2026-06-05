@@ -830,6 +830,39 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     if (!account || !client || !deepBookMarket || !balanceManagerId) return;
     setBusy("deposit");
     const toastId = toast.loading("Depositing to DeepBook V3 BalanceManager...");
+    // R54 audit fix: pre-flight check the user's DUSDC balance
+    // against `depositAmount`. The previous code submitted the
+    // PTB without a balance check; a user with insufficient
+    // DUSDC would pay gas for a tx that aborts on-chain with
+    // `EInsufficientBalance`. The sibling `splitCollateral`
+    // (line 538) already does this — extend the pattern to
+    // deposit.
+    try {
+      const { objects } = await client.core.listCoins({
+        owner: normalizeObjectId(account.address),
+        coinType: DUSDC_TYPE,
+        limit: 100,
+      });
+      const total = objects.reduce((s, c) => s + BigInt(c.balance), BigInt(0));
+      const need = BigInt(Math.round(depositAmount * 1_000_000));
+      if (total < need) {
+        toast.error(
+          `Insufficient DUSDC for deposit (have ${Number(total) / 1_000_000} DUSDC, need ${depositAmount} DUSDC).`,
+          { id: toastId },
+        );
+        setBusy(null);
+        return;
+      }
+    } catch (e) {
+      // Don't block the deposit on a pre-flight RPC failure —
+      // fall through to the on-chain check (which costs gas but
+      // is at least definitive). The error is logged for the
+      // operator.
+      console.warn(
+        `[markets/[id]] deposit balance pre-flight failed:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
     try {
       const dbClient = createPredictionDeepBookClient({
         client,
@@ -1363,7 +1396,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                       // EZeroAmount — confusing for the user
                       // because the input still shows the typed
                       // text but the deposit silently bounced).
-                      onChange={(e) => setDepositAmount(clampNumberString(e.target.value, 0, 0, 1_000_000))}
+                      onChange={(e) => setDepositAmount(clampNumberString(e.target.value, 1, 1, 1_000_000))}
                       className="rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/50"
                     />
                     <select

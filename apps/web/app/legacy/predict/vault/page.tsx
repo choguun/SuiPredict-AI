@@ -14,6 +14,7 @@ import {
   PREDICT_OBJECT_ID,
   PREDICT_PACKAGE_ID,
   getVaultSummary,
+  isValidSuiAddress,
   normalizeObjectId,
   type VaultSummary,
 } from "@suipredict/sdk";
@@ -161,6 +162,19 @@ export default function VaultPage() {
 
   async function withdrawPLP() {
     if (!account || !client || !plpCoinId) return;
+    // R54 audit fix: validate `plpCoinId` is a syntactically
+    // valid Sui object id before passing it to `tx.object()`.
+    // The `!plpCoinId` guard above blocks the empty-string
+    // case, but a *malformed-but-non-empty* string (e.g. an
+    // Ethereum address pasted from a tutorial) passes the
+    // truthiness check and crashes the PTB builder with an
+    // opaque `invalid input object` abort. R44 added the
+    // equivalent `isValidSuiAddress(managerId)` check to the
+    // legacy trade page; the legacy PLP vault was missed.
+    if (!isValidSuiAddress(plpCoinId)) {
+      setStatus("PLP coin id is not a valid Sui object id");
+      return;
+    }
     // R47 audit fix: confirm before withdrawing. The
     // R45 audit pass added `window.confirm` to the
     // admin cards but missed the legacy PLP vault

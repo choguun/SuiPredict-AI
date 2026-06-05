@@ -46,9 +46,22 @@ async function fetchJson<T>(path: string): Promise<T> {
   // R49).
   const res = await fetch(`${resolvePredictServerUrl()}${path}`, {
     signal: AbortSignal.timeout(5_000),
+    headers: { "User-Agent": "suipredict-sdk" },
   });
   if (!res.ok) {
     throw new Error(`predict-server ${path}: ${res.status} ${await res.text()}`);
+  }
+  // R54 audit fix: cap the response body size at 5 MB. The
+  // previous code called `res.json()` with no bound — a
+  // misconfigured or malicious backend returning a 1 GB body
+  // would OOM the Node process (the agents' tick loop is
+  // single-threaded). 5 MB is well above any realistic
+  // predict-server response (a 1000-market list is ~500 KB).
+  const len = Number(res.headers.get("content-length") ?? 0);
+  if (len > 5_000_000) {
+    throw new Error(
+      `predict-server ${path}: response too large (Content-Length ${len} > 5_000_000)`,
+    );
   }
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("application/json")) {

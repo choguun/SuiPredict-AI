@@ -34,18 +34,19 @@ import {
 
 // R43 audit fix: read the runtime-tunable knobs (`PRIZE_FUND_AMOUNT`,
 // `PRIZE_POOL_MIN_BALANCE`) at the top of `runPrizeAdmin` rather
-// than at module load. The module-level `const`s below for the
-// operational ids (`PRIZE_POOL_ID`, `PRIZE_ADMIN_ID`) stay —
-// they are deployment-time configuration that does not change
-// at runtime, and freezing them at module load is the right
-// behavior (re-binding them mid-cycle would race the in-flight
-// tx). The fund-amount and min-balance can be hot-patched via
-// `bootstrap-env.ts` after the agents process is already
-// running; the previous module-level read kept the boot-time
-// snapshot forever, so a stale `PRIZE_FUND_AMOUNT=0` would
-// have permanently disabled funding.
-const PRIZE_POOL_ID = process.env.PRIZE_POOL_ID ?? "";
-const PRIZE_ADMIN_ID = process.env.PRIZE_ADMIN_ID ?? "";
+// than at module load. The fund-amount and min-balance can be
+// hot-patched via `bootstrap-env.ts` after the agents process is
+// already running; a module-level read would keep the boot-time
+// snapshot forever, so a stale `PRIZE_FUND_AMOUNT=0` would have
+// permanently disabled funding.
+//
+// R54 audit fix: drop the dead `PRIZE_POOL_ID` / `PRIZE_ADMIN_ID`
+// module-level consts. The R53 fix re-reads both at function-body
+// scope, leaving the module-level values as unused noise that
+// invites a future reader to "fix" the inconsistency by branching
+// on them. The function-local `prizePoolId` / `prizeAdminId` are
+// the single source of truth.
+//
 // R46 audit fix: drop the dead `SUI_NETWORK` constant. The
 // previous module-level const was typed as a discriminated
 // union (testnet/mainnet/devnet/localnet) but never read

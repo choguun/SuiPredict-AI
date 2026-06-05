@@ -211,7 +211,20 @@ export async function getOrderBookDepth(
     );
     if (typeof result === "function") return { bids: [], asks: [] };
     return result as OrderBookDepth;
-  } catch {
+  } catch (err) {
+    // R54 audit fix: log the original error before returning the
+    // empty-book fallback. The previous `catch {}` swallowed
+    // every error — a pool that's been permanently frozen, a
+    // wrong network, or an RPC outage all returned `{ bids: [],
+    // asks: [] }`, indistinguishable from a genuinely-empty
+    // book. The market-maker agent (line 154-157) already has
+    // its own outer try/catch, so the swallowing was redundant
+    // *and* hid the real error from the operator's logs.
+    console.warn(
+      `[sdk] getOrderBookDepth(${poolKey}) failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return { bids: [], asks: [] };
   }
 }
