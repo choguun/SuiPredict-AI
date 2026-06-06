@@ -53,6 +53,9 @@ export function createDeepBookClient(
   const packageIds = options.packageIds ?? {
     DEEPBOOK_PACKAGE_ID: resolveDeepbookPackageId(),
     REGISTRY_ID: resolveDeepbookRegistryId(),
+    DEEP_TREASURY_ID: process.env.NEXT_PUBLIC_DEEP_TREASURY_ID
+      ?? process.env.DEEP_TREASURY_ID
+      ?? undefined,
   };
   return new DeepBookClient({
     client,
