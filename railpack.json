@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "deploy": {
+    "startCommand": "pnpm --filter @suipredict/agents start"
+  },
+  "steps": {
+    "build": {
+      "commands": ["...", "pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build"]
+    }
+  }
+}
