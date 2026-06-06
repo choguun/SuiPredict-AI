@@ -20,13 +20,12 @@
  *      the pool (or retains the collateral if any leg lost).
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { TransactionObjectInput } from "@mysten/sui/transactions";
-import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
-import { normalizeObjectId, isValidSuiAddress } from "./utils.js";
+import { CLOCK_OBJECT_ID, resolveAgentPolicyPackageId } from "./constants.js";
+import { normalizeObjectId, isValidSuiAddress, validateCoinType } from "./utils.js";
 import type { SuiClient } from "./predict-client.js";
 import { asBalance } from "./protocol-reads.js";
 
-const PKG = () => AGENT_POLICY_PACKAGE_ID;
+const PKG = () => resolveAgentPolicyPackageId();
 // Basis points denominator (10_000 = 100%). Mirrored from the
 // on-chain `parlay::BPS` constant in the Move module. Used by the
 // builder-time pre-checks (R49) so a typo surfaces here instead
@@ -72,7 +71,7 @@ export function buildCreateParlayPoolTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::create_pool`,
-    typeArguments: [coinType],
+    typeArguments: [validateCoinType(coinType)],
     arguments: [tx.pure.u64(bps)],
   });
   return tx;
@@ -120,7 +119,7 @@ export function buildFundParlayPoolTx(
   );
   tx.moveCall({
     target: `${PKG()}::parlay::fund_pool`,
-    typeArguments: [coinType],
+    typeArguments: [validateCoinType(coinType)],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.object(fundCoin)],
   });
   return tx;
@@ -156,7 +155,7 @@ export function buildParlayAdminWithdrawTx(
   const tx = new Transaction();
   const out = tx.moveCall({
     target: `${PKG()}::parlay::admin_withdraw`,
-    typeArguments: [coinType],
+    typeArguments: [validateCoinType(coinType)],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.u64(amt)],
   });
   tx.transferObjects([out], tx.pure.address("@{sender}"));
@@ -225,7 +224,7 @@ export function buildSetMaxPayoutBpsTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::set_max_payout_bps`,
-    typeArguments: [coinType],
+    typeArguments: [validateCoinType(coinType)],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.u64(newMaxBps)],
   });
   return tx;
@@ -347,7 +346,7 @@ export function buildCreateParlayTx(args: {
   const normalizedMarketIds = args.marketIds.map((id) => normalizeObjectId(id));
   tx.moveCall({
     target: `${PKG()}::parlay::create_parlay`,
-    typeArguments: [args.coinType],
+    typeArguments: [validateCoinType(args.coinType)],
     arguments: [
       tx.object(normalizeObjectId(args.poolId)),
       tx.object(parlayCoin),
@@ -430,7 +429,7 @@ export function buildRecordLegTx(args: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::record_leg`,
-    typeArguments: [args.coinType],
+    typeArguments: [validateCoinType(args.coinType)],
     arguments: [
       tx.object(normalizeObjectId(args.parlayId)),
       tx.object(normalizeObjectId(args.marketId)),
@@ -461,7 +460,7 @@ export function buildFinalizeParlayTx(args: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::finalize_parlay`,
-    typeArguments: [args.coinType],
+    typeArguments: [validateCoinType(args.coinType)],
     arguments: [
       tx.object(normalizeObjectId(args.parlayId)),
       tx.object(normalizeObjectId(args.poolId)),

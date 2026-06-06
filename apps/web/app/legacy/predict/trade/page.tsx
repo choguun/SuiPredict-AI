@@ -45,36 +45,51 @@ export default function TradePage() {
   const [positions, setPositions] = useState<PositionSummary[]>([]);
   const [settledOracleIds, setSettledOracleIds] = useState<Set<string>>(new Set());
 
+  // R57.L4 audit fix: gate the three legacy useEffects
+  // with a `cancelled` flag so navigating away mid-fetch
+  // doesn't fire a setState-after-unmount warning. The
+  // sibling modern pages all use this pattern; the legacy
+  // route is a survivor because it's still linked from
+  // the nav. The warning is silent in production but
+  // tripes React 18 strict-mode's double-invocation.
   useEffect(() => {
     if (!managerId) return;
+    let cancelled = false;
     getManagerPositions(managerId)
-      .then(setPositions)
+      .then((p) => { if (!cancelled) setPositions(p); })
       .catch(console.error);
     getOracles()
-      .then((list) =>
+      .then((list) => {
+        if (cancelled) return;
         setSettledOracleIds(
           new Set(list.filter((o) => o.status === "settled").map((o) => o.oracle_id)),
-        ),
-      )
+        );
+      })
       .catch(console.error);
+    return () => { cancelled = true; };
   }, [managerId, refreshCounter]);
 
   useEffect(() => {
+    let cancelled = false;
     getActiveOracles()
       .then((list) => {
+        if (cancelled) return;
         setOracles(list.filter((o) => o.expiry > Date.now()).slice(0, 10));
         if (list[0]) setSelectedOracle(list[0].oracle_id);
       })
       .catch(console.error);
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
     if (!selectedOracle) return;
     const oracle = oracles.find((o) => o.oracle_id === selectedOracle);
     if (!oracle) return;
+    let cancelled = false;
     pickAtmStrike(oracle.oracle_id, oracle.min_strike, oracle.tick_size).then(
-      setStrike,
+      (s) => { if (!cancelled) setStrike(s); },
     );
+    return () => { cancelled = true; };
   }, [selectedOracle, oracles]);
 
   const oracle = oracles.find((o) => o.oracle_id === selectedOracle);

@@ -1,11 +1,8 @@
 import {
   createClient,
-  findNearestActiveOracle,
-  getOracleState,
-  getSpotPrice,
-  getVaultSummary,
   getSharedClient as sdkGetSharedClient,
   closeClient,
+  resetSharedClient,
   pickAtmStrike,
   type SuiClient,
 } from "@suipredict/sdk";
@@ -193,18 +190,6 @@ export function recordResult(
   return result;
 }
 
-export async function getMarketContext() {
-  const oracle = await findNearestActiveOracle();
-  if (!oracle) return null;
-  const [stateRaw, vault] = await Promise.all([
-    getOracleState(oracle.oracle_id),
-    getVaultSummary(),
-  ]);
-  const spot = await getSpotPrice(oracle.oracle_id);
-  const state = { ...stateRaw, spot };
-  return { oracle, state, vault };
-}
-
 export { createClient, pickAtmStrike };
 
 // R55 audit fix: shrink the local getSharedClient /
@@ -224,16 +209,15 @@ export { createClient, pickAtmStrike };
 // imports `getSharedClient` from `./lib.js`) doesn't
 // need to change. Both are thin wrappers around the
 // SDK's helpers.
-//
-// The dead helpers the R55 audit also flagged
-// (`getMarketContext` plus the four SDK imports it
-// pulled in) are kept for now — `getMarketContext` is
-// not invoked by the agents package, but it is in the
-// public surface; deleting it would be a breaking
-// change. Future rounds can decide.
 export function getSharedClient(): SuiClient {
   return sdkGetSharedClient();
 }
 export async function closeSharedClient(): Promise<void> {
-  return closeClient(sdkGetSharedClient());
+  // R57 agents audit fix: close the underlying gRPC
+  // channel AND reset the SDK's internal `_sharedClient`
+  // cache. Without the reset, a subsequent
+  // `getSharedClient()` would return the closed client
+  // and every `core.getObject` would silently fail.
+  await closeClient(sdkGetSharedClient());
+  resetSharedClient();
 }

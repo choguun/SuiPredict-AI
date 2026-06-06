@@ -535,11 +535,34 @@ export function markMarketResolved(
   marketId: string,
   outcome: "yes" | "no",
 ): void {
+  // R57 agents audit fix: only flip markets that aren't already
+  // resolved. The previous UPDATE had no `status != 'resolved'`
+  // guard, so a re-org that re-broadcast an old `MarketResolved`
+  // event would silently overwrite the existing `outcome` field
+  // (a "yes" → "no" swap) and the leaderboard would re-rank the
+  // market on the new outcome. The on-chain event is the
+  // source of truth; the DB mirror should be idempotent.
   getDb()
     .prepare(
-      `UPDATE markets SET status = 'resolved', outcome = ? WHERE id = ?`,
+      `UPDATE markets SET status = 'resolved', outcome = ? WHERE id = ? AND status != 'resolved'`,
     )
     .run(outcome, marketId);
+}
+
+// R57 agents audit fix: dedicated helper for the post-referral
+// `referral_id` patch. The previous `market-creator.ts`
+// imported `getDb` directly to issue
+// `UPDATE markets SET referral_id = ? WHERE id = ?`, breaking
+// the encapsulation of `markets/store.ts`. Wrap the SQL here
+// so a future schema change (e.g. adding `referral_attempted_at`
+// to the patch) only touches this file.
+export function patchMarketReferralId(
+  marketId: string,
+  referralId: string,
+): void {
+  getDb()
+    .prepare(`UPDATE markets SET referral_id = ? WHERE id = ?`)
+    .run(referralId, marketId);
 }
 
 export function markMarketDisputed(
@@ -986,6 +1009,17 @@ export function listChainOrders(
 
 function rowToMarket(row: unknown): MarketInfo {
   const r = row as Record<string, unknown>;
+  // R57 agents audit fix: validate `outcome` against the
+  // documented union before casting. The previous
+  // `r.outcome as MarketInfo["outcome"]` cast silently
+  // accepted any string — a future schema migration that
+  // renames `"yes"` → `"YES"` (or stores an error string) would
+  // propagate the wrong value into the leaderboard and the
+  // resolve-worker outcome classifier. Restrict to the two
+  // documented values, fall back to `null` for anything else.
+  const rawOutcome = r.outcome;
+  const outcome: MarketInfo["outcome"] =
+    rawOutcome === "yes" || rawOutcome === "no" ? rawOutcome : null;
   return {
     id: r.id as string,
     title: r.title as string,
@@ -994,7 +1028,7 @@ function rowToMarket(row: unknown): MarketInfo {
     expiry_ms: r.expiry_ms as number,
     resolution_source: r.resolution_source as string,
     status: r.status as MarketInfo["status"],
-    outcome: (r.outcome as MarketInfo["outcome"]) ?? null,
+    outcome,
     pool_id: (r.pool_id as string) ?? null,
     order_book_id: (r.order_book_id as string) ?? null,
     deepbook_pool_key: (r.deepbook_pool_key as string) ?? null,

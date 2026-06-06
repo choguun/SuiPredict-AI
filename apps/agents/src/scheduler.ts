@@ -220,8 +220,20 @@ export function msUntilNext(expr: string, now: Date = new Date()): number {
     throw new Error(`bad cron: ${expr}`);
   }
 
-  // Walk forward up to 8 days to find the next match
-  for (let i = 0; i < 8 * 24 * 60; i++) {
+  // R57 agents audit fix: step the search by the largest
+  // granularity that can't be a wildcard, instead of walking
+  // every minute. The previous loop iterated 8 * 24 * 60 = 11520
+  // minutes per call. The scheduler calls this on every
+  // `scheduleNext` re-arm, so a 1-minute cron that takes 5
+  // seconds to finish its tick would re-arm with a 5-second
+  // search budget. Pick a step size based on the wildcards:
+  //   - `hour` is "*" → step by 60 minutes
+  //   - `dow` is "*" → step by 60 minutes (no day constraint)
+  //   - otherwise step by 1 minute
+  const stepMinutes =
+    hour === "*" || dow === "*" ? 60 : 1;
+  const maxIter = 8 * 24 * 60;
+  for (let i = 0; i < maxIter; i += stepMinutes) {
     const candidate = new Date(now.getTime() + i * 60_000);
     if (!matchesPart(minute, candidate.getUTCMinutes())) continue;
     if (!matchesPart(hour, candidate.getUTCHours())) continue;
@@ -230,7 +242,13 @@ export function msUntilNext(expr: string, now: Date = new Date()): number {
     if (candidate.getTime() <= now.getTime()) continue;
     return candidate.getTime() - now.getTime();
   }
-  // Shouldn't happen for valid input, but never starve the loop
+  // Shouldn't happen for valid input, but never starve the loop.
+  // Warn on excessive iteration so a future cron-format
+  // regression is visible in operator logs.
+  console.warn(
+    `[scheduler] msUntilNext(${expr}) exhausted ${maxIter} candidates; ` +
+      "falling back to readPollMs().",
+  );
   return readPollMs();
 }
 

@@ -12,9 +12,22 @@ export default function AuthCallbackPage() {
   useEffect(() => {
     // Process the OAuth redirect containing the JWT hash
     let cancelled = false;
+    // R57.L6 audit fix: race the OAuth callback against a
+    // 15s timeout. The `enokiFlow.handleAuthCallback()`
+    // Promise resolves only when the zkLogin JWT round-trip
+    // completes; a network drop after the wallet-redirect-
+    // comes-back step would hang the spinner forever. The
+    // user previously had to manually reload.
+    const AUTH_TIMEOUT_MS = 15_000;
+    const timeout = setTimeout(() => {
+      if (cancelled) return;
+      console.warn("[auth] handleAuthCallback timed out");
+      setError("Sign in timed out. Please try again.");
+    }, AUTH_TIMEOUT_MS);
     const handleAuth = async () => {
       try {
         await enokiFlow.handleAuthCallback();
+        clearTimeout(timeout);
         if (cancelled) return;
         // R28: honor a `?return=/some/path` query so a deep-link
         // (e.g. /markets/<id>) that bounced through the auth gate
@@ -27,6 +40,7 @@ export default function AuthCallbackPage() {
         const safe = raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
         router.push(safe);
       } catch (err) {
+        clearTimeout(timeout);
         // R49 audit fix: don't update state on an unmounted
         // component (React strict-mode in dev mounts the effect
         // twice; without the cancelled guard, the second mount
@@ -42,6 +56,7 @@ export default function AuthCallbackPage() {
     handleAuth();
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
     };
   }, [enokiFlow, router]);
 

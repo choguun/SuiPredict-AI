@@ -11,7 +11,7 @@ import {
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
-import { listMarkets, upsertMarket, getDb } from "../markets/store.js";
+import { listMarkets, upsertMarket, patchMarketReferralId } from "../markets/store.js";
 
 // R43 audit fix: removed the module-level MAX_ACTIVE and
 // INITIAL_MINT_ATOMS constants. Both are re-read at the top of
@@ -369,9 +369,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         // un-written entirely. Patch in-place so the
         // already-written row picks up the resolved id.
         try {
-          getDb()
-            .prepare(`UPDATE markets SET referral_id = ? WHERE id = ?`)
-            .run(referralId, marketId);
+          patchMarketReferralId(marketId, referralId);
         } catch (patchErr) {
           console.warn(
             `[market-creator] failed to patch referral_id for ${marketId}:`,

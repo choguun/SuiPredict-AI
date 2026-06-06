@@ -48,8 +48,10 @@ export function resolveDeepbookRegistryId(): string {
   ).trim();
 }
 
-export const DBUSDC_TYPE =
-  "0xf7152c05930480cd740d7311b5b8b45c6f488e3a53a11c3f74a6fac36a52e0d7::DBUSDC::DBUSDC";
+// R57.11 audit fix: re-export from the canonical source in
+// `markets/constants.ts` so a future redployment of the dUSDC
+// contract only needs one edit.
+export { DBUSDC_TYPE } from "../markets/constants.js";
 
 /**
  * DEEP coin type. Two flavors exist on testnet:

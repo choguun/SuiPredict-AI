@@ -52,6 +52,19 @@ export function getSharedClient(): SuiClient {
   return _sharedClient;
 }
 
+// R57 agents audit fix: provide a reset path for the
+// shared client. The previous `closeClient(c)` left
+// `_sharedClient` populated, so a subsequent
+// `getSharedClient()` returned the *closed* client — any
+// `core.getObject` etc. would silently fail with
+// "client is closed". Callers that want to re-open the
+// client (e.g. the agents' SIGTERM → reconnect path) need
+// a way to invalidate the cache without poking the
+// private variable.
+export function resetSharedClient(): void {
+  _sharedClient = null;
+}
+
 /**
  * R54 audit fix: typed `closeClient` wrapper. The agents'
  * `lib.ts` previously did `(client as any).close?.()` because
@@ -746,10 +759,25 @@ export async function extractCreatedObjectId(
   const types = result.Transaction.objectTypes ?? {};
   if (!effects) return null;
 
+  // R57.4 audit fix: normalize `structSuffix` to a bare struct name
+  // before the substring match. The on-chain `TypeTag` is the full
+  // `0x…::module::Struct` form, but callers pass the suffix in two
+  // different shapes — `module::Struct` (the documented form) and
+  // `<PKG>::module::Struct` (the Move TypeTag syntax). The
+  // substring match against the full TypeTag works for the first
+  // shape and silently misses the second. Strip the angle brackets
+  // and reduce to the bare struct name (everything after the last
+  // `::`) so both shapes match.
+  const bareStructName = structSuffix
+    .replace(/^</, "")
+    .replace(/>$/, "")
+    .split("::")
+    .pop()!;
+
   for (const change of effects.changedObjects) {
     if (
       change.idOperation === "Created" &&
-      types[change.objectId]?.includes(structSuffix)
+      types[change.objectId]?.includes(bareStructName)
     ) {
       return change.objectId;
     }

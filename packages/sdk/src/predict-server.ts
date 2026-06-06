@@ -195,9 +195,18 @@ export async function findSettledOraclesWithOpenPositions(
     getManagerPositions(managerId),
     getOracles(),
   ]);
+  // R57.18 audit fix: lowercase both sides of the `.has()` check.
+  // Sui addresses are case-insensitive on the wire; a checksum-cased
+  // id (e.g. a Sui Explorer-style paste) in either the oracle list
+  // or the positions list would silently miss the exact-match `.has()`
+  // and the "settled positions" view would be incomplete.
   const settledIds = new Set(
-    oracles.filter((o) => o.status === "settled").map((o) => o.oracle_id),
+    oracles
+      .filter((o) => o.status === "settled")
+      .map((o) => o.oracle_id.toLowerCase()),
   );
 
-  return positions.filter((pos) => settledIds.has(pos.oracle_id) && pos.quantity > 0);
+  return positions.filter(
+    (pos) => pos.quantity > 0 && settledIds.has(pos.oracle_id.toLowerCase()),
+  );
 }

@@ -19,11 +19,11 @@
  * the national leaderboard but still appears on the global one.
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { AGENT_POLICY_PACKAGE_ID } from "./constants.js";
+import { resolveAgentPolicyPackageId } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
 
-const PKG = () => AGENT_POLICY_PACKAGE_ID;
+const PKG = () => resolveAgentPolicyPackageId();
 
 export const MAX_COUNTRY_BYTES = 8;
 

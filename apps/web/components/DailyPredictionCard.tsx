@@ -172,9 +172,17 @@ export function DailyPredictionCard() {
       // covers the whole batch. (splitCoins on one big coin is cheaper
       // than merging first, which isn't always available without a
       // separate merge PTB.)
-      const coin = objects.sort((a, b) =>
+      //
+      // R57.M4 audit fix: spread into a new array before
+      // sorting. The in-place `.sort()` mutates the SDK
+      // response, which can be reused by subsequent
+      // `listCoins` calls in the same component. The
+      // R55 vault fix used the spread pattern; this
+      // call site was missed.
+      const sortedCoins = [...objects].sort((a, b) =>
         BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
-      )[0]!;
+      );
+      const coin = sortedCoins[0]!;
       const tx = buildMintSharesBatchTx({
         marketIds: activeMarketIds,
         vaultId: FEE_VAULT_ID,

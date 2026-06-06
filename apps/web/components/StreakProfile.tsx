@@ -201,6 +201,25 @@ export function StreakProfile() {
                     toast.error("Wallet not ready");
                     return;
                   }
+                  // R57.M6 audit fix: gate on `streakId` too.
+                  // The parent component (line 50-121)
+                  // guards `!streakId` and renders a
+                  // different component if it's null, so
+                  // the button is only mounted when
+                  // `streakId` is truthy. The race is
+                  // between the parent deciding to mount
+                  // and the React 18 commit — a click on
+                  // the still-mounted button after the
+                  // streak id refetched to null (e.g. R43
+                  // staleTime race) would fire with the
+                  // stale closure. Surface the same
+                  // "wallet not ready" message rather
+                  // than letting the `streakId!` assertion
+                  // pass `undefined` into the SDK builder.
+                  if (!streakId) {
+                    toast.error("Streak not loaded yet — try again in a moment.");
+                    return;
+                  }
                   const toastId = toast.loading(`Claiming ${TIER_LABELS[idx]}…`);
                   try {
                     // `badge_nft::mint_badge` internally calls

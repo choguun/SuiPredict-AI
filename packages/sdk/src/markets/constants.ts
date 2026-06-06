@@ -47,8 +47,10 @@ export const DBUSDC_TYPE =
 // boundary. A stale `useMemo` or undefined-derived value
 // propagates `NaN` through every admin / portfolio render and
 // the page silently shows "$NaN" or "NaN bps". The check
-// matches the validation pattern used elsewhere in the SDK
-// (e.g. `safeInt`, `safeBigInt`).
+// matches the SDK's own validation pattern
+// (`Number.isFinite` + throw on NaN/Infinity), as used in
+// `buildAuthorizeSpendTx` (predict-client.ts) and the agents'
+// `safeInt` / `safeBigInt` helpers in `apps/agents/src/lib.ts`.
 export function bpsToPrice(bps: number): number {
   if (!Number.isFinite(bps)) {
     throw new Error(`bpsToPrice: bps must be a finite number (got ${bps})`);

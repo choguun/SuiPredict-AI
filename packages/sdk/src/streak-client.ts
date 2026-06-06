@@ -14,12 +14,12 @@
  * StreakProfile.tsx for the design note).
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import { CLOCK_OBJECT_ID, resolveAgentPolicyPackageId } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { extractCreatedObjectId } from "./predict-client.js";
 import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
 
-const PKG = () => AGENT_POLICY_PACKAGE_ID;
+const PKG = () => resolveAgentPolicyPackageId();
 
 export interface StreakInfo {
   streak_id: string;
@@ -287,7 +287,17 @@ export function computeMultiplierBps(tier: number): number {
     case 3: return 17_000;
     case 4: return 25_000;
     case 5: return 30_000;
-    default: return 10_000;
+    // R57.16 audit fix: throw for out-of-range tiers instead of
+    // silently matching tier 0. The on-chain
+    // `streak_system::get_multiplier_bps` aborts on a tier > 5;
+    // a "no bonus" mirror in the SDK was misleading. A throw
+    // here surfaces the data-integrity bug (the chain returned
+    // a tier it shouldn't have) rather than rendering a stale
+    // "1.0x" multiplier in the UI.
+    default:
+      throw new Error(
+        `computeMultiplierBps: tier ${tier} is not in [0, 5]`,
+      );
   }
 }
 

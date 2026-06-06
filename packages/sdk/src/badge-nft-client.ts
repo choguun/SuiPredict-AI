@@ -16,11 +16,11 @@
  * remains the source of truth.
  */
 import { Transaction } from "@mysten/sui/transactions";
-import { AGENT_POLICY_PACKAGE_ID, CLOCK_OBJECT_ID } from "./constants.js";
+import { CLOCK_OBJECT_ID, resolveAgentPolicyPackageId } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
 import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
 
-const PKG = () => AGENT_POLICY_PACKAGE_ID;
+const PKG = () => resolveAgentPolicyPackageId();
 
 // Tier thresholds mirror `badge_nft.move::tier_threshold` (in days).
 // Exposed so the UI can pre-compute which tiers a user is eligible
@@ -45,8 +45,14 @@ export const BADGE_TIER_NAMES: Record<number, string> = {
  * Highest tier the user is eligible to claim, given their longest
  * streak. Returns 0 if even the Bronze tier (3d) isn't reached.
  */
+// R57.15 audit fix: route the bigint-cast through `u64ToSafeNumber`
+// so a `bigint` > `Number.MAX_SAFE_INTEGER` (2^53-1) doesn't
+// silently truncate. Today's thresholds (3/7/14/30/100) are well
+// below 2^53 days, but the shared helper is the public safe-cast
+// pattern across the SDK and a future `BADGE_TIER_THRESHOLDS`
+// bump to 365/1000 days would close in on precision limits.
 export function highestEligibleBadgeTier(longestStreak: number | bigint): number {
-  const days = Number(longestStreak);
+  const days = u64ToSafeNumber(longestStreak, "longest_streak", "badge-eligibility");
   if (days >= 100) return 5;
   if (days >= 30) return 4;
   if (days >= 14) return 3;

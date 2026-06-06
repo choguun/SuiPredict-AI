@@ -205,8 +205,11 @@ export function countryRollup(
   const filtered = all.filter(
     (r) => r.country_code && r.country_code === normalized,
   );
-  filtered.forEach((r, i) => (r.rank = i + 1));
-  return filtered;
+  // R57 agents audit fix: rank via `.map` (new array) rather than
+  // in-place `.forEach` mutation. R56 fixed `liveRollup` but missed
+  // this call site; the rank field would survive across ticks if a
+  // caller cached the array.
+  return filtered.map((r, i) => ({ ...r, rank: i + 1 }));
 }
 
 export { WEEK_MS };

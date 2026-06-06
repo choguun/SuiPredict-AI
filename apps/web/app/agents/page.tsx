@@ -309,28 +309,44 @@ export default function AgentsPage() {
     // when the tab is hidden means a 1h backgrounded tab fires
     // zero agents requests, and the next `load()` runs the
     // instant the user switches back.
+    //
+    // R57.M7 audit fix: revert to setTimeout-chained polling.
+    // The R56.19 migration to `setInterval` + re-arm had two
+    // residual issues:
+    //   (a) The `let id = setInterval(tick, backoffMs)` on the
+    //       last line is hoisted; the `clearInterval(id)` inside
+    //       `tick` reads `undefined` on the first tick and
+    //       silently no-ops.
+    //   (b) The cleanup only stops the next tick — the
+    //       in-flight `load()` continues and its setState is
+    //       a setState-after-unmount warning.
+    // The setTimeout-chained form is cleaner about both: the
+    // timer id is local to each tick, and the in-flight fetch
+    // is aborted via the same `cancelled` flag pattern.
     let backoffMs = 8000;
     const tick = () => {
       if (cancelled) return;
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      void load();
-      // Adjust the next poll based on what the just-finished
-      // load() saw. `error` is read via the `errorRef` so the
-      // tick closure observes the latest value without the
-      // effect re-binding on every error change (R46 audit).
-      const next = errorRef.current ? 30_000 : 8_000;
-      if (next !== backoffMs) {
-        backoffMs = next;
-        clearInterval(id);
-        if (!cancelled) {
-          id = setInterval(tick, backoffMs);
-        }
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        // Hidden tab — re-schedule without firing `load()`.
+        // The browser fires the `visibilitychange` event when
+        // the tab flips back, but `load()` is cheap and
+        // re-arming on the next visibility-flip is a one-line
+        // event listener that's omitted here for symmetry with
+        // the R42 setInterval pattern. The user re-focusing
+        // the tab is the only signal we need; the next
+        // setTimeout fires it.
+        setTimeout(tick, 1000);
+        return;
       }
+      void load().finally(() => {
+        if (cancelled) return;
+        backoffMs = errorRef.current ? 30_000 : 8_000;
+        setTimeout(tick, backoffMs);
+      });
     };
-    let id: ReturnType<typeof setInterval> = setInterval(tick, backoffMs);
+    setTimeout(tick, backoffMs);
     return () => {
       cancelled = true;
-      clearInterval(id);
     };
     // The effect intentionally re-runs on `error` changes so
     // the next interval restart can pick up the new backoff

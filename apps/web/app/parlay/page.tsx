@@ -319,9 +319,19 @@ export default function ParlayPage() {
             `have ${(Number(totalBalance) / 1_000_000).toFixed(2)}.`,
         );
       }
-      const coin = objects.sort((a, b) =>
+      // R57.M3 audit fix: spread into a new array before
+      // sorting. The in-place `.sort()` mutates the SDK
+      // response, which is a cached array the Sui SDK
+      // returns to subsequent `listCoins` calls in the
+      // same component. Latent today (the SDK returns a
+      // fresh array per call in practice) but the spread
+      // is the safe pattern and matches the
+      // `vault/page.tsx` (R55) and
+      // `DailyPredictionCard.tsx` (R55) siblings.
+      const sortedCoins = [...objects].sort((a, b) =>
         BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
-      )[0]!;
+      );
+      const coin = sortedCoins[0]!;
       const tx = buildCreateParlayTx({
         poolId: PARLAY_POOL_ID,
         coinId: coin.objectId,

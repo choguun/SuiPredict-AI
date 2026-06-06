@@ -34,11 +34,17 @@ export default function VaultPage() {
   // `s.total_balance - s.allocated` is done in BigInt and
   // re-stringified so the display formatter doesn't lose
   // precision above 2^53 - 1.
+  //
+  // R57.L1 audit fix: drop the unused `available` field.
+  // `refresh()` (line 80) computed
+  // `(total_balance - allocated).toString()` and stuffed it
+  // into `summary.available`, but the JSX only reads
+  // `total` and `allocated`. The field was dead state that
+  // triggered an extra re-render on every refresh.
   const [summary, setSummary] = useState<{
     vault_id: string;
     total_balance: string;
     allocated: string;
-    available?: string;
   } | null>(null);
   const [amount, setAmount] = useState(10);
   const [vlpBalance, setVlpBalance] = useState(0);
@@ -73,16 +79,26 @@ export default function VaultPage() {
 
   async function refresh() {
     const s = await getVaultSummaryClob();
-    // R56.9 audit fix: do the subtraction in BigInt to
-    // preserve precision above 2^53 - 1. The wire shape
-    // is `string` (bigint-as-string) so the
-    // `Number(s) - Number(s)` shortcut is unsafe.
-    const available = (BigInt(s.total_balance) - BigInt(s.allocated)).toString();
-    setSummary({ ...s, available });
+    setSummary({
+      vault_id: s.vault_id,
+      total_balance: s.total_balance,
+      allocated: s.allocated,
+    });
   }
 
   useEffect(() => {
-    refresh().catch(console.error);
+    // R57.L7 audit fix: gate the in-flight `refresh()` with a
+    // `cancelled` flag so an unmount between
+    // `await getVaultSummaryClob()` and `setSummary(...)`
+    // doesn't fire a setState-after-unmount warning. The
+    // setInterval cleanup only stops the next tick; the
+    // in-flight fetch needs the same pattern.
+    let cancelled = false;
+    const safeRefresh = () => {
+      if (cancelled) return;
+      refresh().catch(console.error);
+    };
+    safeRefresh();
     // R42 audit fix: skip the 10s refresh when the tab is
     // backgrounded. A 1h+ backgrounded tab would otherwise
     // fire 360 `getVaultSummaryClob` calls on resume; gating
@@ -99,6 +115,7 @@ export default function VaultPage() {
     // pattern was applied to the agents page in R45.
     let backoffUntil = 0;
     const t = setInterval(() => {
+      if (cancelled) return;
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       if (Date.now() < backoffUntil) return;
       refresh().catch((err) => {
@@ -106,7 +123,10 @@ export default function VaultPage() {
         backoffUntil = Date.now() + 30_000;
       });
     }, 10_000);
-    return () => clearInterval(t);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, []);
 
   useEffect(() => {

@@ -690,11 +690,21 @@ export async function runPositionIndexer(
       const j = ev.parsedJson as MarketDisputedJson;
       if (!j?.market_id) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      // R57 agents audit fix: decode the byte-array form of
+      // `evidence_uri` via `Buffer.from(bytes)` (or
+      // `TextDecoder`) rather than `String.fromCharCode`.
+      // The on-chain `String` is a UTF-8 byte string; a
+      // multi-byte codepoint (e.g. an emoji or a non-ASCII
+      // URL fragment) would have its high bit set and
+      // `String.fromCharCode` would produce a Latin-1 char
+      // for each byte, not the original UTF-8 string. The
+      // result would silently lose data on any non-ASCII
+      // evidence URI.
       const evidence =
         typeof j.evidence_uri === "string"
           ? j.evidence_uri
           : Array.isArray(j.evidence_uri)
-            ? String.fromCharCode(...(j.evidence_uri as number[]))
+            ? Buffer.from(j.evidence_uri as number[]).toString("utf-8")
             : "";
       const count = Number(j.dispute_count ?? 1);
       markMarketDisputed(j.market_id, evidence, count, ts);

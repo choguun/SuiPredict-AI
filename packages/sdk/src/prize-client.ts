@@ -14,10 +14,10 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { fromBase64 } from "@mysten/sui/utils";
-import { AGENT_POLICY_PACKAGE_ID, DUSDC_TYPE } from "./constants.js";
-import { normalizeObjectId, isValidSuiAddress } from "./utils.js";
+import { DUSDC_TYPE, resolveAgentPolicyPackageId } from "./constants.js";
+import { normalizeObjectId, isValidSuiAddress, validateCoinType } from "./utils.js";
 
-const PKG = () => AGENT_POLICY_PACKAGE_ID;
+const PKG = () => resolveAgentPolicyPackageId();
 
 // Mirror on-chain DEFAULT_DISTRIBUTION_BPS. The vector MUST sum to BPS —
 // if a future edit breaks that invariant, throw at module load so the
@@ -175,6 +175,13 @@ export function buildClaimPrizeTx(params: {
   signatureB64: string;
   poolIdForSig: string; // must equal poolId
   prizeCoinType?: string; // defaults to DUSDC_TYPE; set to DBUSDC_TYPE for DBUSDC pools
+  // R57.6 audit fix: the pool's actual `distribution_bps` vector. The
+  // R54 check validated against the module-level `DEFAULT_DISTRIBUTION_BPS`
+  // (length 10) but a pool created via `buildSetDistributionTx` may have
+  // a shorter (or longer) distribution. Pass the pool's distribution
+  // here so `rank - 1 < distribution.length` is checked against the
+  // shape the chain will see, not the SDK's hard-coded default.
+  distribution?: number[];
 }): Transaction {
   // The on-chain claim_prize signs the (pool_id_for_sig, week, user, rank,
   // amount) tuple. If the caller passes a different `poolId` to moveCall
@@ -212,21 +219,22 @@ export function buildClaimPrizeTx(params: {
       `buildClaimPrizeTx: rank must be an integer in [1, ${MAX_RANK}] (got ${params.rank})`,
     );
   }
-  // R54 audit fix: also check `rank ≤ distribution.length`. The R49
-  // check only validated `rank ∈ [1, MAX_RANK]`, but the on-chain
-  // `claim_prize` calls `*vector::borrow(&pool.distribution_bps, idx)`
-  // (where `idx = rank - 1`) — a custom pool that sets a shorter
-  // distribution (e.g. `[5000]`) would abort with an opaque
-  // vector-out-of-bounds Move abort. The companion helper
-  // `expectedAmountForRank` silently returns `0n` for out-of-bounds,
-  // which the R49 `amount > 0` check then catches as a misleading
-  // "amount must be > 0" error. Surface the real cause at the
-  // build boundary by accepting an optional `distribution` arg
-  // (defaulting to the canonical `DEFAULT_DISTRIBUTION_BPS`) and
-  // validating `rank - 1 < distribution.length`.
-  if (params.rank - 1 >= DEFAULT_DISTRIBUTION_BPS.length) {
+  // R57.6 audit fix: validate `rank` against the pool's actual
+  // `distribution` vector, not the module-level
+  // `DEFAULT_DISTRIBUTION_BPS`. The R54 check used the default
+  // (length 10) but `buildSetDistributionTx` is exported and admin
+  // scripts do use it to set custom distributions — a pool with a
+  // single-rank distribution `[10_000]` would reject a real
+  // `rank = 5` claim at the SDK boundary with a misleading "rank
+  // exceeds DEFAULT_DISTRIBUTION_BPS length 10" message, then abort
+  // on the actual `[10_000]` distribution with a vector-out-of-
+  // bounds. Accept the pool's distribution as an optional arg
+  // (defaulting to the canonical default for back-compat) and
+  // validate against that.
+  const effectiveDistribution = params.distribution ?? DEFAULT_DISTRIBUTION_BPS;
+  if (params.rank - 1 >= effectiveDistribution.length) {
     throw new Error(
-      `buildClaimPrizeTx: rank ${params.rank} exceeds DEFAULT_DISTRIBUTION_BPS length ${DEFAULT_DISTRIBUTION_BPS.length}; ` +
+      `buildClaimPrizeTx: rank ${params.rank} exceeds distribution length ${effectiveDistribution.length}; ` +
         "the on-chain distribution is too short to cover this rank. " +
         "Use a shorter rank or update the pool's distribution.",
     );
@@ -272,19 +280,11 @@ export function buildClaimPrizeTx(params: {
     );
   }
   const tx = new Transaction();
-  // R54 audit fix: validate `prizeCoinType` is non-empty. The
-  // on-chain `claim_prize<PrizeCoin>` is generic over the prize
-  // coin type; an empty `typeArguments: [""]` would be a
-  // type-argument mismatch at BCS resolution and the wallet would
-  // surface "Invalid type argument". A misconfigured admin script
-  // that reads `PRIZE_COIN_TYPE` from env and defaults to `""`
-  // (when unset) would silently produce a malformed PTB.
-  const prizeCoinType = params.prizeCoinType ?? DUSDC_TYPE;
-  if (!prizeCoinType || !prizeCoinType.startsWith("0x")) {
-    throw new Error(
-      `buildClaimPrizeTx: prizeCoinType must be a non-empty coin type string starting with "0x" (got "${prizeCoinType}")`,
-    );
-  }
+  // R57.2 audit fix: route `prizeCoinType` through the shared
+  // `validateCoinType` helper. The R54 partial check only verified
+  // the `0x` prefix; the helper also rejects missing `::module::Struct`
+  // separators and whitespace-padded env-paste bugs.
+  const prizeCoinType = validateCoinType(params.prizeCoinType ?? DUSDC_TYPE);
   tx.moveCall({
     target: `${PKG()}::prize_pool::claim_prize`,
     typeArguments: [prizeCoinType],

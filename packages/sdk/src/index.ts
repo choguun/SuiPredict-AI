@@ -5,6 +5,14 @@ export {
   bpsToPrice,
   priceToBps,
   encodeUtf8,
+  // R57.12 audit fix: re-export the hot-patch getter
+  // `resolveMarketPackageId()` from the barrel. The const
+  // above is frozen at SDK import; the getter picks up
+  // env-var changes that `bootstrap-env.ts` makes after
+  // import (mirrors the R55 `resolveAgentPolicyPackageId`
+  // pattern that the barrel already exposes via the
+  // `export *` from `./constants.js`).
+  resolveMarketPackageId,
 } from "./markets/constants.js";
 export * from "./markets/types.js";
 export * from "./markets/indexer-client.js";
@@ -17,7 +25,6 @@ export {
   POOL_DEEP_DBUSDC,
   POOL_CREATION_FEE_DEEP,
 } from "./deepbook/constants.js";
-export { DBUSDC_TYPE as DEEPBOOK_DBUSDC_TYPE } from "./deepbook/constants.js";
 export * from "./deepbook/client.js";
 
 // Shared utilities from predict client

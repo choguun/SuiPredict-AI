@@ -112,6 +112,24 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
     confidenceThreshold,
   );
 
+  // R57 agents audit fix: reject `outcome` values outside the
+  // documented `1 = YES, 2 = NO` range before touching
+  // the on-chain `buildResolveMarketTx` (which would happily
+  // encode any u8) or the off-chain `upsertMarket` (which
+  // would now silently coerce to "no" via the ternary). An
+  // LLM that returned `0` / `3` for a malformed prompt
+  // would either abort on-chain with `EInvalidOutcome`
+  // (Move code 4) or, worse, record the wrong side as the
+  // resolution. Surface the bad value as a `resolve_failed`
+  // record and skip the tx.
+  if (outcome !== 1 && outcome !== 2) {
+    return recordResult("MarketResolver", {
+      action: "resolve_failed",
+      reasoning: `Resolver returned outcome ${outcome} for ${market.id}; must be 1 (YES) or 2 (NO). Reasoning: ${reasoning}`,
+      confidence,
+    });
+  }
+
   if (market.id.startsWith("demo-")) {
     upsertMarket({
       ...market,

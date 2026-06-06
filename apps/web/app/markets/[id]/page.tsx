@@ -401,15 +401,40 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   useEffect(() => {
     if (!account) return;
     const key = `suipredict.deepbook.${account.address}`;
-    if (balanceManagerId) window.localStorage.setItem(`${key}.manager`, balanceManagerId);
-    else window.localStorage.removeItem(`${key}.manager`);
+    // R57.M1 audit fix: try/catch the
+    // `localStorage` write. Safari
+    // private mode, Brave strict mode,
+    // and any iframe with
+    // `allow-same-origin` removed throw
+    // `QuotaExceededError` synchronously
+    // and tear down the surrounding
+    // `useEffect` chain. Other
+    // wallet-scoped persistence paths
+    // (auth/page.tsx, providers-inner.tsx)
+    // already wrap the write.
+    try {
+      if (balanceManagerId) window.localStorage.setItem(`${key}.manager`, balanceManagerId);
+      else window.localStorage.removeItem(`${key}.manager`);
+    } catch (e) {
+      console.warn(
+        `[markets/${marketId}] localStorage write for manager failed:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
   }, [account, balanceManagerId]);
 
   useEffect(() => {
     if (!account) return;
     const key = `suipredict.deepbook.${account.address}`;
-    if (tradeCapId) window.localStorage.setItem(`${key}.tradeCap`, tradeCapId);
-    else window.localStorage.removeItem(`${key}.tradeCap`);
+    try {
+      if (tradeCapId) window.localStorage.setItem(`${key}.tradeCap`, tradeCapId);
+      else window.localStorage.removeItem(`${key}.tradeCap`);
+    } catch (e) {
+      console.warn(
+        `[markets/${marketId}] localStorage write for tradeCap failed:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
   }, [account, tradeCapId]);
 
   const yesMid = book?.mid_price ?? 0.5;
@@ -458,10 +483,20 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
 
   // Mirror the deepBookMarket config into a ref so the polling
   // `refresh` callback can read it without recreating the interval.
+  //
+  // R57.M2 audit fix: gate the `setRefreshCounter` on a
+  // one-shot "initialized" ref. The previous code bumped
+  // the counter on every re-run, and `deepBookMarket` is a
+  // fresh `useMemo` result on the first render (null) → the
+  // second render (defined) — two re-runs, two
+  // `setRefreshCounter(c => c + 1)` calls, two redundant
+  // `refreshBookAndOrders` invocations. The first call is
+  // intentional; the second is a regression.
+  const deepBookMarketInitializedRef = useRef(false);
   useEffect(() => {
     deepBookMarketRef.current = deepBookMarket;
-    if (deepBookMarket) {
-      // Trigger an immediate re-read now that the pool is known.
+    if (deepBookMarket && !deepBookMarketInitializedRef.current) {
+      deepBookMarketInitializedRef.current = true;
       setRefreshCounter((c) => c + 1);
     }
   }, [deepBookMarket]);
@@ -796,6 +831,36 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   }
 
   /**
+   * Wait until the tab is visible OR the caller's `signal` aborts.
+   * Resolves immediately if the tab is already visible. Used by
+   * `waitForOrderInBook` to gate the poll loop on tab visibility
+   * without leaking a `visibilitychange` listener when the outer
+   * poll aborts first (R57.H1 audit fix).
+   */
+  function waitForVisibleOrAbort(signal?: AbortSignal): Promise<void> {
+    if (typeof document === "undefined" || document.visibilityState === "visible") {
+      return Promise.resolve();
+    }
+    if (signal?.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const onVis = () => {
+        if (document.visibilityState === "visible") {
+          document.removeEventListener("visibilitychange", onVis);
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }
+      };
+      const onAbort = () => {
+        document.removeEventListener("visibilitychange", onVis);
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      document.addEventListener("visibilitychange", onVis);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /**
    * Poll the agents `/markets/:id/orders` endpoint until a row with
    * `client_order_id == clientOrderId` appears. The chain_orders table
    * doesn't carry a trader column (would need a schema migration to
@@ -847,19 +912,21 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // service to confirm an order they can't see. The
       // 4s `setInterval` on line 362-365 was visibility-
       // gated by R42; the order-confirm poll was missed.
+      //
+      // R57.H1 audit fix: factor the visibility wait into a
+      // helper that accepts the caller's `signal` and
+      // cleans up the listener on BOTH the visibility flip
+      // and the abort. The previous inline
+      // `addEventListener("visibilitychange", onVis)` only
+      // removed the listener on the visibility flip — if
+      // the caller's `signal` aborted while the tab was
+      // still hidden (e.g. parent unmount), the listener
+      // piled up over a long session with several mints.
       if (
         typeof document !== "undefined" &&
         document.visibilityState !== "visible"
       ) {
-        await new Promise<void>((resolve) => {
-          const onVis = () => {
-            if (document.visibilityState === "visible") {
-              document.removeEventListener("visibilitychange", onVis);
-              resolve();
-            }
-          };
-          document.addEventListener("visibilitychange", onVis);
-        });
+        await waitForVisibleOrAbort(signal);
       }
     }
     return false;
@@ -916,10 +983,27 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           `suipredict.deepbook.${account.address}.manager`,
           managerId,
         );
+        toast.success(
+          `BalanceManager created: ${digest.slice(0, 16)}...`, { id: toastId }
+        );
+      } else {
+        // R57.H2 audit fix: surface the post-success silent
+        // failure. The Transaction-kind result confirmed the
+        // tx finalized, but the gRPC `objectTypes` query for
+        // the new shared object came back without the
+        // `BalanceManager` struct (RPC lag, indexer
+        // propagation, etc). The Deposit / Place Order
+        // buttons disable on `!balanceManagerId` and the
+        // user has no clue why the success toast didn't
+        // unlock them. Toast a distinct warning so the
+        // operator knows to refresh in a few seconds.
+        toast.warning(
+          `BalanceManager created (${digest.slice(0, 16)}...) but the new object ID ` +
+            "isn't visible to this RPC node yet. Click 'Refresh manager' in a few seconds " +
+            "or reload the page.",
+          { id: toastId },
+        );
       }
-      toast.success(
-        `BalanceManager created: ${digest.slice(0, 16)}...`, { id: toastId }
-      );
       // Wait a moment for indexer before refreshing
       setTimeout(() => setRefreshCounter(c => c + 1), 2000);
       invalidateMarketCaches();

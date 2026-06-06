@@ -150,6 +150,44 @@ export function u64ToSafeNumber(
 }
 
 /**
+ * Validate a candidate coin type tag (e.g. DUSDC_TYPE, VLP_TYPE,
+ * `<PKG>::dbusdc::DBUSDC`). Rejects empty, non-`0x` prefixed, missing
+ * `::module::Struct` separator, or whitespace-padded values. The
+ * generic `Q` parameter on the parlay / prize / vault Move modules
+ * is type-argument-checked by the BCS encoder; a `typeArguments: [""]`
+ * PTB aborts at signature with an opaque "Invalid type argument".
+ * Caller-supplied coinType strings that come from env vars
+ * (`PARLAY_COIN_TYPE`, `PRIZE_COIN_TYPE`, …) or admin scripts
+ * benefit from a single, loud check at builder time.
+ *
+ * R57.2 audit fix: the seven parlay builders and the
+ * `buildClaimPrizeTx` builder used to forward `coinType` to
+ * `typeArguments` without any validation. The prize client
+ * had a partial check (R54); the parlay siblings were silent.
+ * Centralize the rule here.
+ */
+export function validateCoinType(coinType: string | null | undefined): string {
+  if (coinType == null) {
+    throw new Error("validateCoinType: coinType is required");
+  }
+  const trimmed = coinType.trim();
+  if (!trimmed) {
+    throw new Error("validateCoinType: coinType is empty");
+  }
+  if (!trimmed.startsWith("0x")) {
+    throw new Error(
+      `validateCoinType: "${coinType}" must start with "0x"`,
+    );
+  }
+  if (!trimmed.includes("::")) {
+    throw new Error(
+      `validateCoinType: "${coinType}" must include "::module::Struct"`,
+    );
+  }
+  return trimmed;
+}
+
+/**
  * Iterate `client.core.listCoins` to exhaustion, returning every
  * Coin<T> object owned by `owner`. The gRPC `listCoins` defaults to
  * 50 objects per page; a wallet with more than 50 dust coins (e.g.

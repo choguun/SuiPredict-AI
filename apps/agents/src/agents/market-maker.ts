@@ -168,7 +168,17 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   let book;
   try {
     book = await getOrderBookDepth(dbClient, poolKey, 0.01, 0.99);
-  } catch {
+  } catch (err) {
+    // R57 agents audit fix: log the underlying error. A silent
+    // `catch {}` would let a sustained DeepBook RPC outage
+    // (or a malformed poolKey) mask the failure as "empty
+    // book, hold" — the market maker would never place orders
+    // but the operator dashboard wouldn't see the cause.
+    console.warn(
+      `[market-maker] getOrderBookDepth(${poolKey}) failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     book = { bids: [], asks: [] };
   }
 

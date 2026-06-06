@@ -108,9 +108,21 @@ export async function getMarket(id: string): Promise<MarketInfo> {
   // confusing 404 from `fetchJson`. A `null` / `undefined`
   // would also concatenate as the string `"undefined"`. Throw
   // at the build boundary with a readable message.
+  //
+  // R57.5 audit fix: also enforce the 32-byte hex Sui object id
+  // shape. A caller passing `id = "../../admin/secrets"` (a stale
+  // URL param or a fuzzer) interpolates into `/markets/…/…` and
+  // `fetch` follows the path-traversal after URL normalization.
+  // Mirror `normalizeObjectId`'s regex; the indexer handler
+  // accepts both upper and lower case.
   if (!id || typeof id !== "string") {
     throw new Error(
       `getMarket: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
+    throw new Error(
+      `getMarket: id must be a 32-byte hex Sui object id (got ${JSON.stringify(id)})`,
     );
   }
   return fetchJson(`/markets/${id}`);
@@ -121,9 +133,16 @@ export async function getMarketOrderBook(id: string): Promise<OrderBookSnapshot>
   // web's market page passes the URL param directly; a
   // Next.js catch-all route that resolves to `undefined`
   // would silently 500 with a path like `/markets/undefined/book`.
+  //
+  // R57.5 audit fix: 32-byte hex shape (see `getMarket`).
   if (!id || typeof id !== "string") {
     throw new Error(
       `getMarketOrderBook: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
+    throw new Error(
+      `getMarketOrderBook: id must be a 32-byte hex Sui object id (got ${JSON.stringify(id)})`,
     );
   }
   return fetchJson(`/markets/${id}/book`);

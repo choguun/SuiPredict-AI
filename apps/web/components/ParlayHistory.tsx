@@ -22,7 +22,7 @@
  */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card } from "./ui";
 
 const AGENTS_BASE =
@@ -99,6 +99,14 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
     };
   }, [userAddress, includeFinalized]);
 
+  // R57.M5 audit fix: per-row AbortController so a fast row →
+  // row → row click sequence doesn't have three concurrent
+  // `/parlay/{id}` fetches racing the last-resolved-wins
+  // state write. The list-endpoint fetch on lines 84-95 was
+  // already AbortController-wrapped (R56.20); the per-row
+  // fetch was missed.
+  const detailCtlsRef = useRef<Map<string, AbortController>>(new Map());
+
   async function toggleDetail(parlayId: string) {
     // Optimistic toggle: if already loaded, collapse; if not, fetch
     // from the agents /parlay/{id} endpoint. The same ParlayRow is
@@ -108,6 +116,9 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
     // visible — useful for verifying a particular parlay without
     // leaving the page.
     if (expanded[parlayId]) {
+      // Abort any in-flight fetch for this row before collapsing.
+      detailCtlsRef.current.get(parlayId)?.abort();
+      detailCtlsRef.current.delete(parlayId);
       setExpanded((prev) => {
         const next = { ...prev };
         delete next[parlayId];
@@ -115,16 +126,35 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
       });
       return;
     }
+    // Abort any previous in-flight fetch for this row (the
+    // user clicked twice quickly).
+    detailCtlsRef.current.get(parlayId)?.abort();
+    const ctl = new AbortController();
+    detailCtlsRef.current.set(parlayId, ctl);
     try {
-      const res = await fetch(`${AGENTS_BASE}/parlay/${parlayId}`);
+      const res = await fetch(`${AGENTS_BASE}/parlay/${parlayId}`, {
+        signal: ctl.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const row = (await res.json()) as ParlayRow;
-      setExpanded((prev) => ({ ...prev, [parlayId]: row }));
+      // Only commit if this fetch is still the active one for
+      // this row (a subsequent click might have aborted us
+      // and started a fresh fetch).
+      if (detailCtlsRef.current.get(parlayId) === ctl) {
+        setExpanded((prev) => ({ ...prev, [parlayId]: row }));
+        detailCtlsRef.current.delete(parlayId);
+      }
     } catch (e) {
-      setExpanded((prev) => ({
-        ...prev,
-        [parlayId]: e instanceof Error ? e.message : String(e),
-      }));
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      // Same staleness guard: only commit the error if our
+      // controller is still the active one.
+      if (detailCtlsRef.current.get(parlayId) === ctl) {
+        setExpanded((prev) => ({
+          ...prev,
+          [parlayId]: e instanceof Error ? e.message : String(e),
+        }));
+        detailCtlsRef.current.delete(parlayId);
+      }
     }
   }
 

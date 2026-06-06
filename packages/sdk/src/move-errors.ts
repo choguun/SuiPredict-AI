@@ -158,19 +158,26 @@ const MODULE_CODES: Record<MoveModule, Record<number, string>> = {
  *  Returns null if the message doesn't look like a Move abort. */
 export function extractMoveAbortCode(msg: string): number | null {
   // Sui formats Move aborts as `MoveAbort(<MoveLocation or elided>, N)`
-  // optionally followed by "in command M". Match the final `, <digits>)`
-  // at the end of the abort expression.
+  // optionally followed by "in command M". When a wrapper aborts on an
+  // inner function abort, the gRPC error string embeds *both* blocks:
   //
-  // R56.15 audit fix: use `[\s\S]*?` (non-greedy, dotAll-style)
-  // instead of `[^\n]*`. Sui's gRPC `MoveLocation` rendering can
-  // be multi-line in newer SDK bumps (e.g.
-  // `MoveAbort(MoveLocation {\n  module: "foo",\n}, 7)`); the
-  // `[^\n]*` would stop at the first newline and miss the
-  // closing `, 7)`. The current SDK only ships the single-line
-  // format, so this is a latent bug, but the regex is brittle
-  // to a future SDK bump and the entire web + agents stack
-  // depends on this translator.
-  const m = /MoveAbort[\s\S]*?\)\s*,\s*(\d+)\s*\)/.exec(msg);
+  //   MoveAbort(MoveLocation { module: "balance_manager" }, 7) in command 1
+  //   MoveAbort(MoveLocation { module: "prediction_market" }, 9) in command 0
+  //
+  // The caller's `isMoveAbortCode(err, "prediction_market", 9)` check
+  // wants the outer (last) abort — the one for the function the user
+  // actually called. Greedy `[\s\S]*` with a `, N)` + `in command`
+  // anchor walks back to the *last* `, N)` in the string.
+  //
+  // R57.3 audit fix: the previous regex used non-greedy `[\s\S]*?` and
+  // returned the *innermost* (first-in-string) abort code. A wrapper
+  // PTB that aborted on a deeper call would silently misroute to the
+  // "unknown abort" branch in the agents' parlay-worker /
+  // market-resolver retry classification. Greedy match anchored to
+  // the `in command` suffix is the robust pattern; a paren-depth
+  // walker would be future-proof to a Sui rendering change but is
+  // overkill for the current SDK shape.
+  const m = /MoveAbort[\s\S]*\)\s*,\s*(\d+)\s*\)\s*(?=$|in command)/.exec(msg);
   return m ? Number(m[1]) : null;
 }
 

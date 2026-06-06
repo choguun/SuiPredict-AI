@@ -30,6 +30,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useCurrentAccount,
+  useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
 import {
@@ -71,7 +72,6 @@ import {
 // page's `friendlyMoveError` follow the same shape; lift to
 // a shared util if a third caller adopts it.
 import { moveAbortSymbolAny } from "@suipredict/sdk/move-errors";
-import { useCurrentClient } from "@mysten/dapp-kit-react";
 import { Card, Stat, Badge } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 
