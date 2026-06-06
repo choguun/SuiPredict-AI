@@ -297,19 +297,23 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       feeCoinId = deepCoin.objectId;
     } else {
       const splitTx = new Transaction();
-      const [feeCoin, changeCoin] = splitTx.splitCoin(
+      const splitRes = splitTx.splitCoins(
         splitTx.object(deepCoin.objectId),
         [splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
       );
-      splitTx.transferObjects([changeCoin], splitTx.pure.address(agentAddr));
+      // splitRes is the original coin (remaining), splitRes[0] is the 500M split
+      splitTx.transferObjects([splitRes[0] as any], splitTx.pure.address(agentAddr));
       const splitResult = await executeTransaction(client, splitTx, ctx.signer);
-      // Find the fee coin by looking for a created coin with balance exactly 500M
+      // After split, look for the coin with exactly 500M balance
       const freshCoins = await listAllCoins(client, agentAddr, DEEP_TYPE);
       const freshFeeCoin = freshCoins.find(
-        (c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP && c.objectId !== deepCoin.objectId,
+        (c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP,
       );
-      if (!freshFeeCoin) throw new Error("Failed to find split fee coin");
-      feeCoinId = freshFeeCoin.objectId;
+      if (freshFeeCoin) {
+        feeCoinId = freshFeeCoin.objectId;
+      } else {
+        throw new Error("Failed to find 500M fee coin after split");
+      }
     }
 
     // Step 3: create the market (includes pool creation + YES/NO coin types)
