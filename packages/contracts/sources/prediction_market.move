@@ -344,8 +344,9 @@ public fun create_market<Q>(
     // Split DEEP to exact pool creation fee; return remainder to creator.
     let fee_amount = pool_creation_fee();
     let total = coin::value(&deep_coin);
-    assert!(total >= fee_amount, EZeroAmount);
-    let fee_coin = coin::split(&mut deep_coin, fee_amount, ctx);
+    assert!(total >= fee_amount, 1);
+    let fee_balance = coin::balance_mut(&mut deep_coin).split(fee_amount);
+    let fee_coin = coin::from_balance(fee_balance, ctx);
 
     // 1. Create the DeepBook permissionless pool
     //    Pool type: Pool<YES<Q>, Q>
