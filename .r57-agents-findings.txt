@@ -1,0 +1,558 @@
+R57 AUDIT — apps/agents (15 findings)
+====================================
+Audit focus: route handlers, gRPC / JSON-RPC client construction,
+env-var reads at module scope, SQLite writes/reads, worker loops,
+PTB construction, bootstrap-env runtime override, lib.ts shared
+helpers, the dist/ folder, and endpoint patterns.
+Scope: apps/agents/src/** (incl. gamification/), apps/agents/dist
+(build artifacts), apps/agents/.gitignore, .gitignore, package.json.
+Triage against the R56 fix file (33713af) so we don't re-flag
+issues already closed.
+
+
+# HIGH — leaderboard-worker.ts:208  `countryRollup` still mutates `r.rank` in place
+- File: apps/agents/src/agents/leaderboard-worker.ts:208
+- Bug: After the R56 fix at line 76 changed the "happy path"
+  `aggregateWeek` to build a new object via `.map((r,i)=>({...r,rank:i+1}))`
+  so the rank field isn't mutated on the same instances that flow
+  into `enrichRows` (which also mutates `r.claimed` /
+  `r.country_code`), the `countryRollup` function still does
+  `filtered.forEach((r,i)=>(r.rank = i+1))` at line 208.
+- Why it matters: `countryRollup` calls `liveRollup(weekIndex, category)`
+  at line 204, which already returns a freshly-mapped array (line
+  181 has the same `{...r, rank: i+1}` rebuild for the category
+  filter case). The re-mutation at line 208 is redundant for the
+  non-filter case, and for the filtered case it mutates the same
+  objects that line 181 just built. The R56 fix comment ("a future
+  optimization that memoized the result across requests would be
+  silently corrupted by the next leaderboard poll") applies
+  equally here — `countryRollup`'s result is the second of the two
+  hot REST paths the leaderboard route serves, and is hit on every
+  flag click in the web UI.
+- How to fix: replace the in-place mutation with
+  `return filtered.map((r, i) => ({ ...r, rank: i + 1 }));` so the
+  R56 invariant ("every consumer of `weekly` gets a freshly-mapped
+  array, never the same `WeeklyRow` instances across requests")
+  holds in the country filter path too.
+
+
+# HIGH — markets/store.ts:534-543  `markMarketResolved` has no status guard
+- File: apps/agents/src/markets/store.ts:534-543
+- Bug: `markMarketResolved(marketId, outcome)` runs an unconditional
+  `UPDATE markets SET status='resolved', outcome=? WHERE id=?`.
+  The position-indexer (position-indexer.ts:509) calls it from
+  `MarketResolvedEvent`; a re-poll of the same event (cursor
+  regression, RPC retry, or a future redeploy that resets the
+  indexer cursor without re-tagging) would silently re-stamp
+  the outcome to whatever the latest event said, even if a
+  `MarketUndisputedEvent` already overrode it to the dispute
+  outcome (handled by `markMarketUndisputed` at line 564).
+- Why it matters: A late or out-of-order `MarketResolvedEvent`
+  for a market whose dispute resolved to the OTHER outcome
+  would clobber `markets.outcome` and `markets.status`, breaking
+  the redemption hot path (RedeemedEvent handler at
+  position-indexer.ts:481 reads `market.outcome` to know which
+  side to decrement — a stale `yes` for a market that the dispute
+  panel flipped to `no` would attribute a winning redeem to the
+  losing side). The position-indexer's own R36 + R48 fixes
+  guarantee the cursor doesn't advance on a failed apply, but
+  they don't guard against an out-of-order event from the chain
+  reorg path.
+- How to fix: add `AND status != 'resolved'` (or, more conservatively,
+  `AND status NOT IN ('resolved', 'disputed')`) to the WHERE clause,
+  and emit a `console.warn` if the row count is 0 so a duplicate
+  event is observable. Same fix should be applied to
+  `markMarketUndisputed` (line 564) to refuse a re-override of an
+  already-undisputed market.
+
+
+# HIGH — market-maker.ts:171-173  silent `catch` hides every deepbook-call error
+- File: apps/agents/src/agents/market-maker.ts:169-173
+- Bug: The `try { book = await getOrderBookDepth(...) } catch { book = {bids:[], asks:[]} }`
+  block at line 171-173 has an empty catch with no logging. Every
+  error class (transient RPC, deepbook `EInvalidPool`, deepbook
+  `EBookEmpty` if the SDK ever changes to throw, JSON parse, etc.)
+  is funneled into the same "book is empty" path, then the worker
+  takes the `spreadBps = 9999` fall-through at line 178 and decides
+  to quote (since 9999 > SPREAD_THRESHOLD_BPS and the bids/asks
+  arrays are both empty, the line 180 guard `book.bids.length > 0
+  && book.asks.length > 0` is false — so the worker DOES proceed to
+  quote against `midPrice` at line 189). If `getMidPrice` also
+  fails (no log either, but at least the function returns early
+  with a `recordResult` "skip"), the worker logs the same `skip`
+  every minute; if it succeeds, the maker places 2-sided quotes
+  with no idea the book read failed.
+- Why it matters: Operators get zero signal that the order-book
+  read is broken — the agent keeps quoting (potentially at
+  mid-crossed prices) and the only symptom is a thin book on the
+  UI. The same `try { } catch { }` pattern is used at
+  `streak-sweeper.ts:327` but that one has a `/* user removed */
+  comment` justifying the silence; the MM one does not.
+- How to fix: `} catch (err) { console.warn("[market-maker] getOrderBookDepth failed; falling back to empty book:", err instanceof Error ? err.message : err); book = {bids:[], asks:[]}; }` —
+  mirror the streak-sweeper's `[streak-sweeper] readCurrentStreaks
+  failed` pattern at line 198.
+
+
+# HIGH — scheduler.ts:213-235  `msUntilNext` always walks 8*24*60 = 11520 minutes
+- File: apps/agents/src/scheduler.ts:213-235
+- Bug: The for-loop at line 224 iterates `i < 8 * 24 * 60 = 11520`
+  minutes for ANY cron expression, including `* * * * *`
+  (every minute, max 1 iteration) or `0 0 * * *` (daily at 00:00,
+  max 1440 iterations). For an expression like `*/5 * * * *` (every
+  5 min), the worst case is 5 iterations but the loop bound is
+  still 11520.
+- Why it matters: On the scheduler startup path the loop runs
+  per-entry per-tick (the reschedule chain at line 188-206
+  invokes `msUntilNext` each time). The waste is small for
+  11 entries (max ~127k date constructions per tick), but the
+  loop also runs the `candidate.getUTCMinutes()`,
+  `getUTCHours()`, `getUTCDay()`, `getUTCSeconds()` parses on
+  each iteration. More importantly, the function is
+  intentionally simple ("walk forward to next match") which
+  hides the obvious optimization: compute the next match
+  arithmetically. A typo'd cron (e.g. `0 0 32 * *` day-of-month
+  32) will fall through the loop and return the 8-day
+  fallback, masking the typo — the boot validator at
+  index.ts:256 catches the field-count typo (4 vs 5 fields)
+  but not a syntactically-valid but impossible expression.
+- How to fix: implement a small `nextFire(expr, now)` that
+  walks only the date fields that matter (minute for `* * * * *`,
+  hour for daily, dow for weekly), or terminate the loop
+  early when the first `*`-wildcard field is hit. Also add
+  a `console.warn` if the loop runs > 1440 iterations (means
+  the expression has no match in the next 24h, which the
+  R56-boot-validator doesn't catch).
+
+
+# HIGH — market-creator.ts:455-474  unconditional `upsertMarket` clobbers `referral_id`
+- File: apps/agents/src/agents/market-creator.ts:455-474
+- Bug: The "poolId is null" branch at line 455 writes a fresh
+  `upsertMarket({...})` with `pool_id: null`,
+  `deepbook_pool_id: null`, etc. The R56 fix correctly avoided
+  clobbering the `poolId`-populated row (it has the conditional
+  `if (!poolId)` guard at line 455), so the second upsert is
+  only hit when pool_id is null. But the spread of the new
+  `upsertMarket` includes `description: spec.description`,
+  `category: spec.category`, etc. — fields the R56 fix
+  preserved on the poolId branch. The null branch unconditionally
+  re-stamps every field; if a future `existing` row from
+  position-indexer already has a `description` / `category`
+  / `resolution_source` (from a parallel `MarketCreatedEvent`
+  handler race), this upsert would overwrite them with the
+  LLM's version.
+- Why it matters: The position-indexer's `MarketCreatedEvent`
+  handler (position-indexer.ts:602) explicitly prefers
+  `existing?.title ?? j.title ?? ""` to avoid clobbering the
+  market-creator's enriched row. The market-creator's own
+  second upsert doesn't honor that invariant — a faster
+  indexer tick between the `extractCreatedObjectId` return
+  and the line 455 upsert would leave a row with the indexer's
+  category / description, which then gets overwritten here.
+  Low-probability (the indexer polls every 1 min, the create
+  tx is in the same tick), but the R56 fix was specifically
+  to plug this class of bug.
+- How to fix: re-use the same "prefer existing" pattern —
+  `const existing = getMarket(marketId); ... title: existing?.title ?? spec.title, ...`.
+  Or, simpler: when `poolId` is null, use the same row-build
+  helper that the R56 fix uses at line 321 so the two
+  branches produce identical results. The cleanest refactor
+  is to extract a single `upsertMarketFromCreate({...})`
+  helper that runs ONCE at the bottom of the try-block (the
+  R56 fix left it in the `if (!poolId)` branch because
+  referral_id needs to be patched in later; a small "always
+  upsert, then patch referral_id" structure keeps both
+  paths coherent).
+
+
+# HIGH — parlay-worker.ts:309-318  noop reasoning references `scoped.length`, not the work-list size
+- File: apps/agents/src/agents/parlay-worker.ts:309-318
+- Bug: The noop branch at line 309-318 reports
+  `${scoped.length} unfinalized parlays` (the pre-sort,
+  pre-cap raw filtered list), not `sortedByDeadline.length` or
+  `scopedAndCapped.length`. With `WORKER_POOL_ID` set on a
+  multi-pool deploy, `scoped = allUnfinalized.filter(p => p.pool_id === WORKER_POOL_ID)`.
+  If the cap is hit (line 296-298), `sortedByDeadline` is a
+  truncated subset and `scopedAndCapped = sortedByDeadline.slice(0, MAX_PARLAYS_PER_TICK)`.
+  The noop at line 309 only fires when `scopedAndCapped.length === 0`
+  (i.e. nothing in the work list), but the reasoning string
+  reports the FULL pre-cap scoped count.
+- Why it matters: An operator looking at the decision log
+  sees "0 parlays processed out of 47 unfinalized" and can't
+  tell whether (a) nothing matched the pool filter, (b)
+  every parlay in the pool is already past leg-recording,
+  or (c) the cap clipped them all. The R54 fix at line
+  299-308 already adds a "parlays deferred" warning when
+  the cap is hit, but the noop branch swallows that signal
+  in the success case (where the cap is exactly the work-list
+  size and the warning didn't fire either, because the
+  R54 warning is only emitted when `scoped.length > sortedByDeadline.length`,
+  which is true when sort truncated but the comparison is
+  actually against `sortedByDeadline`, not `scoped`).
+- How to fix: report
+  `reasoning: allUnfinalized.length === 0
+    ? "No unfinalized parlays."
+    : scoped.length === 0
+      ? `No unfinalized parlays for pool ${WORKER_POOL_ID}.`
+      : "All parlays in this pool are past leg-recording (or cap clipped them this tick)."`
+  so the operator can tell empty-pool from cap-clip from
+  fully-recorded.
+
+
+# MEDIUM — position-indexer.ts:693-698  `String.fromCharCode(...number[])` for `evidence_uri`
+- File: apps/agents/src/agents/position-indexer.ts:693-698
+- Bug: The `MarketDisputedEvent` handler reads
+  `j.evidence_uri` (declared as `string | number[]` at
+  line 144) and decodes it via:
+    `typeof j.evidence_uri === "string"
+       ? j.evidence_uri
+       : Array.isArray(j.evidence_uri)
+         ? String.fromCharCode(...(j.evidence_uri as number[]))
+         : ""`
+  Sui renders `vector<u8>` fields as either a base64 string
+  (older JSON-RPC) or a number[] (gRPC and newer JSON-RPC).
+  `String.fromCharCode` interprets each number as a UTF-16
+  code unit, so a base64-encoded ASCII string would
+  render correctly only if every byte was <128 (true for
+  ASCII, false for any UTF-8 multi-byte sequence). The
+  companion helper `decodeCountryCode` at line 232
+  correctly uses `Buffer.from(raw, "base64")` for the
+  same problem on the `UserProfile` event.
+- Why it matters: A dispute with a non-ASCII evidence URI
+  (e.g. a Chinese-language URL with a `%E4%B8%AD` escape,
+  or a UTF-8 path with multibyte chars) would produce
+  garbled "evidence" stored in the `dispute_evidence_uri`
+  column, and the UI's "View dispute evidence" link would
+  404. The decoding is one-way (we don't re-encode for
+  display), so a UI render in a different encoding would
+  also be broken. Lower-severity than HIGH because the
+  garbled string is still a unique identifier, and most
+  dispute URIs in practice are ASCII.
+- How to fix: use the same `Buffer.from` decode path as
+  `decodeCountryCode`: if the array is `number[]`, build
+  the buffer first, then `buf.toString("utf8")`. If the
+  field comes as a string, treat it as base64 (not raw
+  bytes) and decode via `Buffer.from(raw, "base64")`.
+
+
+# MEDIUM — markets/store.ts:998  `outcome` cast to `MarketInfo["outcome"]` is unsafe
+- File: apps/agents/src/markets/store.ts:997
+- Bug: `outcome: (r.outcome as MarketInfo["outcome"]) ?? null`.
+  The `markets.outcome` column is TEXT and is written by
+  `markMarketResolved` as the literal string "yes" or "no"
+  (line 542), and by `markMarketUndisputed` the same way
+  (line 579). The `rowToMarket` cast doesn't validate the
+  shape — a manual SQL write, a future migration that
+  stashes a different value (e.g. an error string from a
+  failed resolver), or a corrupted `dispute_evidence_uri`
+  cross-write would surface as a non-`"yes"|"no"` value
+  in the REST response. The RedeemedEvent handler at
+  position-indexer.ts:481 then does
+  `market.outcome === "yes" ? "yes" : "no"` — a `null`
+  outcome (before resolution) goes to "no", silently
+  decrementing the wrong side if the indexer's
+  MarketResolvedEvent poll lagged the redeem.
+- Why it matters: The pre-R36 fix shape of this code
+  was the same and a different bug; the cast is a
+  silent data-corruption swallower. A type-narrowing
+  helper (`function asOutcome(v: unknown): "yes"|"no"|null
+  { return v === "yes" || v === "no" ? v : null; }`)
+  would catch the bug at the boundary and let
+  RedeemedEvent bail out earlier.
+- How to fix: add the helper, route the cast through it,
+  log + return null on a non-`yes`/`no` value. The
+  RedeemedEvent handler at position-indexer.ts:480
+  already short-circuits on `!market.outcome`, so the
+  indexer will skip a malformed row instead of
+  decrementing the wrong side.
+
+
+# MEDIUM — position-indexer.ts:286-292  cursor write is not transactional with apply
+- File: apps/agents/src/agents/agents/position-indexer.ts:286-292
+- Bug: `writeCursor()` does a single `INSERT OR UPDATE` on
+  `indexer_state`. The R48 fix at line 357-365 deliberately
+  parks the cursor when any event in the batch failed
+  (returns `page.data.length` without calling
+  `writeCursor`). However, the `cursor` argument to
+  `writeCursor` at line 364 is `page.nextCursor` — the
+  NEXT page's cursor, not the cursor for the last
+  successfully applied event. If a batch has 200 events
+  and 1 fails, the R48 fix correctly parks at the
+  current `cursor` (the value `readCursor` returned at
+  line 301) by skipping the `writeCursor` call. But
+  the success path advances by the WHOLE batch, not by
+  "to the last successful event". This is correct
+  for the idempotent-upsert invariant, but a future
+  change that adds a non-idempotent apply (e.g. a
+  vault flow that adds to a balance) would silently
+  re-apply events on a retry.
+- Why it matters: Documented invariant of the R48 fix is
+  "all current apply callbacks are idempotent via ON
+  CONFLICT DO UPDATE". A future contributor adding a
+  new event type with a non-idempotent apply would
+  see the R48 logic and assume it's safe to retry a
+  partial batch, then silently double-count. The R48
+  comment at line 321-328 is explicit about this
+  trade-off, but a future reader under deadline
+  pressure might miss the warning.
+- How to fix: advance the cursor to the last
+  successful event's `event.id` (Sui cursors can
+  address individual events, not just page boundaries).
+  Wrap the page's apply loop in a `transaction`, and
+  inside the transaction write the cursor to the
+  last-applied event's id. The `page.data[i].id` is
+  already populated by the SDK; the `pollAndApply`
+  function just doesn't use it.
+
+
+# MEDIUM — lib.ts:196-206  `getMarketContext` is dead code
+- File: apps/agents/src/lib.ts:196-206
+- Bug: `getMarketContext` is defined at line 196 and not
+  called anywhere in the agents package (the only
+  importers are the test files, if any). The R55 fix
+  comment at line 228-233 explicitly says: "`getMarketContext`
+  is not invoked by the agents package, but it is in the
+  public surface; deleting it would be a breaking change.
+  Future rounds can decide." The function pulls in
+  `findNearestActiveOracle`, `getOracleState`,
+  `getSpotPrice`, `getVaultSummary` from the SDK — 4
+  imports that bloat the tree and the dist build. None
+  of the agents workers call it; the only place market
+  context is needed is in the resolver
+  (`market-resolver.ts:27-29`), which calls the SDK
+  helpers directly.
+- Why it matters: Module-level import side effects
+  (the SDK imports `dotenv` for its own config) cost
+  process startup time, and an unused public export
+  is a footgun: a future reader sees a nice
+  `getMarketContext()` and uses it from a worker,
+  inadvertently re-introducing the per-tick RPC
+  fan-out the R51 sweep spent weeks removing.
+- How to fix: delete the function and its 4 SDK
+  imports (lines 2-11 — `findNearestActiveOracle`,
+  `getOracleState`, `getSpotPrice`, `getVaultSummary`
+  are all only used by `getMarketContext`). The
+  re-export at line 208 (`export { createClient,
+  pickAtmStrike }`) — also dead, no consumer in the
+  agents package — should go too.
+
+
+# MEDIUM — lib.ts:234-239  `closeSharedClient` returns a Promise that doesn't await on the SDK helper
+- File: apps/agents/src/lib.ts:237-239
+- Bug: `closeSharedClient` is exported at line 237 and
+  wraps `closeClient(sdkGetSharedClient())` (line 238).
+  The `closeClient` SDK helper is the same one the
+  SIGTERM handler in `index.ts:636` calls via
+  `closeSharedClient()`. But the wrapper signature
+  is `Promise<void>` and the SDK helper's signature
+  is `Promise<void>`, so this is correct on its face.
+  The bug is in `getSharedClient` at line 234: the
+  local wrapper returns `sdkGetSharedClient()` directly,
+  but `sdkGetSharedClient` may THROW on a stale handle
+  (the SDK's singleton cache is documented to throw
+  if `closeClient` was already called). The local
+  wrapper doesn't catch that throw, so any caller of
+  `getSharedClient` after a `closeSharedClient` call
+  would get an unhandled rejection.
+- Why it matters: The SIGTERM handler in `index.ts:636`
+  calls `closeSharedClient()` synchronously inside a
+  `.then()` chain. If the process restarts the workers
+  (a hot-deploy path) before `process.exit(0)` runs,
+  the next worker's `getSharedClient()` would throw —
+  the catch in the SIGTERM handler swallows it (line
+  642 `.catch(() => {})`), so the exit succeeds, but
+  a future hot-patch that re-uses the client (e.g.
+  a `/run` route that runs all workers on demand)
+  would crash. Low-severity because the SIGTERM path
+  is the only consumer today.
+- How to fix: add a try/catch in `getSharedClient` that
+  resets the SDK's cache on a "closed" error and
+  re-constructs. Or document the "one-shot" semantics
+  with a JSDoc warning. Better: delete `closeSharedClient`
+  entirely and rely on the SIGTERM handler's
+  `process.exit(0)` to clean up the OS resources;
+  the gRPC client's HTTP/2 keepalive pool self-cleans
+  on process exit (Node's `http2` module destroys
+  outstanding streams on exit).
+
+
+# MEDIUM — markets/store.ts:641  `Number(row.issued)` after `RETURNING next_id - 2`
+- File: apps/agents/src/markets/store.ts:638-647
+- Bug: The `nextDemoOrderId` UPSERT at line 638 returns
+  `RETURNING next_id - 2 AS issued`, and the consumer
+  at line 647 wraps it in `Number(row.issued)`. The
+  `demo_order_counters.next_id` column is INTEGER in
+  the schema (per the R56 comment at line 614), so
+  SQLite's better-sqlite3 driver returns it as a JS
+  `number` for values < 2^53 and as a `BigInt` for
+  values > 2^53 (driver default in v11+). After the
+  `next_id - 2` arithmetic the value is still in the
+  same domain; the `Number()` wrapper coerces
+  BigInt→Number, which silently truncates above 2^53.
+  A demo market that survives > 285 years of
+  maker-bot ticks (`Date.now() * 1.0 + n` where
+  n > 2^53) would hit the boundary, but in practice
+  this is unreachable.
+- Why it matters: The `Number()` wrapper documents the
+  intent (the demo order_id is a JS number), but
+  hides a potential silent truncation. A `BigInt`
+  read of a SQLite INTEGER column is enabled by
+  default in better-sqlite3 v11+; the wrapper
+  undoes that safety. The R56 fix added the
+  `RETURNING next_id - 2` trick specifically to
+  avoid re-reading the column after the UPSERT,
+  so a future refactor that changes the wrapper
+  to `BigInt(row.issued)` would break the demo
+  path's `order_id: number` contract in
+  `market-maker.ts:218`.
+- How to fix: assert the column is INTEGER and use
+  `Number(row.issued)` only when the value is
+  within `MAX_SAFE_INTEGER`; otherwise throw. A
+  guard like `if (row.issued > BigInt(Number.MAX_SAFE_INTEGER))
+  throw new Error("demo order id overflow")` would
+  surface the impossible case. Or pin the column
+  type to TEXT and use a string id everywhere in
+  the demo path (mirroring `chain_orders.order_id`
+  which is already TEXT for the same reason).
+
+
+# MEDIUM — market-resolver.ts:155-160  generic catch logs outcome mapping miss
+- File: apps/agents/src/agents/market-resolver.ts:155-160
+- Bug: The catch at line 155-160 logs the raw error and
+  returns `action: "resolve_failed"`. The demo branch
+  at line 115-126 uses the same `outcome === 1 ? "yes" : "no"`
+  cast as the on-chain branch (line 147), but neither
+  validates that `outcome` is `1 | 2`. The `resolveOutcome`
+  function at line 25 returns `Promise<{ outcome: 1 | 2; ... }>`,
+  so the TS types check out, but the LLM call inside
+  `resolveOutcome` (which we can't see here) might
+  return a 3 / 0 / undefined that TS doesn't catch
+  (the type is asserted, not validated).
+- Why it matters: A resolver call that returns
+  `outcome: 3` (the LLM hallucinating a "neither"
+  answer) would be written to `markets.outcome` as
+  the string "no" (the catch-all at line 119/147),
+  silently flipping every "no"-minted user into a
+  winner. The same class of bug applies to the
+  MarketResolvedEvent handler at
+  position-indexer.ts:505-509, which does validate
+  the value before writing.
+- How to fix: add the same `n !== 1 && n !== 2` guard
+  in the demo branch (line 119) that the indexer
+  already has at line 508. Return
+  `action: "resolve_invalid_outcome"` and don't
+  write the row when the guard fails.
+
+
+# LOW — market-creator.ts:14  `getDb` import is from a non-obvious path
+- File: apps/agents/src/agents/market-creator.ts:14
+- Bug: `import { listMarkets, upsertMarket, getDb } from "../markets/store.js";`
+  — `getDb` is a store-internal helper used at line 372
+  to patch `referral_id` (the only `getDb()` call in
+  the agents package outside `markets/store.ts`).
+  The R56 fix added the `getDb` import without
+  re-exporting it as a "public" store API; a future
+  refactor that wraps the SQL in a `setMarketReferralId(id, refId)`
+  helper would lose the cross-package coupling and
+  the line 372 call would silently no-op (it would
+  still work today, but the import is a contract
+  surface).
+- Why it matters: The fix is correct today, but the
+  contract surface is implicit. A future
+  `markets/store.ts` refactor that splits the
+  database into a connection pool (or replaces
+  better-sqlite3 with a different driver) would
+  break the market-creator patch step, and the
+  failure would be silent (the `try { ... } catch`
+  at line 375-379 swallows the patch error with a
+  console.warn).
+- How to fix: extract a `setMarketReferralId(id: string, refId: string)`
+  helper in `markets/store.ts` and route the
+  line 372 patch through it. The market-creator
+  shouldn't need to know about the underlying DB.
+
+
+# LOW — gamification/store.ts:548-561  `markPoolWeekSettled` has no time-bounds check
+- File: apps/agents/src/gamification/store.ts:548-561
+- Bug: `markPoolWeekSettled(poolId, weekIndex, tsMs)` is
+  an idempotent UPSERT, so re-running it is safe.
+  But the function doesn't validate that
+  `tsMs > 0` or that `weekIndex` is positive —
+  the prize-admin worker that calls it could
+  pass a stale value if the wall clock jumps
+  backwards (a NTP correction during a cron tick).
+  A negative `tsMs` would be written to
+  `settled_at_ms` and the dashboard's
+  "settled at" column would render a 1969 date.
+- Why it matters: Cosmetic, but the
+  `weekIndexFor(Date.now()) - 1` pattern in
+  prize-admin.ts:105 is computed BEFORE the
+  function call; a NTP step could
+  shift it mid-cycle. The `Date.now()` argument
+  is the only user input and it's the worker's
+  own clock, so the failure mode is rare.
+- How to fix: add `if (tsMs <= 0 || weekIndex < 0) return;` at
+  the top of the function and `console.warn`
+  on the bad value.
+
+
+# LOW — package.json:8  `start` runs `node dist/index.js`; no `postbuild` hook
+- File: apps/agents/package.json:8-9
+- Bug: The `start` script is `node dist/index.js` and
+  `build` is just `tsc`. A fresh `pnpm build` followed
+  by `node dist/index.js` works, but `pnpm start` with
+  no prior build fails with `Cannot find module
+  '/.../apps/agents/dist/index.js'`. The `tsconfig.json`
+  is workspace-managed and doesn't have an `outDir`
+  override (defaults to `dist/`).
+- Why it matters: Railway's deploy step runs `pnpm
+  install && pnpm --filter @suipredict/agents build &&
+  pnpm --filter @suipredict/agents start`, so the
+  build is always done first. But the smoke-test
+  script (`scripts/smoke-test.ts`) and the
+  `verify-config.ts` script import the SDK directly,
+  not the built output, so they don't exercise this
+  path. A new contributor running `pnpm start` for
+  the first time gets a confusing "module not found"
+  error.
+- How to fix: add `"start": "node dist/index.js"` →
+  `"start": "node --enable-source-maps dist/index.js"`
+  (so the production stack traces map back to the
+  TS source) AND a `"postbuild": "echo 'built
+  $(date)'"` so the build step is visible. Or use
+  `tsx` for `start` in dev and a separate `start:prod`
+  for the built output.
+
+
+# ROLLUP
+=========
+CRITICAL: 0
+HIGH: 6 (leaderboard-worker rank mutation, markMarketResolved
+  no-status-guard, market-maker silent catch, scheduler
+  11520-iter loop, market-creator upsert clobber, parlay-worker
+  noop reasoning size mismatch)
+MEDIUM: 7 (evidence_uri String.fromCharCode, outcome cast
+  unsafe, cursor write not transactional, getMarketContext
+  dead, closeSharedClient re-init, demo_order_counters
+  Number() cast, resolveOutcome 1/2 guard)
+LOW: 2 (getDb cross-package import, markPoolWeekSettled no
+  time guard, package.json start/build hook)
+
+Already-fixed-but-still-validating:
+  - bootstrapEnv() at index.ts:272 still runs at module load
+    and is the right place (R43, R48, R49 sweep confirmed
+    every worker reads env at function-body scope after).
+  - dist/ is correctly gitignored at the repo root
+    (line 3 of /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/.gitignore).
+  - getSharedClient / getSharedJsonRpcClient are both
+    correctly called from every worker (no per-tick
+    `createClient()` or `new SuiJsonRpcClient()` survives
+    the R51+R55 sweep — the only remaining inline
+    construction is in tests, which is correct).
+
+No new CRITICAL findings: every bug is either a
+silent-data-corruption class with a workaround
+(R47 in-process counter → R56 SQLite counter;
+the silent catch can be mitigated by the
+[midPrice === 0] check at market-maker.ts:190)
+or a code-hygiene / API-surface issue that
+doesn't affect the happy path.

@@ -1,0 +1,174 @@
+Round 56 Agents Audit - Executive Summary
+=========================================
+Total findings: 28
+- CRITICAL: 3
+- HIGH: 9
+- MEDIUM: 12
+- LOW: 4
+
+The R55 sweep's `safeInt`/`safeFloat`/`safeBigInt` helpers were not retrofitted to all module-level `Number(process.env.X)` sites. The R47 audit's claim that the demo order counter is SQLite-backed is not implemented in code. Several places still log generic LLM failures that hide the real cause. One new integration gap: POST /prize/claims and /prize/signature derive the prize amount from different sources, silently desyncing the off-chain mirror from the on-chain payout.
+
+Findings
+========
+
+[CRITICAL] §R56.01 | apps/agents/src/agents/market-maker.ts:74-85 | demo order counter is in-memory Map, not SQLite-backed as R47 claimed
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-maker.ts:74
+  What: `const demoOrderCounters = new Map<string, number>();` is a module-level in-memory Map. The R47 audit comment at line 67-70 explicitly claims "The counter lives in a SQLite-backed module map so it survives restarts" but the implementation is a plain in-memory Map.
+  Why: A Railway redeploy or SIGTERM/RESTART clears the Map. On the next tick, `nextDemoOrderId(marketId)` re-initializes from `Date.now()`, which on a fast redeploy may be the same or a smaller value than a previously-written `order_id`. Two `upsertOrder` calls in the same (market_id, order_id) primary key collide silently — the second `ON CONFLICT` updates `filled=0` and `quantity=`, which can re-flip a previously-cancelled demo order back to "open", and the order-book REST surface shows phantom orders until the next tick.
+  How: Persist the counter to the `markets.db` (e.g. a `demo_order_counters` table with `(market_id, next_id)`, seeded from `MAX(order_id)+1` on first use) and read/update inside `nextDemoOrderId`. Alternatively, drive the id from a SQLite `AUTOINCREMENT` PK by inserting a parent row and reading back `last_insert_rowid`.
+
+[CRITICAL] §R56.02 | apps/agents/src/markets/store.ts:788-789 | getVaultSummaryFromEnv uses raw Number() on env, R55 missed
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/markets/store.ts:786
+  What: `getVaultSummaryFromEnv()` does `Number(process.env.VAULT_TOTAL_BALANCE ?? 0)` and `Number(process.env.VAULT_ALLOCATED ?? 0)`. The R55 sweep added `safeFloat` to lib.ts specifically for this pattern but `getVaultSummaryFromEnv` was missed.
+  Why: A misconfigured env value (`VAULT_TOTAL_BALANCE=10_000_000` pastes a `10_USDC` suffix → `Number("10_USDC")=NaN`; or a `1e20` value that exceeds MAX_SAFE_INTEGER) silently corrupts the risk monitor's utilization calc. With `total=NaN`, the `total_balance > 0 ? allocated / total_balance : 0` branch falls to 0% utilization, so the risk monitor never trips the pause threshold even when the vault is critically over-utilized. The opposite (`total=0` from missing env + `allocated=10_000_000`) reports 0% utilization when the vault is actually over-budget.
+  How: Route through `safeFloat(process.env.VAULT_TOTAL_BALANCE, 0)` and `safeFloat(process.env.VAULT_ALLOCATED, 0)`, and log a warning when the parsed value is non-finite. Add a `getVaultSummaryFromEnv` entry to the boot-config validator in index.ts so a fresh deploy fails loud.
+
+[CRITICAL] §R56.03 | apps/agents/src/gamification/routes.ts:903-914 | POST /prize/claims derives amount from env, /prize/signature derives from on-chain → mirror desync
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/gamification/routes.ts:903
+  What: The signature route (`/prize/signature`) computes `amount` via `resolvePrizeAmount()` which reads the on-chain `PrizePool.weekly_prize` first and falls back to env. The POST claims route computes `amount` solely from `safeBigInt(process.env.PRIZE_WEEKLY_AMOUNT, 0n)`. Same `(user, week, rank, poolId)` → two different `amount` values.
+  Why: When the on-chain `weekly_prize` diverges from the env (the operator funds the pool directly out-of-band, or `PRIZE_WEEKLY_AMOUNT` is stale after a manual `fund_pool` tx), the user's signed claim payload carries the on-chain amount (what the contract will actually pay), but the off-chain `prize_claims.amount` column records the env-derived amount. The mirror row disagrees with the on-chain payout forever. An auditor reconciling the two surfaces sees a phantom "claimed $X, paid $Y" mismatch with no way to resolve.
+  How: Extract a `resolvePrizeAmount(poolId, week, rank)` helper that both routes call, identical to the one already in `/prize/signature`. The POST handler should call the same helper and write the same `amount` to the mirror.
+
+[HIGH] §R56.04 | apps/agents/src/index.ts:337 | Number(process.env.PORT ?? 3001) without safeInt
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/index.ts:337
+  What: `const port = Number(process.env.PORT ?? 3001);` does not go through `safeInt`. If Railway's `PORT` env is unset (returned as the empty string in some env-var layouts) or set to a non-numeric value, `Number("")=0` (binds to a random privileged port) or `Number("abc")=NaN` (throws `TypeError: "port" must be a number` from `createServer().listen(NaN, ...)`).
+  Why: Either case kills the deploy. The health check fails; Railway marks the pod unhealthy. The R55 sweep explicitly added `safeInt` for this pattern in lib.ts and was missed here.
+  How: Use `safeInt(process.env.PORT, 3001, 1, 65535)` so a bad value falls back to 3001 with a logged warning.
+
+[HIGH] §R56.05 | apps/agents/src/index.ts:39 | readMaxBudget uses raw Number(), R55 missed
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/index.ts:38
+  What: `function readMaxBudget(): number { return Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500); }` does not route through `safeInt`/`safeFloat`. The R54 audit comment block at line 31-37 explicitly cites the R55 sweep as the "in-body getters" fix but missed applying the safe-parse helper.
+  Why: A typo (`AGENT_MAX_BUDGET_USDC=500_USDC`) makes the budget `NaN`, which propagates into `ctx.maxBudgetUsdc` and into the risk-monitor's `policyBudget = ctx.maxBudgetUsdc` path. The `policyBudget > 0` check on risk-monitor.ts:70 then fails (NaN > 0 is false), so `budgetPct` is always 0 and the risk monitor's confidence is stuck at 95 — a misconfigured budget silently disables the budget-pressure indicator on the operator dashboard.
+  How: `return safeInt(process.env.AGENT_MAX_BUDGET_USDC, 500, 0, 1e12);`
+
+[HIGH] §R56.06 | apps/agents/src/lib.ts:124-156 | callLlm swallows all errors with bare `catch {}`
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/lib.ts:153
+  What: `callLlm` has a bare `try { ... } catch {}` that returns `null` on any error (network failure, 401 from a revoked key, 429 rate limit, JSON parse error). The caller in `market-creator.ts:81-83` records a generic reason "LLM call returned null (network error, 4xx/5xx, or empty response)".
+  Why: The operator has no way to distinguish "OPENAI_API_KEY is revoked" (one-time fix) from "OpenAI is having an outage" (no action) from "the LLM keeps returning invalid JSON" (prompt issue). The decision log shows the same `pickFallback` reason for every failure mode. An expired key runs the fallback path forever and the operator assumes the LLM is just being unhelpful.
+  How: Capture and `console.warn` the error inside the catch (redact the key from the request body), then return `null`. Surface a different fallback reason for `res.status === 401` (`api key invalid`) vs `res.status === 429` (`rate limited, retrying next tick`) vs network errors.
+
+[HIGH] §R56.07 | apps/agents/src/agents/position-indexer.ts:1130-1141 | ReferralSet handler is a no-op but the audit comment claims otherwise
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/position-indexer.ts:1130
+  What: The `ReferralSet` handler's body is a comment plus a `return` for invalid payloads — it does not write to the off-chain store. The comment at line 1126-1129 explicitly states the audit goal: "The referral-keeper can verify its own writes against this on-chain event". The cursor advances on every tick, consuming the event permanently.
+  Why: The round-17 audit finding #4 wired this handler for "verify its own writes" but the implementation is empty. A market-creator bug that produces the wrong `referral_id` cannot be detected retroactively by querying the indexer's mirror. The event is gone.
+  How: Either write the `(market_id, referral_id, ts_ms)` to a new `referral_setup_log` table (idempotent on `(market_id, tx_digest, event_seq)`), or rename the no-op subscription to a different state key so a future write handler doesn't conflict with the cursor row.
+
+[HIGH] §R56.08 | apps/agents/src/agents/position-indexer.ts:1027-1038 | AgentAction handler is a no-op
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/position-indexer.ts:1027
+  What: The `AgentAction` handler body is `if (!j?.agent) return;` — no DB write, no log, no counter. The R17 comment at line 1023-1026 says it's the audit trail for agent_policy actions, but the implementation records nothing.
+  Why: An operator investigating "who authorized this $X spend at this policy" cannot query the indexer; they have to find the txDigest and call the RPC. The cursor advances, so the event is no longer fetchable.
+  How: Insert into a new `agent_actions` table (`tx_digest` PK, `policy_id`, `agent`, `action`, `ts_ms`, raw `details`) via a `logAgentAction` helper in `store.ts`. The decision log at `decisions` is structured for cron outputs, not for on-chain Move events.
+
+[HIGH] §R56.09 | apps/agents/src/agents/position-indexer.ts:1423 | ParlayFinalized mirrors to `payout` even when amount is missing
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/position-indexer.ts:1407
+  What: The handler computes `payoutBig = BigInt(String(j.payout ?? 0))` and writes `payout: u64ToSafeNumber(payoutBig, ...)` and `legs_lost: u64ToSafeNumber(legsLostBig, ...)`. The `u64ToSafeNumber` helper silently returns 0 for `BigInt(0)` and warns only on `> MAX_SAFE_INTEGER`. A 0-payout (parlay lost all legs) is indistinguishable from a "missing payout field" or a "0-amount finalize" event.
+  Why: The web `/parlay` page reads `payout` to render the user's prize. A 0-payout is the right value for a "lost" parlay, but a missing-field event would also surface as 0 with no operator signal. The pre-R41 comment called this out as a number of legs lost == leg_count → payout=0 is correct, but the indexer can't distinguish "0 because lost" from "0 because SDK shape changed".
+  How: Add a `payout_source: 'onchain' | 'missing'` field to the mirror and set it explicitly when `j.payout == null`. The web can then render "lost" vs "unknown" differently.
+
+[HIGH] §R56.10 | apps/agents/src/agents/market-maker.ts:118-122 | PER_ORDER_NOTIONAL_DOLLARS scales with QUOTE_SIZE; pathological combinations overflow authorize_spend
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-maker.ts:118
+  What: `PER_ORDER_NOTIONAL_DOLLARS = Math.max(1, Math.round(QUOTE_SIZE * (SPREAD_THRESHOLD_BPS/10000 + 0.05) / 1_000_000))` then `* 2` for both sides. With `QUOTE_SIZE=1e15` and `SPREAD_THRESHOLD_BPS=10000` (the R55-safe max), this yields `~1.05e9` dollars per side → `2.1e9` for the auth tx, against the default `ctx.maxBudgetUsdc=500`.
+  Why: `authorize_spend` aborts on-chain because the policy's `max_budget` is far below the requested auth. The MM worker catches the error (line 298), logs `quote_failed`, then retries the same doomed tx every minute. Permanent log spam at cron cadence; the agent appears broken to the operator. The R55 sweep added `safeInt` for the inputs but not for the derived product.
+  How: Clamp `PER_ORDER_NOTIONAL_DOLLARS * 2` to `Math.min(computed, ctx.maxBudgetUsdc)` (or skip the auth entirely when the computed value exceeds the budget, logging a clear `over_budget_skip` action).
+
+[HIGH] §R56.11 | apps/agents/src/scheduler.ts:124-145 | In-flight cron handler can be re-entered via setTimeout if shutdown is mid-flight
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/scheduler.ts:145
+  What: `scheduleNext` reschedules via `setTimeout(..., delay)`. The timer is stored in `activeTimers` and cleared by `stopScheduler`. But if a tick is mid-`await` when `stopScheduler` fires, the in-flight callback's tail (`scheduleNext(ctx, entry)`) at line 192 still runs and re-registers a fresh timer after shutdown.
+  Why: After SIGTERM, a new tick can reschedule itself on a process that has already closed the SQLite handles and the gRPC client. The new tick's `entry.fn(ctx)` throws "database is closed" → `console.error` → process never exits cleanly. A short-lived post-SIGTERM tail can extend shutdown past the Railway healthcheck timeout.
+  How: Guard the `scheduleNext(ctx, entry)` tail with `if (shuttingDown) return;` (the in-flight body already does this, but the `finally` clause doesn't).
+
+[MEDIUM] §R56.12 | apps/agents/src/agents/leaderboard-worker.ts:128-136 | liveRollup mutates the input rows in place
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/leaderboard-worker.ts:131
+  What: `liveRollup` calls `aggregateWeek(weekIndex, rows)` which does `out.forEach((r, i) => (r.rank = i + 1))` — mutating the row objects. The same `WeeklyRow` instances are passed to `enrichRows` which mutates them again (`r.claimed = ...`, `r.country_code = ...`).
+  Why: A `JSON.stringify(weekly)`-style caller that holds onto a previous reference would see its data modified by the next request. The leaderboard-worker doesn't currently cache the rows, but a future optimization that holds the result in a memo would be silently corrupted.
+  How: Build new objects instead of mutating (`{ ...r, rank: i + 1, claimed: ..., country_code: ... }`).
+
+[MEDIUM] §R56.13 | apps/agents/src/agents/streak-sweeper.ts:498 | daily markets get category: 0 for non-minted users, hiding them from category leaderboards
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/streak-sweeper.ts:775
+  What: For users in the `notSubmittedUsers` branch (multi-day-gap NOT_SUBMITTED), the `category` field is hard-coded to `0` (general). For a user who was active in category=1 (AI news) for 6 days, missed day 7, and is in a multi-day gap on day 8, the off-chain `daily_scores.category=0` writes them into the general leaderboard, not the AI news one.
+  Why: A user's AI-news rank is artificially boosted because their broken-streak day silently migrates them to the general bucket. The comment at line 793-798 acknowledges this as intentional ("the leaderboard still records the NOT_SUBMITTED row") but does not explain the category-mismatch consequence.
+  How: Carry forward the user's last known category from `weekly_archive` (the prior week's `category` value) into the `daily_scores` row. If the user has no prior record, default to 0 (the existing behavior).
+
+[MEDIUM] §R56.14 | apps/agents/src/agents/leaderboard-worker.ts:73-103 | runLeaderboardWorker runs the rollup without a transaction, not crash-safe
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/leaderboard-worker.ts:88
+  What: `archiveWeekly(weekly)` and `clearDailyScoresBefore(cutoffDay)` are two separate SQLite calls. A SIGTERM between them leaves the prior week's daily_scores rows intact AND no archived row. The next tick re-archives (idempotent on PK) but the cleared-rows intent is lost — the next run clears them anyway, but if the cutoffDay math is off, the wrong week is cleared.
+  Why: Crash between archive and clear is a real failure mode (Railway healthcheck-triggered SIGKILL during the 1-minute leaderboard window). The archive/clear pair is logically one operation.
+  How: Wrap the archive + clear in `db.transaction(() => { archiveWeekly(weekly); clearDailyScoresBefore(cutoffDay); })()` so either both succeed or neither does.
+
+[MEDIUM] §R56.15 | apps/agents/src/gamification/routes.ts:1086-1128 | /parlay/user/:addr limit=NaN falls back to 50 but a negative limit passes
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/gamification/routes.ts:1109
+  What: `const rawLimit = Number(url.searchParams.get("limit") ?? 50);` then `Math.min(rawLimit, 200)`. The check `rawLimit > 0` rejects negative, but a `limit=-1e9` triggers `Number.isFinite(-1e9) && -1e9 > 0` → false → fallback to 50. So negative is fine. But `limit=0` triggers `0 > 0` → false → fallback to 50. A `limit=` (empty string) → `Number("")=0` → fallback to 50. A `limit=1e20` → `Math.min(1e20, 200) = 200`. The check is reasonable but the cap-at-200 is a low value for a power user with hundreds of parlays.
+  Why: Inconsistent limits across routes (`/leaderboard/week` caps at 500, `/parlay/user/:addr` at 200, `/markets/:id/orders` at 500). A web client that paginates "show all my parlays" hits the 200 ceiling and silently truncates.
+  How: Bump the cap to 500 to match the leaderboard route, or document the cap in the OpenAPI/response header.
+
+[MEDIUM] §R56.16 | apps/agents/src/agents/market-creator.ts:262-263 | object.json?.pool_id cast to string without runtime check
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-creator.ts:262
+  What: `const poolId = object?.json?.pool_id as string | undefined;` casts the value to `string` based on the TS type. The on-chain `PredictionMarket.pool_id: ID` may render as either `string`, `{ id: string }`, or even `null` depending on the SDK/gRPC version.
+  Why: If `poolId` is `null` or `{ id: "0x..." }` (a Sui object id wrapper), the `if (poolId)` truthy check at line 265 passes for the wrapper case (object is truthy), then `buildSetupReferralTx(marketId, poolId, ...)` is called with a non-string. The SDK would then serialize the wrapper into the PTB, the Move runtime would reject the type, and the tx aborts with a confusing `EInvalidPoolType` abort.
+  How: Validate with `typeof poolId === "string" ? poolId : typeof poolId === "object" && poolId && "id" in poolId ? poolId.id : null`, mirroring the `readParlayLegMarketIds` helper at parlay-worker.ts:528-537.
+
+[MEDIUM] §R56.17 | apps/agents/src/agents/position-indexer.ts:1070-1120 | policy_events log swallows the JSON.stringify details failure
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/position-indexer.ts:1110
+  What: `details: JSON.stringify(details)` can throw on circular references or BigInts in `details`. The surrounding try/catch at line 1102-1120 catches the throw, but the warning message does not include which field (`owner`/`agent`/`paused`) was the trigger.
+  Why: An operator investigating "why did the policy_events row for paused tx X get dropped" has to look at the raw stderr to find the message, then match on policy_id. The error message lacks the `details` snippet.
+  How: Wrap just the `JSON.stringify(details)` in a sub-try, log the offending key on failure, and pass `null` (or a stringified fallback like `String(details)`) to `details`.
+
+[MEDIUM] §R56.18 | apps/agents/src/agents/market-creator.ts:266-289 | silent failure of buildSetupReferralTx with no rollback of the market row
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-creator.ts:266
+  What: If `buildSetupReferralTx` or `executeTransaction` throws, the `try { ... } catch (err)` at line 380-385 catches and returns `create_failed` action — but the market has already been created on-chain. The off-chain SQLite `markets` row is never written (it's at line 355-372, after the catch).
+  Why: A failed referral setup means the on-chain market exists but the local indexer doesn't know about it. The next position-indexer tick (1 minute later) sees the `MarketCreatedEvent` and writes the off-chain row with `referral_id: null`. The market is then visible to users, but the referral-keeper can never claim rewards for it.
+  How: Move the `upsertMarket` call BEFORE the `buildSetupReferralTx` so the off-chain row is always written, and add a `referral_id: null` to indicate the setup-failed state. The referral-keeper can then detect the `referral_id == null && status == 'active'` condition and retry the setup (a follow-up tx).
+
+[MEDIUM] §R56.19 | apps/agents/src/agents/parlay-worker.ts:438-462 | parlay finalize loop has no per-parlay gas-budget guard
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/parlay-worker.ts:444
+  What: The finalize loop iterates `ready` (a snapshot of parlays with `legs_recorded == leg_count && finalized == 0`) without any per-tick cap. If a settle burst produces 1000 ready parlays, the worker tries all 1000 finalizes in one tick.
+  Why: Same class of issue as the R51 `MAX_PARLAYS_PER_TICK` cap on the leg-recording side. The R51 cap is on `MAX_PARLAYS_PER_TICK` for legs, but the finalize loop has no equivalent `MAX_FINALIZES_PER_TICK`. The agent wallet's gas coin would be exhausted, every subsequent tx would abort with `INSUFFICIENT_GAS`, and the next tick (1 min later) finds the same 1000 parlays still ready and retries the doomed txs forever.
+  How: Add `MAX_FINALIZES_PER_TICK = safeInt(process.env.MAX_FINALIZES_PER_TICK, 25, 1, 500)` and slice `ready` to that size, matching the leg-recording cap.
+
+[MEDIUM] §R56.20 | apps/agents/src/agents/streak-sweeper.ts:836-854 | re-read streaks for every batch via getObjects risks RPC rate limit
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/streak-sweeper.ts:840
+  What: After a successful batch PTB, the code calls `readCurrentStreaks(client, batch.map((u) => u.streakId))` to refresh `daily_scores.streak_after`. This is a single gRPC `getObjects` call with up to 20 ids. The per-user fallback path (line 925-933) does the same call per user — 1 gRPC call per user.
+  Why: A 500-user sweep that fell back to per-user mode makes 500 gRPC calls. The Sui public RPC per-IP rate limit is ~100 req/s; a fast RPC outage retries can blow through it. The `isTransientError` regex catches 429, so the retry would loop, but the log spam is large.
+  How: Coalesce the per-user re-reads into a single batched `getObjects` call (up to 50 ids per call, mirroring the `readLastParticipationDays` chunking at line 368-369). The per-user fallback path can collect all the streak ids first, then read in chunks.
+
+[MEDIUM] §R56.21 | apps/agents/src/gamification/store.ts:874-879 | getSweepRun races with acquireSweepLock within the same process
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/gamification/store.ts:874
+  What: `getSweepRun(dayIndex)` is a read; `acquireSweepLock` calls it from within a `db.transaction()`. If a caller invokes `getSweepRun` outside the transaction, the read is not serialized with the in-flight write.
+  Why: A debug endpoint that calls `getSweepRun(dayIndex)` between the `INSERT ... ON CONFLICT` and the in-flight `releaseSweepLock` would see a stale `running` row. This is mostly a debug nuisance, not a real race (the next cron tick reads consistently inside its own transaction).
+  How: Make `getSweepRun` private to the store module, or have callers always go through `acquireSweepLock`'s `RETURNING` clause for the post-write row.
+
+[MEDIUM] §R56.22 | apps/agents/src/http-cors.ts | corsFor default to "*" is referenced from the markets routes OPTIONS path
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/markets/routes.ts:37
+  What: The OPTIONS preflight at markets/routes.ts:37-42 calls `corsFor(false)` (open CORS for read-only routes). The R35 audit fix set side-effecting=false for read-only routes, but `Access-Control-Allow-Origin: *` for OPTIONS is still a CSRF-preflight bypass vector if a future mutation route is added to the markets path.
+  Why: A future contributor adding a POST handler to markets/routes.ts (e.g., a `POST /markets/:id/cancel` for the maker bot) might forget to set `sideEffecting=true` on its `json()` call. The preflight would still allow any origin.
+  How: Have the OPTIONS preflight at line 37 also call `corsFor(true)` since preflights are themselves side-effecting concerns (they're for non-simple methods), or have the markets routes file declare an explicit `WRITE_METHODS = ['POST', 'PUT', 'DELETE', 'PATCH']` set that the preflight checks against.
+
+[MEDIUM] §R56.23 | apps/agents/src/agents/market-maker.ts:74-85 | demoOrderCounters leaks memory across markets
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-maker.ts:74
+  What: Same Map as R56.01 — additionally, every demo market ever quoted by the MM has a row in the Map forever. A 1000-demo-market stress test (or a long-running MM with 10K demo markets cycled through) would accumulate 10K rows, each holding a 16-byte number.
+  Why: Slow memory leak (16 KB / 1K markets). Not a production issue at small scale, but a test fixture that seeds 10K markets would notice.
+  How: Combine with the SQLite-backed fix in R56.01.
+
+[LOW] §R56.24 | apps/agents/src/scheduler.ts:201-223 | msUntilNext() walks up to 8 days forward even for "every minute" cron
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/scheduler.ts:212
+  What: `msUntilNext` iterates `for (let i = 0; i < 8 * 24 * 60; i++)` regardless of the cron expression. For a `*/1 * * * *` cron (every minute), the answer is always 0-60s away.
+  Why: Per-tick cost is ~60 iterations of a `Date` allocation, negligible. But the R55 audit added `readPollMs()` as a fallback — for a corrupted cron string, the function returns 60s, silently masking the corruption.
+  How: Add a startup-time validation pass that parses every cron expression in `buildSchedule()` and crashes on `throw new Error(\`bad cron: ...\`)`. Fail loud at boot, not silent at first tick.
+
+[LOW] §R56.25 | apps/agents/src/agents/market-creator.ts:78-80 | proposeMarket short-circuits on missing API key without env-aware logging
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/market-creator.ts:78
+  What: `if (!process.env.OPENAI_API_KEY) return pickFallback("OPENAI_API_KEY not set");` — picks the fallback silently after the first tick, then never tries again until the env is changed.
+  Why: The decision log shows `[FALLBACK: OPENAI_API_KEY not set]` on every tick. The operator sees "fallback active" without a way to grep for it at boot. The boot-config validator at index.ts already prints `[ok ] OPENAI_API_KEY` (or warns if unset), but a separate runtime signal would be useful.
+  How: On first detection of the missing key, `console.warn` once with a `console.warn("... will use FALLBACK_MARKETS every tick")` and a process-lifetime `let warned = false` guard. Don't spam on every tick.
+
+[LOW] §R56.26 | apps/agents/src/gamification/routes.ts:1040-1049 | /profile/:addr 404 returns the address in the response body
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/gamification/routes.ts:1045
+  What: `json(res, 404, { error: "no profile mirrored for this user", user: addr })` echoes the queried address in the response. Same for `/parlay/:id` 404 (`{ error: "parlay not yet indexed", parlay_id: id }`) and `/leaderboard/user/:addr` 404.
+  Why: The address is already in the URL; echoing it is benign. But the response shape differs across routes (some include the queried key, some don't). A client that builds a generic error handler has to special-case each.
+  How: Standardize on `{ error, code, detail? }` and put the queried key in `detail`, not in the top-level body.
+
+[LOW] §R56.27 | apps/agents/src/agents/position-indexer.ts:330-344 | apply() failure for one event logs the throwable, not the event id at sufficient fidelity
+  Where: /Users/choguun/Documents/workspaces/hackathon/SuiPredict-AI/apps/agents/src/agents/position-indexer.ts:337
+  What: The error log at line 337-342 concatenates `txDigest + ":" + eventSeq` with a string-concat that drops the `+` precedence warning: `eid?.txDigest ?? "?" + ":" + (eid?.eventSeq ?? "?")` parses as `eid?.txDigest ?? ("?" + ":" + eid?.eventSeq ?? "?")` because of JS operator precedence.
+  Why: When `txDigest` is set, the message reads `0xabc...` (the `??` returns the digest, skipping the string concat). When `txDigest` is missing, the message reads `?:?` (the nullish-coalescing returns the `?` plus the rest). The intent (a structured `txDigest:eventSeq` pair) is muddied.
+  How: Extract `(eid?.txDigest ?? "?") + ":" + (eid?.eventSeq ?? "?")` into a local string first, then log it.

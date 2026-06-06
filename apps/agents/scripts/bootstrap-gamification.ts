@@ -279,6 +279,7 @@ async function findOwnedObject(
 async function findVlpTreasuryCap(
   client: SuiGrpcClient,
   owner: string,
+  packageId: string,
 ): Promise<string | null> {
   let cursor: string | null | undefined = undefined;
   do {
@@ -288,7 +289,7 @@ async function findVlpTreasuryCap(
       limit: 50,
     });
     for (const obj of page.objects) {
-      if (obj.type?.includes("::vlp::VLP") && obj.type?.includes("TreasuryCap")) {
+      if (obj.type?.includes(`${packageId}::vlp::VLP`) && obj.type?.includes("TreasuryCap")) {
         return obj.objectId;
       }
     }
@@ -411,22 +412,19 @@ async function main() {
     log(`FeeVault:       ${feeVaultId}`);
   }
 
-  // 2) Extract shared objects created at init
-  const streakAdminId = findSharedObject(objects, "::streak_system::StreakAdmin");
-  const streakRegistryId = findSharedObject(
-    objects,
-    "::streak_system::StreakRegistry",
-  );
-  const prizeAdminId = findSharedObject(objects, "::prize_pool::PrizeAdmin");
-  // ProfileRegistry is shared by `user_profile::init` at module publish
-  // time (no quote-coin type parameter, unlike FeeVault which needs a
-  // post-publish init call). The web `/settings` page reads
-  // `NEXT_PUBLIC_PROFILE_REGISTRY_ID` to build `create_profile` PTBs;
-  // without this write the user has no way to mint a UserProfile.
-  const profileRegistryId = findSharedObject(
-    objects,
-    "::user_profile::ProfileRegistry",
-  );
+  // 2) Extract shared objects created at init (or from env if re-running)
+  const streakAdminId = objects.length > 0
+    ? findSharedObject(objects, "::streak_system::StreakAdmin")
+    : process.env.STREAK_ADMIN_ID ?? "";
+  const streakRegistryId = objects.length > 0
+    ? findSharedObject(objects, "::streak_system::StreakRegistry")
+    : process.env.STREAK_REGISTRY_ID ?? "";
+  const prizeAdminId = objects.length > 0
+    ? findSharedObject(objects, "::prize_pool::PrizeAdmin")
+    : process.env.PRIZE_ADMIN_ID ?? "";
+  const profileRegistryId = objects.length > 0
+    ? findSharedObject(objects, "::user_profile::ProfileRegistry")
+    : process.env.NEXT_PUBLIC_PROFILE_REGISTRY_ID ?? "";
   // prediction_market::init does NOT share a FeeVault<Q> at publish
   // time — the quote-coin type Q is unknown until the deployer picks
   // one. We must call `init_fee_vault<DBUSDC>(admin_cap, vault_admin)`
@@ -631,7 +629,7 @@ async function main() {
     log("Looking for VLP TreasuryCap in deployer wallet...");
     let vlpTreasuryCapId = process.env.VLP_TREASURY_CAP_ID ?? "";
     if (!vlpTreasuryCapId) {
-      vlpTreasuryCapId = (await findVlpTreasuryCap(grpc, signerAddr)) ?? "";
+      vlpTreasuryCapId = (await findVlpTreasuryCap(grpc, signerAddr, packageId)) ?? "";
     }
     if (!vlpTreasuryCapId) {
       err(

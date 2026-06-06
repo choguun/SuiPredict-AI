@@ -1,0 +1,374 @@
+R56 SDK Audit Findings — 2026-06-06
+===================================
+
+Executive summary
+-----------------
+Audited packages/sdk/src/ (post-R55 sweep) for end-to-end integration
+gaps. Found 16 high-quality issues:
+
+  CRITICAL: 1
+  HIGH    : 5
+  MEDIUM  : 6
+  LOW     : 4
+
+Top survivors:
+- `MARKET_PACKAGE_ID` env chain at markets/constants.ts:15-18 is missing
+  the `.trim()` that the R41 sweep added to every other env-driven
+  const. A whitespace-suffixed env value would propagate to every
+  consumer of the barrel-exported constant.
+- Two `outcome: 1 | 2` builders (`buildResolveMarketTx`,
+  `buildResolveDisputeTx`) miss the runtime validation that R55 added
+  to the per-leg `predictions` vector in `buildCreateParlayTx`.
+- `buildMintBadgeToKioskTx` missed the R54 tier [1,5] validation that
+  was added to its sibling `buildMintBadgeTx`.
+- Two `getDynamicField` lookups (`streakIdForUser`,
+  `readProfileIdForUser`) pass the user address as-is instead of
+  lowercasing it; mixed-case input from a Suiscan paste will miss
+  the on-chain `Table<address, ID>` row.
+
+Findings
+--------
+
+[CRITICAL] R56.1 | packages/sdk/src/markets/constants.ts:15-18 | `MARKET_PACKAGE_ID` env chain is missing `.trim()` — R41 regression
+  Where: packages/sdk/src/markets/constants.ts:15-18
+  What: `MARKET_PACKAGE_ID` resolves from `NEXT_PUBLIC_MARKET_PACKAGE_ID`
+        or `MARKET_PACKAGE_ID` env vars but the result is NOT
+        wrapped in `.trim()`. The R41 audit fix added `.trim()` to
+        every other env-driven const in this file's sibling
+        `constants.ts` (see `DUSDC_PACKAGE_ID` at constants.ts:93-97
+        and the R55 sweep at deepbook/constants.ts:65-76 for `DEEP_TYPE`)
+        and explicitly called out the trailing-whitespace class of
+        bug. The `markets/constants.ts:MARKET_PACKAGE_ID` was the
+        survivor. A `.env.local` line with a trailing whitespace
+        (common when the value is pasted from a docs page or
+        terminal copy) produces a value like `0x…0xb177 ` with a
+        trailing space; the BCS package resolver treats the trimmed
+        and untrimmed forms as different inputs and every PTB
+        submitted by the agents' market-creator (and any other
+        consumer of the barrel-exported constant via
+        `index.ts:3 MARKET_PACKAGE_ID`) aborts with
+        `package object not found`.
+  Why:  CRITICAL because the constant is exported from the SDK
+        barrel (line 3 of index.ts) and consumed by every
+        market-creating / pool-creating / config-loading call site
+        across the web + agents. One typo'd env line silently kills
+        the entire market creation path.
+  How:  Wrap the env chain in `(... ).trim()`:
+          export const MARKET_PACKAGE_ID =
+            (process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+             process.env.MARKET_PACKAGE_ID ??
+             AGENT_POLICY_PACKAGE_ID).trim();
+        Add a parallel `resolveMarketPackageId()` getter for
+        hot-patch sensitivity (the R55 sweep added nine such getters
+        in `constants.ts:303-354` and missed this one).
+
+[HIGH] R56.2 | packages/sdk/src/prediction-market-client.ts:522-533 | `buildResolveDisputeTx` doesn't validate `finalOutcome` at runtime
+  Where: packages/sdk/src/prediction-market-client.ts:522-533
+  What: The function signature is
+        `finalOutcome: 1 | 2` but no runtime guard is enforced.
+        The on-chain `prediction_market::resolve_dispute<Q>`
+        (prediction_market.move:549) asserts
+        `final_outcome == 1 || final_outcome == 2` and aborts with
+        `EInvalidOutcome` (code 4) for any other value. A `0` or
+        `3+` silently builds a valid PTB and burns gas on a
+        guaranteed-abort submit. R55 added equivalent per-element
+        validation to `predictions` in `buildCreateParlayTx`
+        (parlay-client.ts:298-306) — same class of bug, missed at
+        this call site.
+  Why:  The dispute flow is creator-only and rare, but the
+        admin / resolution path is exactly the one that needs a
+        build-time guard: a wrong outcome here flips a real
+        market's resolution, and the on-chain `resolve_dispute`
+        is the final, irreversible decision.
+  How:  Add at the top of the function:
+          if (finalOutcome !== 1 && finalOutcome !== 2) {
+            throw new Error(
+              `buildResolveDisputeTx: finalOutcome must be 1 (YES) or 2 (NO), got ${finalOutcome}`,
+            );
+          }
+
+[HIGH] R56.3 | packages/sdk/src/prediction-market-client.ts:423-438 | `buildResolveMarketTx` doesn't validate `outcome` at runtime
+  Where: packages/sdk/src/prediction-market-client.ts:423-438
+  What: Same class as R56.2. The TS type is `outcome: 1 | 2` but
+        the runtime check is missing. The on-chain
+        `resolve_market<Q>` (prediction_market.move:493) aborts with
+        `EInvalidOutcome` (code 4) for any value other than 1 or 2.
+        The market-resolver agent reads the outcome from
+        `MintedPosition` / Oracle state and a stale schema field
+        could ship a 0 or 3.
+  Why:  Market resolution is irreversible; the gas cost of a typo
+        is small but the post-abort operator investigation is
+        non-trivial because the error surfaces as a move-abort
+        deep inside `resolve_market` with no context.
+  How:  Mirror R56.2 — add the explicit 1|2 check at the top.
+
+[HIGH] R56.4 | packages/sdk/src/badge-nft-client.ts:111-130 | `buildMintBadgeToKioskTx` doesn't validate `tier` (R54 fix was sibling-only)
+  Where: packages/sdk/src/badge-nft-client.ts:111-130
+  What: R54 added `tier ∈ [1, 5]` validation to `buildMintBadgeTx`
+        (line 75-79) but the sibling `buildMintBadgeToKioskTx`
+        (which targets the same `streak_system::claim_badge` —
+        see `badge_nft.move:173` and `streak_system.move:324`)
+        was missed. The on-chain `claim_badge` asserts
+        `tier >= 1 && tier <= 5` and aborts with `EInvalidTier`
+        (code 5 in streak_system.move). A `tier = 0`
+        (the `Number(undefined)` default) burns gas on a
+        guaranteed-abort PTB and a `tier = 6` does the same.
+  Why:  The kiosk variant is the rarer path, but the agents'
+        indexer polls for the `BadgePlacedInKiosk` event — a
+        kiosk-mint that aborts at build-time-instead-of-execute
+        is one retry away from working, but the wasted PTB is
+        visible on the operator dashboard.
+  How:  Add the same guard as `buildMintBadgeTx:75-79` at the top
+        of `buildMintBadgeToKioskTx`.
+
+[HIGH] R56.5 | packages/sdk/src/parlay-client.ts:406-416 | `legIndex` upper bound is the soft MAX_LEGS-1, not u64::MAX — fails for `legIndex` over 0xffffffff
+  Where: packages/sdk/src/parlay-client.ts:406-416
+  What: The R55 fix bounds `legIndex` to `[0, MAX_LEGS-1]` but a
+        caller passing a `bigint` larger than 0xFFFFFFFF
+        (which is well within u64 range — e.g., a stale counter
+        the parlay-worker reads from a database that overflowed a
+        u32 column) would still hit `tx.pure.u64(legIndex)`
+        successfully (BCS encoder accepts u64) and then the
+        on-chain `record_leg` (parlay.move:334) aborts with
+        `ELegMismatch` (code 8) for `leg_index < legs.length`,
+        but **only if the leg is < the count**. A huge
+        `legIndex` of e.g. `2^50` still aborts — but with
+        **a different cost profile** than the build-time
+        `legIndex > MAX_LEGS - 1` check catches:
+        - R55 check catches `legIndex > 4` (cheap gas check)
+        - On-chain check catches `legIndex < legs.length` (gas
+          already paid through BCS encoding and the PTB
+          moveCall)
+        The R55 fix is too soft to catch all bad inputs. Also,
+        `MAX_LEGS - 1` is a constant `4`; a future DeepBook bump
+        to 6 legs would need the R55 check updated, and the
+        R55 bound is silently wrong in the meantime.
+  Why:  The on-chain `leg_index: u64` accepts a 64-bit value.
+        A non-bigint number that doesn't fit in `Number.MAX_SAFE_INTEGER`
+        would silently truncate to 2^53 and pass the R55 check.
+        The check should be: `legIndex >= 0n && legIndex < 2n**64n`
+        (or rely on `tx.pure.u64` to throw).
+  How:  Tighten the upper bound to `legIndex > 0xFFFFFFFFFFFFFFFFn`
+        (the on-chain u64 max) and let the on-chain
+        `leg_index < legs.length` assertion do the per-parlay
+        bound check. The intent of the R55 check was to fail
+        early on the common `legIndex = MAX_LEGS` typo, not to
+        duplicate the on-chain bound.
+
+[MEDIUM] R56.6 | packages/sdk/src/streak-client.ts:243-264 | `streakIdForUser` passes `userAddress` to `getDynamicField` without lowercasing
+  Where: packages/sdk/src/streak-client.ts:243-264
+  What: The `name: { type: "address", value: userAddress }` arg
+        is passed to `client.core.getDynamicField` verbatim. The
+        on-chain `StreakRegistry.streaks: Table<address, ID>`
+        stores the canonical lowercase 32-byte form. A caller
+        that supplies a mixed-case address (e.g., from a Suiscan
+        paste that retains checksum casing, or a ZK-login
+        sub-issuer that hands back mixed-case) would get
+        `null` (caught as 404) and the agents'
+        `streak-sweeper` would skip the user forever.
+  Why:  Sui addresses are case-insensitive on the wire, but
+        `Table<address, ID>` keys are stored byte-for-byte. A
+        missing-lowercase is a silent user-omission bug, not a
+        crash.
+  How:  Normalize the address before the call:
+          const normalizedUser = userAddress.trim().toLowerCase();
+          if (!isValidSuiAddress(normalizedUser)) return null;
+          name: { type: "address", value: normalizedUser }
+        and mirror the change in `readProfileIdForUser` (see R56.7).
+
+[MEDIUM] R56.7 | packages/sdk/src/user-profile-client.ts:138-183 | `readProfileIdForUser` passes `user` to `getDynamicField` without lowercasing
+  Where: packages/sdk/src/user-profile-client.ts:138-183
+  What: Same pattern as R56.6. The dynamic-field name is
+        `{ type: "address", value: user }` with no
+        `.toLowerCase()`. The on-chain `ProfileRegistry.profiles:
+        Table<address, ID>` stores the canonical form. A
+        mixed-case paste from a Suiscan link returns
+        `null` and the settings page would claim the user has
+        no profile (when they do), prompting them to create
+        a second profile that aborts with `EProfileExists`.
+  Why:  The settings page is the only consumer; the user
+        experience is a confusing "no profile found" toast
+        followed by an aborted create-profile attempt.
+  How:  Same fix as R56.6. Also reject whitespace-suffixed
+        input via `isValidSuiAddress` to short-circuit early
+        on obvious typos.
+
+[MEDIUM] R56.8 | packages/sdk/src/protocol-reads.ts:61-64 | `asBig` doesn't handle the gRPC `Balance<T>` shape — latent crash
+  Where: packages/sdk/src/protocol-reads.ts:61-64
+  What: `asBig` calls `BigInt((fields[key] as string | number | undefined) ?? 0)`.
+        If a future Move module change makes a field that
+        `asBig` reads (e.g., `allocated`, `current_week`,
+        `weekly_prize`) into a `Balance<T>` (Sui sometimes
+        changes struct layouts in upgrades), the gRPC client
+        would render it as `{"value": "12345"}` and the cast
+        `(...) as string | number | undefined` returns the
+        object reference (which is not null/undefined, so
+        `?? 0` doesn't trigger) and `BigInt({...})` throws
+        "Cannot convert object to primitive value".
+        Currently safe because all `asBig` call sites read
+        plain u64 fields, but the helper is private and shared
+        with future readers.
+  Why:  Latent crash on schema migration. A future operator
+        who upgrades a Move module to add a `Balance<T>`
+        field (e.g., to track accrued but-unallocated fees)
+        would see the admin page's pre-flight check crash
+        silently in the background; the only signal is a
+        missing "Total balance" number.
+  How:  Mirror the gRPC-balance handling from `asBalance`:
+          function asBig(fields, key) {
+            if (!fields) return 0n;
+            const v = fields[key];
+            if (typeof v === "string" || typeof v === "number") return BigInt(v);
+            if (v && typeof v === "object" && "value" in v) {
+              const inner = (v as { value?: string | number }).value;
+              if (inner != null) return BigInt(inner);
+            }
+            return 0n;
+          }
+        Or simply route `asBig` through `asBalance`.
+
+[MEDIUM] R56.9 | packages/sdk/src/markets/indexer-client.ts:199-213 | `getVaultSummaryClob` coerces balances via `Number(string)` — loses precision above 2^53
+  Where: packages/sdk/src/markets/indexer-client.ts:199-213
+  What: The R55 fix added `Number(raw.total_balance)`,
+        `Number(raw.allocated)`, `Number(raw.available)` to
+        defend against a future bigint-as-string migration,
+        but `Number(bigintString)` loses precision for values
+        > 2^53 - 1. DUSDC has 6 decimals, so 2^53 atoms =
+        ~9e12 DUSDC = ~$9 trillion. Unlikely in practice but
+        the type definition (`number` in `VaultSummaryClob`)
+        lies about the wire shape — a future operator
+        exporting real numbers sees the precision loss and
+        the admin page's `total_balance - allocated` no
+        longer matches the on-chain value.
+  Why:  The R55 fix is better than nothing but doesn't
+        actually fix the precision concern; it just moves
+        the silent loss from the indexer-client to the
+        admin page.
+  How:  Change the `VaultSummaryClob` type to use `string` for
+        the three balance fields and return `BigInt(raw.total_balance).toString()`,
+        etc. Render the values on the admin page with a custom
+        formatter. Mirror the R46 `u64ToSafeNumber` warning
+        so an operator chasing a "this number looks wrong"
+        report gets the same trail.
+
+[MEDIUM] R56.10 | packages/sdk/src/prediction-market-client.ts:1479-1488 | `buildRegisterMarketTx` doesn't validate `marketObjectId` is a fresh create-only market id
+  Where: packages/sdk/src/prediction-market-client.ts:1479-1488
+  What: The function takes `registryId` and `marketObjectId`
+        (both normalized) and builds a `tx.pure.id(...)` call.
+        The on-chain `registry::register_market` aborts with
+        `EMarketExists` (code 1 in registry.move) if the market
+        id is already in the registry. The builder can't
+        check this at build time, but it CAN check that
+        `marketObjectId` is a 32-byte hex string (which
+        `normalizeObjectId` already does). The R52 sweep
+        added similar existence checks to other builders.
+  Why:  A re-registration attempt (e.g., the bootstrap script
+        retrying a partial failure) burns gas on a
+        guaranteed-abort. A build-time read of the registry
+        index would be expensive; a hint in the error would
+        at least point the operator to the right line.
+  How:  No cheap fix — `EMarketExists` is a runtime check.
+        Document the cost in the docstring and consider
+        exposing a `isMarketRegistered(client, registryId, marketId)`
+        helper alongside the builder.
+
+[MEDIUM] R56.11 | packages/sdk/src/markets/constants.ts:25-31 | `bpsToPrice` / `priceToBps` return NaN for non-finite inputs
+  Where: packages/sdk/src/markets/constants.ts:25-31
+  What: `bpsToPrice(bps) → bps / 10_000` and
+        `priceToBps(price) → Math.round(price * 10_000)` don't
+        validate the input is a finite number. A typo that
+        passes `bps: undefined` (from a stale `useMemo`)
+        produces `NaN`, which propagates to the next render
+        and the admin page silently shows "$NaN" or
+        "NaN bps".
+  Why:  Silent NaN propagation; the admin page only catches
+        it on the next render's diff.
+  How:  Add `if (!Number.isFinite(bps)) throw new Error(...)` at
+        the top of both functions. Mirror the pattern
+        elsewhere in the SDK.
+
+[LOW] R56.12 | packages/sdk/src/prediction-market-client.ts:56 | `const PKG = () => PREDICT_MARKET_PACKAGE_ID` getter is a tautology (the const is the only ref)
+  Where: packages/sdk/src/prediction-market-client.ts:56
+  What: `const PKG = () => PREDICT_MARKET_PACKAGE_ID;` is
+        declared as a function (presumably for hot-patch
+        sensitivity) but `PREDICT_MARKET_PACKAGE_ID` is a
+        module-level const set to `AGENT_POLICY_PACKAGE_ID`
+        at SDK import. The getter just returns the const;
+        a hot-patch of `process.env.AGENT_POLICY_PACKAGE_ID`
+        would not be picked up by the const. The R55 sweep
+        added `resolveAgentPolicyPackageId()` in
+        `constants.ts:331-339` for callers that need
+        hot-patch support, but the internal builders in
+        `prediction-market-client.ts` still use the local
+        `PKG()` getter, which defeats the purpose.
+  Why:  Inconsistent with the R55 pattern; a future operator
+        who assumes `PKG()` is hot-patchable (because of the
+        function-call syntax) is surprised.
+  How:  Either (a) replace `const PKG = () => PREDICT_MARKET_PACKAGE_ID`
+        with a direct const usage and update the JSDoc, or
+        (b) replace the body with `() => resolveAgentPolicyPackageId()`
+        so the getter is actually hot-patchable. The R55
+        pattern is (b).
+
+[LOW] R56.13 | packages/sdk/src/prediction-market-client.ts:800-819 | `buildPlaceYesLimitOrderTx` doesn't validate `price` or `quantity` at the build boundary
+  Where: packages/sdk/src/prediction-market-client.ts:800-819
+  What: The function is a thin wrapper around
+        `buildDeepBookPlaceLimitOrderTx` (deepbook/client.ts:179)
+        and forwards `price`, `quantity`, `isBid` without
+        any validation. The underlying DeepBook `place_limit_order`
+        aborts on `price == 0` or `quantity == 0`; the R53
+        sibling `buildPlaceOrderTx` (line 996-1004) has
+        explicit `price > 0` and `quantity > 0` checks. The
+        wrapper here is the older path used by the web's
+        `placeOrder` button and missed the R53 sweep.
+  Why:  The two builders are aliased through the barrel
+        (`buildPlaceOrderTx` and `buildPlaceYesLimitOrderTx`),
+        and callers can pick either. A caller who picks
+        the older wrapper gets a worse error.
+  How:  Add the same `if (params.price <= 0) throw ...` and
+        `if (params.quantity <= 0) throw ...` checks at
+        the top of `buildPlaceYesLimitOrderTx`, mirroring
+        R53.
+
+[LOW] R56.14 | packages/sdk/src/prediction-market-client.ts:658-669 | `buildClaimReferralRewardsTx` doesn't validate `poolId` / `referralId` are non-empty beyond normalize
+  Where: packages/sdk/src/prediction-market-client.ts:658-669
+  What: Both ids are run through `normalizeObjectId`, which
+        validates the 32-byte hex shape. But the function
+        doesn't check that they're *different* (a
+        copy-paste of `poolId` for `referralId` is a common
+        admin-script bug; the on-chain `claim_referral_rewards`
+        aborts with a generic DeepBook abort and the operator
+        has to dig through the trace to see what they did
+        wrong).
+  Why:  Defensive — most callers will get this right, but the
+        admin / script path is the most error-prone.
+  How:  Add `if (normalizeObjectId(poolId) === normalizeObjectId(referralId)) throw ...`
+        at the top.
+
+[LOW] R56.15 | packages/sdk/src/move-errors.ts:159-165 | `extractMoveAbortCode` regex is greedy on a multi-line abort message
+  Where: packages/sdk/src/move-errors.ts:159-165
+  What: The regex `MoveAbort[^\n]*\)\s*,\s*(\d+)\s*\)` matches
+        the *final* `, <digits>)` inside a MoveAbort(...) block.
+        Sui's gRPC `MoveLocation` rendering can be multiline
+        in newer SDK bumps (e.g., `MoveAbort(MoveLocation {\n  module: \"foo\",\n}, 7)`)
+        and the `[^\n]*` would stop at the first newline and
+        miss the closing `, 7)`. The current SDK only ships
+        the single-line format, so this is a latent bug, but
+        the regex is brittle to a future SDK bump.
+  Why:  Latent brittleness; the next Sui SDK bump that switches
+        to multi-line `MoveLocation` would break the abort
+        translator across the entire web + agents.
+  How:  Use a non-greedy `.*?` and the `s` (dotAll) flag:
+          /MoveAbort[\s\S]*?\)\s*,\s*(\d+)\s*\)/
+
+[LOW] R56.16 | packages/sdk/src/markets/constants.ts:20 | `CLOCK_OBJECT_ID` is re-exported but dead code (the canonical one is in constants.ts)
+  Where: packages/sdk/src/markets/constants.ts:20
+  What: `export const CLOCK_OBJECT_ID = "0x6";` duplicates
+        the same constant in `constants.ts:356` and is not
+        re-exported from the barrel. No consumer of the SDK
+        can reach it through `@suipredict/sdk`, so it
+        contributes to the API surface bloat without
+        serving anyone.
+  Why:  Cleanup nit; no integration impact.
+  How:  Remove the duplicate, or re-export from the barrel
+        if a future web caller needs it.

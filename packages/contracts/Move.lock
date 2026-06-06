@@ -17,25 +17,19 @@ manifest_digest = "7AFB66695545775FBFBB2D3078ADFD084244D5002392E837FDE21D9EA1C6D
 deps = { MoveStdlib = "MoveStdlib" }
 
 [pinned.testnet.deepbook]
-source = { local = "../../deps/deepbookv3/packages/deepbook" }
+source = { local = "../../deps/deepbookv3-self-hosted/packages/deepbook" }
 use_environment = "testnet"
-manifest_digest = "3101923B9428545A4F52FFAD1C4F959F9BFFF84CD09CE4BCC1CB831286999B5A"
+manifest_digest = "3DECFD089EF4CF0E0FE3E02E5C68B9A98D367A222C40A7A8A9AF67FED6D65ED4"
 deps = { std = "MoveStdlib", sui = "Sui", token = "token" }
 
 [pinned.testnet.suipredict_agent_policy]
 source = { root = true }
 use_environment = "testnet"
-manifest_digest = "481377D9109C6A3708FCCC5F70139940A2497CF84AA07805F4395294367ED951"
-deps = { deepbook = "deepbook", std = "MoveStdlib", sui = "Sui", token = "token_1" }
+manifest_digest = "C5490208296A2580BC1D22DAE660E059A4EC5E7098CDE2ABD66B9C105BC94BD7"
+deps = { deepbook = "deepbook", std = "MoveStdlib", sui = "Sui", token = "token" }
 
 [pinned.testnet.token]
-source = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/token", rev = "923f7e8a49219ce8925a9b7d7539a171e7d02eec" }
-use_environment = "testnet"
-manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
-deps = { std = "MoveStdlib", sui = "Sui" }
-
-[pinned.testnet.token_1]
-source = { local = "../../deps/deepbookv3/packages/token" }
+source = { local = "../../deps/deepbookv3-self-hosted/packages/token" }
 use_environment = "testnet"
 manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
 deps = { std = "MoveStdlib", sui = "Sui" }

@@ -1,0 +1,479 @@
+R56 Web Audit Findings — 2026-06-06
+===================================
+
+Executive summary
+-----------------
+Audited apps/web/{app,components,hooks,lib} for end-to-end integration gaps
+that survived the R55 sweep. Found 22 high-quality issues:
+
+  CRITICAL: 0
+  HIGH    : 6
+  MEDIUM  : 12
+  LOW     : 4
+
+Top survivors:
+- Coin selection (`objects[0]` instead of largest-by-balance) in two
+  pages the R55 sweep fixed at other call sites but missed.
+- Per-route `loading.tsx` / `error.tsx` files still missing (deferred
+  in R55; re-flagging now).
+- A raw `dAppKit.signAndExecuteTransaction` call in the legacy trade
+  page that the R55 sweep was supposed to migrate to `submitAndWait`.
+- Two `JSON.parse(localStorage)` calls without try/catch.
+- A `client!` non-null assertion in two streak components that can
+  throw on click when dapp-kit is still initializing.
+
+Findings
+--------
+
+[HIGH] R56.1 | apps/web/app/markets/[id]/page.tsx:1060 | `redeemWinner` picks `objects[0]` instead of the largest winning-coin fragment
+  Where: apps/web/app/markets/[id]/page.tsx:1060
+  What: After the R52 audit raised `limit: 100` so a winner with many
+        winning-coin fragments is enumerated correctly, this survivor
+        still picks `const coin = objects[0];` — the first coin in the
+        indexer's response order, not the largest. A user with ten
+        0.1-share winning-coin fragments and one 0.5-share fragment
+        will see the redeem use a 0.1 fragment first, abort on-chain
+        with `EInsufficientBalance` (the on-chain `redeem` redeems
+        the whole input coin), pay gas, and need to retry until the
+        largest fragment happens to land first.
+  Why:  Silent failure of the redeem flow for any user with more
+        than one winning-coin fragment (which the R52 limit bump
+        made more likely, not less).
+  How:  Mirror the `splitCollateral` pattern at line 522-524:
+        const sorted = [...objects].sort((a, b) =>
+          BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+        );
+        const coin = sorted[0];
+
+[HIGH] R56.2 | apps/web/app/vault/page.tsx:114 | VLP `refreshPlp` effect picks the first VLP coin, not the largest
+  Where: apps/web/app/vault/page.tsx:114
+  What: `setVlpCoinId(objects[0]?.objectId ?? "");` selects the
+        first VLP coin in the indexer's response order, not the
+        largest by balance. R53 raised the page-size limit to 100
+        but did not add a largest-coin sort. The withdraw handler
+        then passes this `vlpCoinId` to `buildVaultWithdrawTx` →
+        `tx.object(vlpCoinId)`. A user with 5 VLP coins (typical
+        after several deposits) withdraws from the smallest, which
+        on the withdraw path triggers `EInsufficientBalance` for
+        any withdraw > smallest-coin-balance.
+  Why:  Silent failure of withdraw for any dust-fragmented user;
+        the deposit path (line 155-158) was fixed but the
+        VLP-side effect was missed.
+  How:  Same fix as R56.1: sort `[...objects]` by `BigInt(b.balance)`
+        and pick `sorted[0]?.objectId ?? ""`.
+
+[HIGH] R56.3 | apps/web/app/legacy/predict/vault/page.tsx:126 | `supplyPLP` uses `coins.objects[0]!` as the merge target
+  Where: apps/web/app/legacy/predict/vault/page.tsx:126
+  What: `const primary = tx.object(coins.objects[0]!.objectId);`
+        followed by `if (coins.objects.length > 1) tx.mergeCoins(
+          primary, coins.objects.slice(1)...)`. The merge
+        consolidates everything into whatever coin the indexer
+        returned first, which can be a tiny dust coin. The
+        subsequent `tx.splitCoins(primary, [tx.pure.u64(supplyAmount)])`
+        then asks the chain to split more atoms than `primary`
+        holds → on-chain `EInsufficientBalance` abort.
+  Why:  The R55 sweep audited the modern vault but missed the
+        legacy PLP vault. A user with several small DUSDC coins
+        hits the same `EInsufficientBalance` they would have on
+        the un-audited code path.
+  How:  Pick the largest coin as `primary`:
+        const sorted = [...coins.objects].sort((a, b) =>
+          BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+        );
+        const primary = tx.object(sorted[0]!.objectId);
+
+[HIGH] R56.4 | apps/web/app/legacy/predict/vault/page.tsx:66 | `setPlpCoinId(objects[0]?.objectId ?? "")` is the same bug as the modern vault
+  Where: apps/web/app/legacy/predict/vault/page.tsx:66
+  What: The legacy PLP vault's `refreshPlp` effect (line 42-67) uses
+        `objects[0]?.objectId` to seed `plpCoinId` for the withdraw
+        path. Same root cause as R56.2 — the first coin is not
+        necessarily the largest. R53 audited the page-size limit
+        but not the sort.
+  Why:  Withdraw button silently fails for dust-fragmented users.
+  How:  Sort by `BigInt(b.balance)` and pick `sorted[0]?.objectId ?? ""`.
+
+[HIGH] R56.5 | apps/web/app/legacy/predict/trade/page.tsx:88 | `createManager` still uses raw `dAppKit.signAndExecuteTransaction` (R55 sweep survivor)
+  Where: apps/web/app/legacy/predict/trade/page.tsx:88
+  What: `const result = await dAppKit.signAndExecuteTransaction({
+          transaction: tx });` followed by a manual
+        `await client.waitForTransaction({ digest: result.Transaction.digest });`
+        on line 105. The sibling `mintPosition` (line 251) and
+        `redeemPosition` (line 310) were migrated to
+        `submitAndWait(dAppKit, client, tx)` in R55 — `createManager`
+        was the survivor. The result is a manual
+        `waitForTransaction` call that doesn't pass a timeout or
+        `AbortSignal`, so a slow RPC could hang the modal
+        indefinitely. The `mint` path (line 251) routes through
+        `submitAndWait` and gets the 30s timeout + signal plumbing
+        for free.
+  Why:  Inconsistent error handling, missing timeout, and the
+        R55 sweep's stated goal ("every modern flow is fixed")
+        was not actually achieved here.
+  How:  `const result = await submitAndWait(dAppKit, client, tx);`
+        and read `result.digest` (with the same `$kind !== "Transaction"
+        guard as the other handlers).
+
+[HIGH] R56.6 | apps/web/app/dispute/[marketId]/page.tsx:134-177 | No `invalidateQueries` after a successful dispute
+  Where: apps/web/app/dispute/[marketId]/page.tsx:134-177
+  What: The success path (line 168-169) calls
+        `setDigest(r.digest); toast.success("Dispute filed", ...)`
+        but does NOT invalidate any React Query keys. The comment
+        on line 141-149 explicitly references "subsequent
+        `invalidateQueries` / state refetch" but the code never
+        actually calls `invalidateQueries`. R55 audited the
+        markets/[id] page's 6 invalidation sites and the
+        admin cards; dispute was missed.
+  Why:  A user who files a dispute and immediately navigates back
+        to `/markets/${marketId}` (or `/markets`) sees the
+        pre-dispute `status === "resolved"` for 30s (the indexer
+        mirror's lag). They can re-click "File dispute" and hit
+        the on-chain `EMarketDisputed` abort.
+  How:  Add `useQueryClient`, hook an `invalidateMarketCaches`-style
+        callback that invalidates `["marketsList"]` and the
+        market-specific `["market", marketId]` key (or the
+        broadest "active" subset), and call it from the success
+        branch (after the `$kind === "Transaction"` check,
+        before/after the toast).
+
+[MEDIUM] R56.7 | apps/web/app/settings/page.tsx:286-333 | `revokePolicy` does not invalidate the streak cache
+  Where: apps/web/app/settings/page.tsx:286-333
+  What: Of the 6 mutating actions on the settings page,
+        5 call `invalidateStreakCache()` after success:
+          - createPolicy (line 278)        ✓
+          - setPaused    (line 364)        ✓
+          - createProfile (line 405)       ✓
+          - saveCountry  (line 435)        ✓
+          - saveKind     (line 463)        ✓
+          - revokePolicy (line 286-333)    ✗  ← SURVIVOR
+        The R48 audit fix added the pattern to the other 5; the
+        revoke path was the asymmetric survivor. After revoking,
+        the home page's `useUserStreakId` / `useStreakInfo`
+        queries stay stale for `staleTime: 30_000` (30s).
+  Why:  After revoking, the home page still shows the streak
+        policy as active. A user who revoked and immediately
+        went back to the home page would see a stale
+        "Revoke your policy?" prompt that the agents service
+        has already invalidated.
+  How:  Add `invalidateStreakCache();` to the success branch of
+        `revokePolicy` (after the `$kind === "Transaction"`
+        check, before/after the status toast).
+
+[MEDIUM] R56.8 | apps/web/components/StreakWelcomeBanner.tsx:51,72 | `JSON.parse(localStorage)` without try/catch
+  Where: apps/web/components/StreakWelcomeBanner.tsx:51,72
+  What: `const dismissedAddrs: string[] = raw ? (JSON.parse(raw)
+        as string[]) : [];` (line 51) and the same in `dismiss()`
+        (line 72). A user with corrupted localStorage
+        (manually edited, or a future migration that wrote
+        malformed JSON) would crash the effect on mount
+        (no banner ever shows) or crash the "Later" click
+        handler.
+  Why:  R55 audited the auth page's URL parsing (line 25-27)
+        but missed the localStorage JSON parsing here. A
+        single byte of corruption silently disables the
+        streak welcome banner for the affected user.
+  How:  Wrap in try/catch, treat a parse failure as "no
+        dismissed addresses":
+        let dismissedAddrs: string[] = [];
+        try { dismissedAddrs = raw ? JSON.parse(raw) : []; }
+        catch { /* fall through */ }
+
+[MEDIUM] R56.9 | apps/web/components/StreakProfile.tsx:70,205 & apps/web/components/StreakWelcomeBanner.tsx:91 | `client!` non-null assertion can throw when dapp-kit is still initializing
+  Where: apps/web/components/StreakProfile.tsx:70,
+         apps/web/components/StreakProfile.tsx:205,
+         apps/web/components/StreakWelcomeBanner.tsx:91
+  What: `await submitAndWait(dAppKit, client!, tx);` uses a
+        non-null assertion on the result of `useCurrentClient()`.
+        The buttons are rendered when `!streakId && account` —
+        `account` is the only gate. `client` can legitimately
+        be `null` while dapp-kit is initializing (race on
+        initial mount) or after a wallet disconnect mid-render.
+        `client!` then throws `TypeError: Cannot read
+        properties of null (reading 'waitForTransaction')`
+        inside `submitAndWait`, the catch fires, the user
+        sees "Streak creation failed: Cannot read…", and
+        the only fix is a page reload.
+  Why:  Sibling call sites in `markets/[id]/page.tsx`,
+        `vault/page.tsx`, and `parlay/page.tsx` all gate
+        on `if (!account || !client || !...) return;` BEFORE
+        calling `submitAndWait`. The two streak components
+        missed this guard.
+  How:  Wrap each click handler with
+        `if (!client) { toast.error("Wallet not ready"); return; }`
+        and remove the `!` from `client!`.
+
+[MEDIUM] R56.10 | apps/web/app/admin/page.tsx, apps/web/app/vault/page.tsx, apps/web/app/parlay/page.tsx, apps/web/app/dispute/[marketId]/page.tsx, apps/web/app/settings/page.tsx, apps/web/app/agents/page.tsx, apps/web/app/auth/page.tsx, apps/web/app/portfolio/page.tsx | Per-route `loading.tsx` / `error.tsx` files still missing
+  Where: apps/web/app/{admin,vault,parlay,dispute,settings,agents,
+         auth,portfolio}/ (no `loading.tsx` or `error.tsx`)
+  What: A render error on any of these routes surfaces the root
+        `apps/web/app/error.tsx` boundary or, in production
+        (after a build with `output: "export"`), an opaque
+        "Application error: a client-side exception has
+        occurred" page. R55 explicitly deferred this finding;
+        R56 should pick it up.
+  Why:  The root `error.tsx` is intentionally coarse — it
+        doesn't have route-specific context. A user hitting a
+        "market not found" page in `/markets/[id]` would see
+        the same generic error as a wallet-adapter crash on
+        `/parlay`. The audit team's stated goal was per-route
+        error boundaries.
+  How:  Drop a 6-line `loading.tsx` (returns a skeleton Card)
+        and an 8-line `error.tsx` (returns a retry Card with
+        `reset()` handler) into each missing route directory.
+
+[MEDIUM] R56.11 | apps/web/app/markets/[id]/page.tsx:1060 | Comment at line 1051-1058 acknowledges the page-size fix but doesn't sort the response
+  Where: apps/web/app/markets/[id]/page.tsx:1051-1060
+  What: The R52 audit comment on line 1050-1058 says "A winner
+        with 50+ winning-coin fragments would see `objects[0]`
+        and assume that's the only coin; if the chain has more,
+        the unredeemed remainder stays in the wallet because
+        the redeemer only handles one objectId." This explicitly
+        documents the bug but the code on line 1060 is still
+        `const coin = objects[0];` — the page-size fix is
+        applied but the sort is not. The comment is now
+        misleading; a reader following the R52 trail would
+        believe the redeem path is correct.
+  Why:  Misleading audit trail + active bug (R56.1).
+  How:  Apply the sort fix from R56.1 and update the comment
+        to point at the sort.
+
+[MEDIUM] R56.12 | apps/web/app/markets/[id]/page.tsx:617 | `placeOrder` doesn't refresh on the React-Query cache after a successful order
+  Where: apps/web/app/markets/[id]/page.tsx:616-777
+  What: After a successful `placeOrder`, the code calls
+        `invalidateMarketCaches()` (line 762) and then
+        `await refresh()` (line 770) and `setRefreshCounter`
+        (line 771). The `invalidateMarketCaches` invalidates
+        the `["portfolio"]` and `["marketsList"]` keys, but
+        not the `["market", marketId]`-style key for this
+        specific market's order book. R48 added the
+        `invalidateMarketCaches` block; the order-book
+        key wasn't on its list.
+  Why:  The local `refresh()` + `setRefreshCounter` work
+        around this for the current page, but if a future
+        refactor caches the order book in React Query, the
+        stale "no order yet" view would persist for the
+        hook's `staleTime`.
+  How:  Add a `["marketOrderBook", marketId]`-style key
+        to the invalidation list, and have `refresh` write
+        to that key instead of local state.
+
+[MEDIUM] R56.13 | apps/web/app/markets/[id]/page.tsx:808-813 | `waitForOrderInBook` poll loop sleeps 1.5s unconditionally even when the tab is hidden
+  Where: apps/web/app/markets/[id]/page.tsx:786-826
+  What: The 1.5s `await new Promise((r) => setTimeout(r, 1_500))`
+        on line 823 runs even when the tab is hidden. The
+        `signal?.aborted` check on line 801 catches an explicit
+        abort, but a backgrounded tab (no abort, just
+        `document.visibilityState !== "visible"`) still
+        sleeps + fetches for the full 65s timeout. The
+        4s `setInterval` on line 362-365 was visibility-gated
+        by R42, but the order-confirm poll was missed.
+  Why:  A user who mints and immediately switches tabs for
+        65s will fire 43 `fetch` calls against the agents
+        service to confirm an order they can't see.
+  How:  Mirror the R42 visibility guard:
+        await new Promise((r) => setTimeout(r, 1_500));
+        if (typeof document !== "undefined" &&
+            document.visibilityState !== "visible") {
+          // wait for the next visibilitychange event
+          await new Promise<void>((resolve) => {
+            const onVis = () => {
+              if (document.visibilityState === "visible") {
+                document.removeEventListener("visibilitychange", onVis);
+                resolve();
+              }
+            };
+            document.addEventListener("visibilitychange", onVis);
+          });
+        }
+
+[MEDIUM] R56.14 | apps/web/components/StreakWelcomeBanner.tsx:138 | `void dismiss()` runs in both success AND failure branches
+  Where: apps/web/components/StreakWelcomeBanner.tsx:138
+  What: `void dismiss();` is called after the `if/else` block
+        on line 96-137, BEFORE the catch on line 139. So
+        whether the streak create succeeded or failed, the
+        banner is dismissed and the user is no longer
+        reminded to start a streak. The success path
+        (r.$kind === "Transaction") does the right thing
+        (invalidate queries, dismiss). The failure path
+        (r.$kind !== "Transaction") toasts an error AND
+        dismisses the banner — the user is left without a
+        retry cue and has to clear localStorage to see
+        the banner again.
+  Why:  Bad UX. A user whose streak create failed (e.g.,
+        paused pool, insufficient gas) silently loses the
+        banner's "Start your streak" CTA, and the home
+        page shows no streak panel.
+  How:  Move `void dismiss();` inside the success branch
+        (`if (r.$kind === "Transaction")` block) and leave
+        the failure branch with only the error toast.
+
+[MEDIUM] R56.15 | apps/web/app/vault/page.tsx:87 | `useEffect` cleanup at line 86 returns `clearInterval(t)` but doesn't gate the initial `refresh()` call on visibility
+  Where: apps/web/app/vault/page.tsx:73-87
+  What: The visibility guard on line 82-85 was added in R42
+        for the *interval* tick, but the *initial*
+        `refresh()` on line 74 fires unconditionally on mount
+        (with the explicit comment that the initial fetch
+        is "intentionally not gated"). For the other pages
+        audited by R42 (markets/[id], parlay, leaderboard),
+        the initial fetch is also not gated — this is the
+        project-wide pattern, not a bug. The actual issue
+        here: the interval is created on line 82 with a
+        10s period, but the `let backoffMs` from agents/
+        page.tsx (the backoff-on-error pattern) was never
+        applied to vault. A 5xx storm on
+        `getVaultSummaryClob` keeps hammering the
+        endpoint every 10s, filling the agents log with
+        retries. R45 surfaced the same backoff pattern
+        for agents/page.tsx.
+  Why:  RPC outage → user's browser fires 360
+        `getVaultSummaryClob`/hour.
+  How:  Mirror the agents page backoff pattern: when
+        `refresh()` throws, skip ticks for 30s.
+
+[MEDIUM] R56.16 | apps/web/app/admin/page.tsx | `useCurrentClient()` and `useDAppKit()` pattern is consistent, but the `vault/`, `markets/[id]/`, `parlay/` pages still read `process.env.NEXT_PUBLIC_*` at module scope (not a hot-patch issue since inlined)
+  Where: apps/web/app/vault/page.tsx:24,
+         apps/web/app/markets/[id]/page.tsx:106,
+         apps/web/app/parlay/page.tsx:34
+  What: `const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID
+        ?? "";` (and similar for `FEE_VAULT_ID`,
+        `PARLAY_POOL_ID`) are read at module scope. R55
+        audit explicitly noted that this is "fine for
+        inlined envs but problematic for hot-patches via
+        `bootstrap-env.ts`". The `bootstrap-env.ts`
+        runtime is in the `agents` package, not the
+        web bundle, so this is currently a no-op. But
+        the comment indicates the audit team flagged
+        this for future work.
+  Why:  Future-compat risk. If a deploy-time
+        `bootstrap-env.ts` flow is ever added to the
+        web bundle (e.g., to allow env-var hot-patching
+        in production without rebuilds), the module-scope
+        reads would not pick up the new values.
+  How:  Move env reads into a `useMemo` or the render
+        body so the env can be hot-patched via a
+        `useState` setter that reads from
+        `window.__SUIPREDICT_ENV__` (the same pattern
+        `agents/bootstrap-env.ts` uses).
+
+[MEDIUM] R56.17 | apps/web/app/markets/[id]/page.tsx:1060 | The `redeemWinner` check on line 1060 is the only post-R51 remaining `objects[0]` call in `markets/[id]/page.tsx`
+  Where: apps/web/app/markets/[id]/page.tsx:1060
+  What: Companion to R56.1. The R51 fix at line 522-524
+        (splitCollateral) added a sort, the R52 fix at
+        line 1047-1058 added `limit: 100`, but the actual
+        coin-selection code on line 1060 was left as
+        `const coin = objects[0];`. This is the only
+        `objects[0]` left in the page.
+  Why:  Singular survivor of the R51/R52 coin-selection
+        sweep on this page.
+  How:  See R56.1.
+
+[LOW] R56.18 | apps/web/app/markets/[id]/page.tsx:626 | `clientOrderId = String(Date.now())` is millisecond-granular
+  Where: apps/web/app/markets/[id]/page.tsx:626
+  What: `const clientOrderId = String(Date.now());` is used
+        as the on-chain client-order-id. Two orders
+        submitted in the same millisecond would collide
+        and the indexer's `chain_orders` de-duplication
+        could attribute the second order to the first
+        user's `clientOrderId`. The odds are low but the
+        collision exists.
+  Why:  Not currently exploitable in practice (orders
+        need user clicks), but the `Date.now()` resolution
+        is the wrong tool for a unique id.
+  How:  `const clientOrderId = String(Date.now()) + "-" +
+        Math.random().toString(36).slice(2, 8);` (or
+        `crypto.randomUUID()`).
+
+[LOW] R56.19 | apps/web/app/agents/page.tsx:316 | `let id = setInterval(tick, backoffMs);` declared with `let` and reassigned inside `tick` — works but is a TS smell
+  Where: apps/web/app/agents/page.tsx:316
+  What: `let id: ReturnType<typeof setInterval> = setInterval(
+        tick, backoffMs);` is declared with `let` and
+        reassigned inside `tick` (line 312) after
+        `clearInterval(id)`. The `id` variable shadows
+        itself across the closures; the cleanup on line
+        319 always reads the latest value. This works
+        but the pattern is fragile — a future maintainer
+        who copies this code into a new effect would
+        need to re-derive the `let`-rebind dance.
+  Why:  Maintainability.
+  How:  Wrap the interval in a `useRef<NodeJS.Timeout>` so
+        the cleanup function always sees the latest
+        handle without the `let` rebind.
+
+[LOW] R56.20 | apps/web/components/ParlayHistory.tsx:78 | `fetch()` call is not aborted on unmount
+  Where: apps/web/components/ParlayHistory.tsx:70-92
+  What: `fetch(url).then(...).catch(...)` in the user-
+        effect, with `let cancelled = false` in the body
+        but no `AbortController`. A user who navigates
+        away within ~50ms of mount keeps the fetch in
+        flight; the `.then` checks `cancelled` and
+        skips the setState, but the request still hits
+        the agents service.
+  Why:  Mild resource leak; not user-visible.
+  How:  Add an `AbortController` to the effect and pass
+        `signal` to `fetch`:
+        const ctl = new AbortController();
+        fetch(url, { signal: ctl.signal })
+          .then(...).catch(err => {
+            if (err.name === "AbortError") return;
+            ...
+          });
+        return () => { cancelled = true; ctl.abort(); };
+
+[LOW] R56.21 | apps/web/app/agents/page.tsx:251-262 | `decisionsRes` failure sets `error` to "Start the agents service…" even when the user *is* running the agents service
+  Where: apps/web/app/agents/page.tsx:251-262
+  What: The error message "Start the agents service:
+        `pnpm --filter @suipredict/agents dev`" is shown
+        for any non-OK response from `/decisions`, but
+        `/decisions` is just one of three endpoints. A
+        user running the agents service where only the
+        `/decisions` endpoint is broken (e.g., the
+        `decisions` table is empty for a fresh deploy
+        and returns a 500 from a join) would see the
+        misleading "Start the agents service" message.
+  Why:  Misleading operator feedback.
+  How:  Check the response body to differentiate
+        "service down" (connection refused) from
+        "endpoint error" (5xx). The 5xx case should
+        show a distinct "Service is up but /decisions
+        errored — check the agents logs" message.
+
+[LOW] R56.22 | apps/web/app/portfolio/page.tsx:41-52 | `refetchInterval` returns `false` on hidden tabs but the initial `useQuery` still runs while hidden
+  Where: apps/web/app/portfolio/page.tsx:41-52
+  What: R43 added the `refetchInterval: () => visibility ? 8000
+        : false` pattern. The initial `useQuery` activation
+        on mount fires the first `getPortfolio` regardless
+        of visibility. The comment on line 35-40 explicitly
+        says this is fine. But if a user navigates to
+        /portfolio on a tab that they immediately background
+        (e.g., the URL was opened in a background tab
+        via `window.open`), the initial fetch still
+        runs. The market/[id], parlay, and leaderboard
+        pages don't gate the initial fetch either.
+  Why:  Mild wasted RPC on backgrounded tabs. Not
+        user-visible.
+  How:  Gate the initial fetch in `queryFn`:
+        if (typeof document !== "undefined" &&
+            document.visibilityState !== "visible" &&
+            !data) return existingData as PortfolioPosition[];
+
+Files audited
+-------------
+apps/web/app/{layout,loading,error,page,trade}.tsx
+apps/web/app/{admin,agents,auth,dispute,leaderboard,markets,parlay,
+              portfolio,settings,vault}/page.tsx
+apps/web/app/legacy/predict/{trade,vault}/page.tsx
+apps/web/components/{BottomNav,ClaimPrizeCard,ClaimPrizeButton,
+                     ConnectModal,DailyPredictionCard,EmptyState,
+                     LeaderboardTable,ParlayHistory,ProbabilityBar,
+                     StreakProfile,StreakWelcomeBanner,Tooltip,nav,
+                     providers,providers-inner,ui}.tsx
+apps/web/hooks/{useStreakInfo,useUserStreakId}.ts
+apps/web/lib/{dapp-kit,forms}.ts
+
+Cross-references to surviving R55 patterns
+-------------------------------------------
+- "objects[0]" → R56.1, R56.2, R56.3, R56.4, R56.17
+- "submitAndWait sweep" → R56.5
+- "invalidateQueries after success" → R56.6, R56.7
+- "JSON.parse without try/catch" → R56.8
+- "client! non-null assertion" → R56.9
+- "per-route loading.tsx / error.tsx" → R56.10

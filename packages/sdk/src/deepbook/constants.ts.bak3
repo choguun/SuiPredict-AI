@@ -19,7 +19,7 @@
 export const DEEPBOOK_PACKAGE_ID = (
   process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ??
   process.env.DEEPBOOK_PACKAGE_ID ??
-  "0xfc780fa48fb5f73aee47d1f561e2b47be5409856157659f10f15a2460c129495"
+  "0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c"
 ).trim();
 
 export const DEEPBOOK_REGISTRY_ID = (
@@ -37,7 +37,7 @@ export function resolveDeepbookPackageId(): string {
   return (
     process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ??
     process.env.DEEPBOOK_PACKAGE_ID ??
-    "0xfc780fa48fb5f73aee47d1f561e2b47be5409856157659f10f15a2460c129495"
+    "0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c"
   ).trim();
 }
 export function resolveDeepbookRegistryId(): string {
