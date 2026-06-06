@@ -1,6 +1,5 @@
 {
-  "buildCommand": "cd ../.. && pnpm install && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/web build",
+  "buildCommand": "cd ../.. && pnpm install --frozen-lockfile && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/web build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "installCommand": "cd ../.. && pnpm install"
+  "framework": "nextjs"
 }
