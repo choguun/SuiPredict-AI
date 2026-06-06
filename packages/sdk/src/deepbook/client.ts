@@ -13,7 +13,14 @@ import {
 } from "@mysten/deepbook-v3";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
-import { DBUSDC_TYPE } from "./constants.js";
+import {
+  DBUSDC_TYPE,
+  DEEPBOOK_PACKAGE_ID,
+  DEEPBOOK_REGISTRY_ID,
+  DEEP_TYPE,
+  resolveDeepbookPackageId,
+  resolveDeepbookRegistryId,
+} from "./constants.js";
 import { isValidSuiAddress } from "../utils.js";
 
 export type { BalanceManager, CoinMap, DeepBookClient, PoolMap };
@@ -31,34 +38,30 @@ export function createDeepBookClient(
     coins?: CoinMap;
     pools?: PoolMap;
     network?: "mainnet" | "testnet";
+    packageIds?: {
+      DEEPBOOK_PACKAGE_ID?: string;
+      REGISTRY_ID?: string;
+      DEEP_TREASURY_ID?: string;
+    };
   } = {},
 ) {
-  // R55 audit fix: pick the *default* coin/pool registry from
-  // the same `SUI_NETWORK` env var the rest of the SDK already
-  // uses. R48 added the `network` param but the defaults below
-  // still spread `testnetCoins`/`testnetPools` regardless of
-  // network — a mainnet deploy that called
-  // `createDeepBookClient(...)` without `options.coins`/`pools`
-  // got the testnet registry and every CLOB `placeLimitOrder`
-  // then aborted with `pool not found` because the pool id
-  // was a testnet one. Use `mainnetCoins`/`mainnetPools` from
-  // `@mysten/deepbook-v3` when `network === "mainnet"`.
   const network = options.network
     ?? (process.env.SUI_NETWORK === "mainnet" ? "mainnet" : "testnet");
   const defaultCoins = network === "mainnet" ? mainnetCoins : testnetCoins;
   const defaultPools = network === "mainnet" ? mainnetPools : testnetPools;
+  // Support custom DeepBook deployments via env vars or explicit options
+  const packageIds = options.packageIds ?? {
+    DEEPBOOK_PACKAGE_ID: resolveDeepbookPackageId(),
+    REGISTRY_ID: resolveDeepbookRegistryId(),
+  };
   return new DeepBookClient({
     client,
     address,
-    // R48 audit fix: derive the default from the same `SUI_NETWORK`
-    // env var the rest of the SDK already uses (R39). A mainnet
-    // deploy that forgets to pass `options.network: "mainnet"`
-    // previously fell through to "testnet" and silently used the
-    // testnet coin/pool registry, breaking every CLOB trade.
     network,
     balanceManagers,
     coins: options.coins ?? defaultCoins,
     pools: options.pools ?? defaultPools,
+    packageIds,
   });
 }
 
@@ -97,6 +100,12 @@ export function createPredictionDeepBookClient(params: {
   return createDeepBookClient(params.client, params.address, balanceManagers, {
     coins: {
       ...testnetCoins,
+      // Override DEEP with self-hosted DEEP type from env
+      DEEP: {
+        address: packageAddress(DEEP_TYPE),
+        type: DEEP_TYPE,
+        scalar: 1_000_000,
+      },
       [PREDICT_BASE_COIN_KEY]: {
         address: packageAddress(params.market.baseCoinType),
         type: params.market.baseCoinType,
