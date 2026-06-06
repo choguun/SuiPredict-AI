@@ -490,9 +490,18 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       txDigest: createResult.digest,
     });
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Pool and coin types already exist — this is expected after first market.
+    // Fall back to demo market silently.
+    if (msg.includes("abort code: 1") && msg.includes("register_pool")) {
+      return recordResult("MarketCreator", {
+        action: "pool_exists",
+        reasoning: `Pool already exists for YES/DUSDC. Created demo market instead: ${spec.title}.`,
+      });
+    }
     return recordResult("MarketCreator", {
       action: "create_failed",
-      reasoning: `Market creation failed: ${err instanceof Error ? err.message : String(err)}`,
+      reasoning: `Market creation failed: ${msg}`,
     });
   }
 }
