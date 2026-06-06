@@ -619,8 +619,9 @@ export async function runPositionIndexer(
       // would silently drop the on-chain value to "general".
       // Rxx fix: on-chain `vector<u8>` fields (e.g. title) come as
       // number arrays in event JSON. Convert to string for SQLite.
-      const safeTitle = typeof j.title === "string" ? j.title
-        : Array.isArray(j.title) ? String.fromCharCode(...j.title)
+      const rawTitle = j.title as string | number[] | undefined;
+      const safeTitle = typeof rawTitle === "string" ? rawTitle
+        : Array.isArray(rawTitle) ? String.fromCharCode(...rawTitle)
         : "";
       const existing = getMarket(j.market_id);
       const onChainCategory = j.category != null ? categoryLabel(Number(j.category)) : null;
