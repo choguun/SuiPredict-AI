@@ -6,7 +6,7 @@
   },
   "steps": {
     "build": {
-      "commands": ["...", "pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build"]
+      "commands": ["pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build"]
     }
   }
 }
