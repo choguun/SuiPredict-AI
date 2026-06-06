@@ -18,7 +18,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "../../data/gamification.db");
+const DB_PATH = process.env.DATA_DIR
+  ? join(process.env.DATA_DIR, "gamification.db")
+  : join(__dirname, "../../data/gamification.db");
 
 let db: Database.Database | null = null;
 

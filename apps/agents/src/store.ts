@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import type { AgentDecisionLog } from "@suipredict/sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "../../data/decisions.db");
+const DB_PATH = process.env.DATA_DIR
+  ? join(process.env.DATA_DIR, "decisions.db")
+  : join(__dirname, "../../data/decisions.db");
 
 let db: Database.Database | null = null;
 

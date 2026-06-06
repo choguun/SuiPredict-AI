@@ -26,3 +26,4 @@ deps/deepbookv3-self-hosted/
 
 # Local deployment outputs
 .env.deployed*
+.vercel

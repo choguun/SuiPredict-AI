@@ -11,7 +11,9 @@ import type {
 } from "@suipredict/sdk";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "../../data/markets.db");
+const DB_PATH = process.env.DATA_DIR
+  ? join(process.env.DATA_DIR, "markets.db")
+  : join(__dirname, "../../data/markets.db");
 
 let db: Database.Database | null = null;
 
