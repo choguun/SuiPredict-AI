@@ -1,5 +1,0 @@
-{
-  "buildCommand": "cd ../.. && corepack enable && pnpm install --no-frozen-lockfile && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/web build",
-  "outputDirectory": ".next",
-  "framework": "nextjs"
-}

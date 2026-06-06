@@ -1,0 +1,6 @@
+{
+  "buildCommand": "pnpm install --no-frozen-lockfile && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/web build",
+  "outputDirectory": "apps/web/.next",
+  "framework": "nextjs",
+  "rootDirectory": "."
+}
