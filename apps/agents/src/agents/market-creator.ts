@@ -185,6 +185,29 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
   }
 
   const { spec, source, fallbackReason } = await proposeMarket();
+  // R58.M4 audit fix: bound `expiry_days` at the build
+  // boundary. The LLM in `proposeMarket` is prompted
+  // to return an integer in [1, 30] and the validation
+  // at line 112 enforces that, but a JSON-shape drift
+  // (e.g. a future `expiry_days: 0` from a model update
+  // that the JSON parser allows through) would produce
+  // an `expiryMs = now + 0` here, and the on-chain
+  // `prediction_market::create_market` aborts with
+  // `EExpiryInPast`. Bail with a `skip` record so the
+  // agent doesn't burn a tick trying the same call
+  // next round.
+  if (
+    !Number.isInteger(spec.expiry_days) ||
+    spec.expiry_days < 1 ||
+    spec.expiry_days > 30
+  ) {
+    return recordResult("MarketCreator", {
+      action: "skip",
+      reasoning:
+        `Invalid expiry_days=${spec.expiry_days}; must be an integer in [1, 30].`,
+      confidence: 95,
+    });
+  }
   const expiryMs = BigInt(Date.now() + spec.expiry_days * 86_400_000);
   const sourceTag =
     source === "fallback"

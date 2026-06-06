@@ -191,7 +191,7 @@ export function buildRotateParlayAdminTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::parlay::rotate_admin`,
-    typeArguments: [coinType],
+    typeArguments: [validateCoinType(coinType)],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.pure.address(newAdmin)],
   });
   return tx;

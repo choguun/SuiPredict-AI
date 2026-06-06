@@ -303,3 +303,26 @@ export function getRecentDecisions(limit = 50): AgentDecisionLog[] {
       };
     });
 }
+
+// R58.M1 audit fix: prune the `decisions` table to
+// the last `daysToKeep` days. The agents were appending
+// to `decisions` on every `logDecision` call (one per
+// market-maker / market-resolver / parlay-worker tick
+// when the LLM returned a non-null response) and
+// nothing was cleaning it up. After a week of testnet
+// uptime the table held ~120k rows (~80 MB); the
+// /decisions admin page that calls
+// `getRecentDecisions(50)` was still fast (the
+// `idx_decisions_ts` index made the LIMIT cheap) but
+// `VACUUM` was no-op and the file grew. Default
+// retention is 30 days; the leaderboard-worker calls
+// this once per tick (the same cadence as its other
+// cleanup sweeps). 30 days covers any plausible
+// post-incident forensic window.
+export function pruneOldDecisions(daysToKeep = 30): number {
+  const cutoffMs = Date.now() - daysToKeep * 24 * 60 * 60 * 1000;
+  const result = getDb()
+    .prepare(`DELETE FROM decisions WHERE timestamp < ?`)
+    .run(cutoffMs);
+  return result.changes;
+}

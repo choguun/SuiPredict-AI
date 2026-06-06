@@ -153,7 +153,21 @@ export default function VaultPage() {
         limit: 100,
       })
       .then(({ objects }) => {
-        setVlpBalance(objects.reduce((s, c) => s + Number(c.balance), 0));
+        // R58.M6 audit fix: accumulate in BigInt
+        // before coercing to number. The previous
+        // `s + Number(c.balance)` lost precision
+        // for sums above 2^53 - 1. Today's wallets
+        // are nowhere near that (a 9 PB VLP
+        // position), but the fix is a 1-line
+        // change and removes a silent-corruption
+        // trap for an admin user whose test
+        // account is seeded with a multi-billion
+        // VLP balance.
+        const totalAtoms = objects.reduce(
+          (s, c) => s + BigInt(c.balance),
+          BigInt(0),
+        );
+        setVlpBalance(Number(totalAtoms));
         // R56.2 audit fix: sort the VLP-coin list by balance
         // and pick the largest. The withdraw handler passes
         // `vlpCoinId` to `buildVaultWithdrawTx` → `tx.object(...)`

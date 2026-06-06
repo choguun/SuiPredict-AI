@@ -77,19 +77,18 @@ function friendlyMoveError(err: unknown, action: string): string {
   if (isMoveAbortInModule(err, "prediction_market")) {
     return `${action} failed: the market is paused or already settled.`;
   }
-  // Cast external-module names: the MoveModule type only enumerates
-  // our own packages, but `isMoveAbortInModule`'s regex matches any
-  // module name in the error message. balance_manager is the Sui
-  // framework primitive, deepbook is the order-book package, dusdc
-  // is the test-stablecoin — all of which can raise aborts our
-  // markets/[id] actions depend on.
-  if (isMoveAbortInModule(err, "balance_manager" as Parameters<typeof isMoveAbortInModule>[1])) {
+  // R58.8 audit fix: `isMoveAbortInModule` now accepts
+  // `string` (not just the `MoveModule` union of our
+  // own packages), so the `as Parameters<...>[1]`
+  // cast for external modules (balance_manager,
+  // deepbook, dusdc) is no longer needed.
+  if (isMoveAbortInModule(err, "balance_manager")) {
     return `${action} failed: balance manager invariant violated (insufficient funds?).`;
   }
-  if (isMoveAbortInModule(err, "deepbook" as Parameters<typeof isMoveAbortInModule>[1])) {
+  if (isMoveAbortInModule(err, "deepbook")) {
     return `${action} failed: DeepBook pool rejected the order.`;
   }
-  if (isMoveAbortInModule(err, "dusdc" as Parameters<typeof isMoveAbortInModule>[1])) {
+  if (isMoveAbortInModule(err, "dusdc")) {
     return `${action} failed: insufficient DUSDC balance.`;
   }
   if (isMoveAbortInModule(err, "agent_policy")) {
@@ -979,10 +978,34 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       );
       if (managerId) {
         setBalanceManagerId(managerId);
-        window.localStorage.setItem(
-          `suipredict.deepbook.${account.address}.manager`,
-          managerId,
-        );
+        // R58.H2 audit fix: wrap the
+        // `localStorage.setItem` in a try/catch.
+        // Safari private mode, browsers with
+        // storage quotas exhausted, and
+        // cookie-blocking enterprise policies
+        // all throw `QuotaExceededError` on
+        // write. The previous unguarded call
+        // would propagate the throw up to
+        // `submitAndWait`'s outer try/catch and
+        // toast a generic "createBalanceManager
+        // failed" — even though the on-chain
+        // tx had succeeded. Log the error so
+        // the user can see why the manager id
+        // doesn't persist across reloads.
+        try {
+          window.localStorage.setItem(
+            `suipredict.deepbook.${account.address}.manager`,
+            managerId,
+          );
+        } catch (e) {
+          console.warn(
+            "[markets/id] localStorage.setItem for BalanceManager failed:",
+            e instanceof Error ? e.message : e,
+          );
+          toast.warning(
+            "BalanceManager created, but couldn't be cached locally. You'll need to recreate it next session.",
+          );
+        }
         toast.success(
           `BalanceManager created: ${digest.slice(0, 16)}...`, { id: toastId }
         );

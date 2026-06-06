@@ -327,32 +327,57 @@ async function pollAndApply(
   // poison event heals" — the operator sees the
   // `failedEvents > 0` log and can act.
   let failedEvents = 0;
-  for (const ev of page.data as unknown as EventEnvelope[]) {
-    try {
+  // R58.M3 audit fix: wrap the apply loop in a single
+  // SQLite transaction. Previously the `apply(ev)` calls
+  // ran in autocommit mode and a SIGTERM (or a Railway
+  // healthcheck-triggered SIGKILL) between, say, the 150th
+  // event and the final `writeCursor` left the row state
+  // 150 events ahead of the persisted cursor. The next
+  // tick re-applied those 150 events; for idempotent
+  // `INSERT … ON CONFLICT DO UPDATE` writers (the
+  // markets / orders tables) this was harmless, but
+  // `decrementPosition` is non-idempotent — re-applying a
+  // `PositionRedeemed` clamps `MAX(0, col - amount)` and
+  // under-counts the position. Wrap the loop in a
+  // transaction; if the loop throws (or the process
+  // dies), SQLite rolls back the entire batch and the
+  // cursor stays at its prior value, so the next tick
+  // re-polls the same page. Note: this is the apply-side
+  // half of the fix; the cursor write below runs in
+  // autocommit but only if every event in the batch
+  // succeeded. A crash between the COMMIT and the cursor
+  // write would still re-apply the batch, but the
+  // `decrementPosition` R58.H2 warning now fires loudly
+  // so the operator can see it.
+  const trx = getDb().transaction((events: EventEnvelope[]) => {
+    for (const ev of events) {
       apply(ev);
-    } catch (err) {
-      failedEvents++;
-      const eid = (ev as { id?: { txDigest?: string; eventSeq?: string } })
-        .id;
-      // R56 audit fix: build the `txDigest:eventSeq` pair
-      // into a local first to avoid the operator-precedence
-      // trap in the previous expression
-      // `eid?.txDigest ?? "?" + ":" + (eid?.eventSeq ?? "?")`
-      // which JS parses as
-      // `eid?.txDigest ?? ("?" + ":" + eid?.eventSeq ?? "?")`.
-      // The result is that when `txDigest` is set the
-      // message reads `0xabc...` (the digest, with the
-      // string concat silently dropped), and when
-      // `txDigest` is missing it reads `?:?` (the
-      // nullish-coalescing returns `"?" + ":" + "?"`).
-      // Concatenate explicitly so the operator gets a
-      // structured `txDigest:eventSeq` pair in both cases.
-      const eidLabel = `${eid?.txDigest ?? "?"}:${eid?.eventSeq ?? "?"}`;
-      console.error(
-        `[position-indexer] ${stateKey} apply failed for event ${eidLabel}:`,
-        err instanceof Error ? err.message : err,
-      );
     }
+  });
+  try {
+    trx(page.data as unknown as EventEnvelope[]);
+  } catch (err) {
+    // The transaction wrapper re-throws on the first
+    // failure. Mark all events as failed so the cursor
+    // park logic below applies. This is intentionally
+    // coarse (a failure on event 5 marks events
+    // 0..page.length-1 as failed) — the previous
+    // per-event try/catch logged which event failed,
+    // but the apply roll-back semantics now mean we
+    // want the operator to see "the whole batch is
+    // parked" not "149 events silently succeeded
+    // before the rollback".
+    failedEvents = page.data.length;
+    const eidLabel = (() => {
+      const first = page.data[0] as
+        | { id?: { txDigest?: string; eventSeq?: string } }
+        | undefined;
+      return `${first?.id?.txDigest ?? "?"}:${first?.id?.eventSeq ?? "?"}`;
+    })();
+    console.error(
+      `[position-indexer] ${stateKey} apply transaction rolled back at ${eidLabel}:`,
+      err instanceof Error ? err.message : err,
+    );
   }
   if (failedEvents > 0) {
     console.warn(

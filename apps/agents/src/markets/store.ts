@@ -571,7 +571,15 @@ export function markMarketDisputed(
   disputeCount: number,
   timestampMs: number,
 ): void {
-  getDb()
+  // R58.H3 audit fix: scope the dispute write to markets
+  // that are still in `resolved`. The
+  // `market-disputer` worker re-fires on
+  // `MarketDisputed` events and a duplicate or replayed
+  // event used to flip an already-`disputed` row back
+  // to status='disputed' and overwrite the evidence URI
+  // — losing the prior URI for the audit trail. Mirror
+  // the `markMarketResolved` guard pattern from R57.
+  const result = getDb()
     .prepare(
       `UPDATE markets
        SET disputed = 1,
@@ -579,9 +587,15 @@ export function markMarketDisputed(
            dispute_evidence_uri = ?,
            last_dispute_at_ms = ?,
            status = 'disputed'
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'resolved'`,
     )
     .run(disputeCount, evidenceUri, timestampMs, marketId);
+  if (result.changes === 0) {
+    console.warn(
+      `[store.markMarketDisputed] no-op for market=${marketId}; ` +
+        `not in 'resolved' state. Likely a duplicate or replayed event.`,
+    );
+  }
 }
 
 export function markMarketUndisputed(
@@ -591,15 +605,26 @@ export function markMarketUndisputed(
   // After the dispute resolves, the market is back to its prior status
   // (resolved) with the (possibly-overridden) outcome. `dispute_count`
   // is preserved for the audit trail; only `disputed` is cleared.
-  getDb()
+  // R58.H3 audit fix: scope the undispu
+  // te write to markets currently in `disputed` so
+  // a stray post-resolution event can't unresolve a
+  // never-disputed market. Mirror the
+  // `markMarketDisputed` guard above.
+  const result = getDb()
     .prepare(
       `UPDATE markets
        SET disputed = 0,
            status = 'resolved',
            outcome = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status = 'disputed'`,
     )
     .run(finalOutcome, marketId);
+  if (result.changes === 0) {
+    console.warn(
+      `[store.markMarketUndisputed] no-op for market=${marketId}; ` +
+        `not in 'disputed' state. Likely a duplicate or replayed event.`,
+    );
+  }
 }
 
 export function upsertOrder(order: {
@@ -820,6 +845,38 @@ export function decrementPosition(
 ): void {
   if (amount <= 0) return;
   const column = side === "yes" ? "yes" : "no";
+  // R58.H2 audit fix: surface a loud warning when the
+  // pre-update position is missing. The UPSERT pattern
+  // here is correct (it inserts a 0-row,0-row sentinel
+  // and then the DO UPDATE clamps at 0), but the path
+  // that triggers it is itself a sign that an earlier
+  // `incrementPosition` was missed — most commonly a
+  // `PositionMinted` event seen by the indexer's poll
+  // loop AFTER the `PositionRedeemed` event. Without
+  // the warning the operator sees a phantom "0 shares
+  // burned" in the decision log and assumes the
+  // indexer is healthy. The same R45 pattern added
+  // a warning to `markPoolWeekSettled` for a similar
+  // reason.
+  const before = getDb()
+    .prepare(`SELECT yes, no FROM positions WHERE market_id = ? AND address = ?`)
+    .get(marketId, address) as { yes: number; no: number } | undefined;
+  if (!before) {
+    console.warn(
+      `[store.decrementPosition] no existing position for market=${marketId} ` +
+        `address=${address}; UPSERTing a sentinel. The indexer is likely ` +
+        `out of order (Redeemed seen before Minted).`,
+    );
+  } else {
+    const had = before[column];
+    if (had < amount) {
+      console.warn(
+        `[store.decrementPosition] clamping ${column}=${had} - ${amount} -> 0 ` +
+          `for market=${marketId} address=${address}. Burned > held; ` +
+          `check the indexer cursor for a missed mint event.`,
+      );
+    }
+  }
   getDb()
     .prepare(
       `INSERT INTO positions (market_id, address, yes, no)

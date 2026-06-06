@@ -550,6 +550,25 @@ export function markPoolWeekSettled(
   weekIndex: number,
   tsMs: number,
 ): void {
+  // R58.M5 audit fix: bound `weekIndex` at the write
+  // boundary. A negative or non-integer weekIndex (the
+  // prize-distributor reads it from `prize_pool::current_week`
+  // but a future schema could expose a signed type) would
+  // silently create a `pool_weeks` row keyed at, say,
+  // -1, which `isPoolWeekSettled` would never re-encounter
+  // in normal flow but would still match a `SELECT
+  // … WHERE week_index = -1` from an audit query. Cap
+  // to [0, MAX_WEEK] where MAX_WEEK is generous (10
+  // years = 520 weeks). Mirror the `buildSettleWeekTx`
+  // guard pattern from R55.
+  const MAX_WEEK = 520;
+  if (!Number.isInteger(weekIndex) || weekIndex < 0 || weekIndex > MAX_WEEK) {
+    console.warn(
+      `[gamification.markPoolWeekSettled] rejecting poolId=${poolId} ` +
+        `weekIndex=${weekIndex}; must be an integer in [0, ${MAX_WEEK}].`,
+    );
+    return;
+  }
   getDb()
     .prepare(
       `INSERT INTO pool_weeks (pool_id, week_index, settled, settled_at_ms)

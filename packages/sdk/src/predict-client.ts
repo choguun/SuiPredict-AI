@@ -288,8 +288,23 @@ export async function mergeAndSplitDusdc(
   }
   const total = objects.reduce((s, c) => s + BigInt(c.balance), 0n);
   if (total < amount) {
+    // R58.9 audit fix: format the human-readable dUSDC
+    // amounts via BigInt division so a balance above
+    // 2^53 - 1 (≈ 9 quadrillion atoms, ~9 PB of
+    // dUSDC) doesn't lose precision. Today's wallets
+    // are nowhere near that, but a stuck indexer
+    // returning a corrupted 64-bit balance would
+    // silently print "NaN dUSDC" via `Number(bigint) / 1e6`.
+    // Mirror the pattern used by `parlay-client.ts:248-272`
+    // for the gRPC `Balance<T>` reading.
+    const toDusdc = (atoms: bigint): string => {
+      const base = 1_000_000n;
+      const whole = atoms / base;
+      const frac = atoms % base;
+      return `${whole}.${frac.toString().padStart(6, "0")}`;
+    };
     throw new Error(
-      `Insufficient DUSDC: have ${Number(total) / 1e6}, need ${Number(amount) / 1e6}`,
+      `Insufficient DUSDC: have ${toDusdc(total)}, need ${toDusdc(amount)}`,
     );
   }
   // R52 audit fix: pick the largest coin as

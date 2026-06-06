@@ -95,7 +95,14 @@ async function findOwnedDusdcCoin(
     owner,
     coinType: DUSDC_TYPE,
   });
-  const sorted = objects.sort((a, b) =>
+  // R58.6 audit fix: spread before sort. The gRPC
+  // `listCoins` response is a fresh array per call so
+  // in-place mutation is observably safe today, but a
+  // future caller that reuses the page across pages or
+  // passes a shared cache would silently see the tail
+  // reordered. Match the R56.2 pattern used in
+  // `apps/web/app/vault/page.tsx`.
+  const sorted = [...objects].sort((a, b) =>
     BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
   );
   const hit = sorted.find((c) => BigInt(c.balance) >= minBalance);

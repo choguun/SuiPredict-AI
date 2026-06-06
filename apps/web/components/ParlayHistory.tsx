@@ -107,6 +107,25 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
   // fetch was missed.
   const detailCtlsRef = useRef<Map<string, AbortController>>(new Map());
 
+  // R58.H1 audit fix: abort every in-flight detail
+  // fetch on unmount. The per-row `detailCtlsRef`
+  // Map is created once and only the per-row
+  // collapse path (`toggleDetail`'s `expanded[parlayId]`
+  // branch) deletes individual entries. A user who
+  // navigates away from the parlay page with N
+  // in-flight detail fetches used to leave N TCP
+  // sockets open until the agents responded — and
+  // the strict-mode dev double-mount then started a
+  // second round of fetches with the orphaned map.
+  // Abort + clear the map on unmount.
+  useEffect(() => {
+    return () => {
+      const ctls = detailCtlsRef.current;
+      for (const ctl of ctls.values()) ctl.abort();
+      ctls.clear();
+    };
+  }, []);
+
   async function toggleDetail(parlayId: string) {
     // Optimistic toggle: if already loaded, collapse; if not, fetch
     // from the agents /parlay/{id} endpoint. The same ParlayRow is

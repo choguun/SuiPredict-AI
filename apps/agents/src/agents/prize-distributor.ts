@@ -24,7 +24,7 @@
 import { readPrizePoolBalance } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeBigInt } from "../lib.js";
-import { listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
+import { isPoolWeekSettled, listWeeklyLeaderboard, weekIndexFor } from "../gamification/store.js";
 
 // Env reads live inside `runPrizeDistributor` so a late write by
 // `bootstrapEnv` (apps/agents/src/index.ts) takes effect on the next
@@ -103,6 +103,22 @@ export async function runPrizeDistributor(
   }
 
   const priorWeek = weekIndexFor(Date.now()) - 1;
+  // R58.M6 audit fix: short-circuit if the (pool, priorWeek)
+  // pair has already been marked settled. The distributor
+  // is invoked on a 24h cron, but Railway deploys can re-run
+  // the same tick within minutes (e.g. a healthcheck-induced
+  // restart). Without the guard, every restart would log a
+  // fresh "ready" record for the same week, and any future
+  // signature-issuing path that keys off this distributor
+  // (e.g. an automated claim sponsor) would replay claims
+  // for the same week. The guard is cheap (a single indexed
+  // SELECT against `pool_weeks`).
+  if (isPoolWeekSettled(PRIZE_POOL_ID, priorWeek)) {
+    return recordResult("PrizeDistributor", {
+      action: "noop",
+      reasoning: `Week ${priorWeek} already marked settled; skipping.`,
+    });
+  }
   const top = listWeeklyLeaderboard(priorWeek, 10);
   if (top.length === 0) {
     return recordResult("PrizeDistributor", {

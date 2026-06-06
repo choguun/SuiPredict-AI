@@ -39,6 +39,21 @@ export function getSharedJsonRpcClient(): SuiJsonRpcClient {
   return _cachedJsonRpcClient;
 }
 
+// R58.M2 audit fix: drop the cached JSON-RPC client
+// during SIGTERM. The agents' SIGTERM handler in
+// `index.ts` calls `closeSharedClient()` to release
+// the gRPC channel + reset the SDK's `_sharedClient`
+// cache, but the local `_cachedJsonRpcClient` was
+// never nulled — a subsequent reconnect (e.g. a
+// SIGTERM-then-immediate-restart under Railway's
+// healthcheck window) returned the stale client
+// whose `fetch` was already torn down. The fix is a
+// symmetric "drop cache" entry point.
+export function resetSharedJsonRpcClient(): void {
+  _cachedJsonRpcClient = null;
+  _cachedJsonRpcNetwork = null;
+}
+
 // R55 audit fix: `safeInt` / `safeFloat` / `safeBigInt`
 // helpers for hot-patchable env reads. A `.env` typo
 // (e.g. `MAX_PARLAYS_PER_TICK=NaN` from `Number("abc")`,
@@ -86,7 +101,23 @@ export function safeFloat(
     );
     return fallback;
   }
-  return Math.max(min, Math.min(max, n));
+  // R58.L2 audit fix: log a warning when the env
+  // value is silently clamped. A deployer's
+  // `MAX_PARLAY_PAYOUT_BPS=20000` (intended 2x
+  // cap, mistakenly typed as 2.0x) used to clamp
+  // to 1.0 with no log; the next deploy of
+  // `.env.production` brought the bug back. The
+  // R55 helper already logged the non-finite
+  // branch; this adds the clamp branch. The
+  // helper is private — the warn is for the
+  // operator, not the caller.
+  const clamped = Math.max(min, Math.min(max, n));
+  if (clamped !== n) {
+    console.warn(
+      `[lib.safeFloat] env value "${v}" (${n}) clamped to [${min}, ${max}] -> ${clamped}.`,
+    );
+  }
+  return clamped;
 }
 
 export function safeBigInt(
@@ -123,6 +154,15 @@ export async function callLlm(prompt: string): Promise<string | null> {
   if (!apiKey) return null;
 
   try {
+    // R58.H1 audit fix: bound the fetch with a
+    // 30s timeout. The previous `await fetch(...)` had
+    // no `signal`; a hung OpenAI connection (TLS
+    // handshake stalls, dead proxy) would hang the
+    // worker tick indefinitely, blocking the next
+    // `await callLlm(prompt)` call on the same event
+    // loop and silently backing up the cron. 30s is
+    // above p99 for gpt-4o-mini (typically < 8s) but
+    // well below the cron loop period (~60s).
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -141,6 +181,7 @@ export async function callLlm(prompt: string): Promise<string | null> {
         ],
         temperature: 0.2,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       // R56 audit fix: log the HTTP status (without the key, body,

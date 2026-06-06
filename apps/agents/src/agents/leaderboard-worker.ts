@@ -30,6 +30,7 @@ import {
 } from "../gamification/store.js";
 import type { AgentResult } from "../lib.js";
 import { recordResult } from "../lib.js";
+import { pruneOldDecisions } from "../store.js";
 
 const WEEK_MS = 7 * 86_400_000;
 
@@ -113,9 +114,18 @@ export async function runLeaderboardWorker(): Promise<AgentResult> {
     cutoffDay,
   );
 
+  // R58.M1 audit fix: prune the `decisions` table on the
+  // same leaderboard cadence. The default 30-day retention
+  // matches the most common forensic window; the call is
+  // cheap (a single `DELETE FROM decisions WHERE
+  // timestamp < ?` against the `idx_decisions_ts` index).
+  const pruned = pruneOldDecisions();
+
   return recordResult("LeaderboardWorker", {
     action: "rollup",
-    reasoning: `Week ${priorWeek}: archived ${archived} rows, cleared ${cleared} stale daily rows.`,
+    reasoning:
+      `Week ${priorWeek}: archived ${archived} rows, cleared ${cleared} ` +
+      `stale daily rows, pruned ${pruned} stale decision-log rows.`,
     confidence: 100,
   });
 }

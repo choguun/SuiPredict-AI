@@ -71,7 +71,7 @@ import {
 // dispute page's `friendlyDisputeError` and the markets/[id]
 // page's `friendlyMoveError` follow the same shape; lift to
 // a shared util if a third caller adopts it.
-import { moveAbortSymbolAny } from "@suipredict/sdk/move-errors";
+import { extractMoveAbortCode, moveAbortSymbolAny } from "@suipredict/sdk/move-errors";
 import { Card, Stat, Badge } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 
@@ -144,15 +144,19 @@ function shortAddr(a: string | null | undefined): string {
 // `EUnauthorized` / `ETooSoon` / `EBpsTooHigh` from the operator.
 function friendlyAdminError(err: unknown, action: string): string {
   const base = err instanceof Error ? err.message : String(err);
-  // Try to extract a Move abort code from the message; if found
-  // and the SDK's `MODULE_CODES` table has a symbolic name, show
-  // it. `moveAbortSymbolAny` walks every registered module and
-  // returns the first match (acceptable here because the admin
-  // page is the one place where the operator benefits from any
-  // symbolic name over a raw code).
-  const m = /MoveAbort[^\n]*\)\s*,\s*(\d+)\s*\)/.exec(base);
-  if (m) {
-    const code = Number(m[1]);
+  // R58.7 audit fix: route through the SDK's shared
+  // `extractMoveAbortCode` helper instead of duplicating a
+  // local regex. The local regex used non-greedy
+  // `MoveAbort[^\n]*\)\s*,\s*(\d+)\s*\)` and returned the
+  // *innermost* (first-in-string) abort code — for a
+  // wrapper PTB that aborts on a deeper call (e.g. the
+  // `withdraw_fees` admin tx whose Move aborts in
+  // `vault::withdraw` underneath) the admin panel would
+  // misreport the outer code. The SDK helper (R57.3) is
+  // greedy + anchored to `in command` and returns the
+  // outer (last) abort.
+  const code = extractMoveAbortCode(base);
+  if (code != null) {
     const sym = moveAbortSymbolAny(code);
     if (sym) {
       return `${action} failed: ${sym} (abort code ${code})`;
@@ -385,6 +389,29 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
+    // R58.H3 audit fix: own an AbortController at the
+    // effect level. The Sui gRPC `core.getObject` API
+    // doesn't accept a `signal` argument at the SDK
+    // level (the protocol-reads helper at
+    // `protocol-reads.ts:23` calls `client.core.getObject`
+    // with no signal), so the underlying RPCs can't be
+    // cancelled mid-flight. The fix is two-fold:
+    //   (a) use the `cancelled` flag below to drop
+    //       setState writes from superseded ticks
+    //       (the previous code already did this for
+    //       the *first* nonce change but the inner
+    //       `Promise.all` setStates ran anyway for
+    //       the late-arriving responses — those
+    //       were the "stale data overwrites fresh
+    //       data" race the audit flagged).
+    //   (b) store the `cancelled` flag in a ref so
+    //       a second effect re-entry (refresh
+    //       button, prop change) cancels the prior
+    //       tick at the same instant the new tick
+    //       starts, not on React's next render
+    //       commit. The `cancelled` ref is checked
+    //       between every `Promise.all` block.
+    const cancelledRef = { current: false };
     setLoading(true);
     (async () => {
       const next: LiveState = {
@@ -398,18 +425,19 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
       // the whole panel. Operators can see "—" for a slot that
       // failed to load and try the refresh button.
       try {
-        if (FEE_VAULT_ID) {
+        if (FEE_VAULT_ID && !cancelledRef.current) {
           const [balance, admin] = await Promise.all([
             readFeeVaultBalance(client, FEE_VAULT_ID),
             readFeeVaultAdmin(client, FEE_VAULT_ID),
           ]);
+          if (cancelledRef.current) return;
           next.feeVault = { balance, admin };
         }
       } catch {
         // leave null
       }
       try {
-        if (PRIZE_POOL_ID) {
+        if (PRIZE_POOL_ID && !cancelledRef.current) {
           const [balance, weeklyPrize, currentWeek, distribution] =
             await Promise.all([
               readPrizePoolBalance(client, PRIZE_POOL_ID),
@@ -417,26 +445,28 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
               readPrizePoolCurrentWeek(client, PRIZE_POOL_ID),
               readPrizePoolDistribution(client, PRIZE_POOL_ID),
             ]);
+          if (cancelledRef.current) return;
           next.prizePool = { balance, weeklyPrize, currentWeek, distribution };
         }
       } catch {
         // leave null
       }
       try {
-        if (VAULT_OBJECT_ID) {
+        if (VAULT_OBJECT_ID && !cancelledRef.current) {
           const [available, allocated, total, admin] = await Promise.all([
             readProtocolVaultAvailableBalance(client, VAULT_OBJECT_ID),
             readProtocolVaultAllocated(client, VAULT_OBJECT_ID),
             readProtocolVaultTotalBalance(client, VAULT_OBJECT_ID),
             readProtocolVaultAdmin(client, VAULT_OBJECT_ID),
           ]);
+          if (cancelledRef.current) return;
           next.protocolVault = { available, allocated, total, admin };
         }
       } catch {
         // leave null
       }
       try {
-        if (PARLAY_POOL_ID) {
+        if (PARLAY_POOL_ID && !cancelledRef.current) {
           const [balance, totalVolume, totalPaidOut, maxPayoutBps, admin] =
             await Promise.all([
               readParlayPoolBalance(client, PARLAY_POOL_ID),
@@ -445,6 +475,7 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
               readParlayMaxPayoutBps(client, PARLAY_POOL_ID),
               readParlayPoolAdmin(client, PARLAY_POOL_ID),
             ]);
+          if (cancelledRef.current) return;
           next.parlayPool = {
             balance,
             totalVolume,
@@ -456,13 +487,14 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
       } catch {
         // leave null
       }
-      if (!cancelled) {
+      if (!cancelledRef.current) {
         setState(next);
         setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
+      cancelledRef.current = true;
     };
   }, [client, nonce]);
 

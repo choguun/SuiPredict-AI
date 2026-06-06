@@ -10,7 +10,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   computeMultiplierBps,
-  createClient,
+  getSharedClient,
   getStreakInfo,
   type StreakInfo,
 } from "@suipredict/sdk";
@@ -48,8 +48,15 @@ export function useStreakInfo(streakId: string | null | undefined): UseStreakInf
     staleTime: 30_000,
     queryFn: async () => {
       if (!streakId) return null;
-      const client = createClient();
-      return getStreakInfo(client, streakId);
+      // R58.4 audit fix: route through `getSharedClient()`
+      // (process-wide gRPC client singleton) instead of
+      // `createClient()` which opened a fresh connection
+      // per query. The streak page subscribes to this hook
+      // on every re-render; a 10-minute session was leaking
+      // ~20 idle gRPC channels. The other read hooks
+      // (useMarket, usePortfolio, useUserStreakId) already
+      // use the shared client.
+      return getStreakInfo(getSharedClient(), streakId);
     },
   });
 

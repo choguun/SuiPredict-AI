@@ -224,10 +224,21 @@ export function isMoveAbortCode(
  *  decision in the parlay module is by definition non-retryable).
  *  Returns false for non-Move-abort errors and for aborts from other
  *  modules; call `extractMoveAbortCode(err)` first if you need the
- *  code. */
+ *  code.
+ *
+ *  R58.8 audit fix: the `module` parameter is typed as
+ *  `string` (not the narrower `MoveModule` union) so
+ *  callers can match against external packages — the
+ *  Sui framework `balance_manager`, the
+ *  `deepbook` order-book package, the test-stablecoin
+ *  `dusdc` module — without the
+ *  `as Parameters<typeof isMoveAbortInModule>[1]`
+ *  cast that the markets/[id] page used to need. The
+ *  union is preserved as a documentation aid via the
+ *  `MoveModule` re-export below. */
 export function isMoveAbortInModule(
   err: unknown,
-  module: MoveModule,
+  module: string,
 ): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   // Sui's error text embeds the module name as `module: "<name>"` in

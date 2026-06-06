@@ -2,6 +2,7 @@ import {
   PREDICT_OBJECT_ID,
   resolvePredictServerUrl,
 } from "./constants.js";
+import { isValidSuiAddress } from "./utils.js";
 import type {
   ManagerSummary,
   MintedPosition,
@@ -13,6 +14,27 @@ import type {
   VaultSummary,
   VaultSummaryRaw,
 } from "./types.js";
+
+// R58.5 audit fix: every URL interpolated in this file
+// embeds a Sui object id (`predict_id`, `manager_id`,
+// `oracle_id`). A missing or malformed id — empty
+// string from a defaulted `PREDICT_OBJECT_ID`, a
+// whitespace-padded env-derived value, or the
+// all-zeros placeholder — silently produces a 404
+// (e.g. `/predicts//oracles`) or a URL-injection
+// 400. The R42 audit pass added `normalizeObjectId`
+// for the on-chain builders; the predict-server
+// fetchers were missed. Centralize the guard here
+// so each call site gets the same loud build-time
+// error.
+function requireId(id: string, paramName: string): string {
+  if (!isValidSuiAddress(id)) {
+    throw new Error(
+      `predict-server: ${paramName} must be a non-zero Sui address (got "${id}")`,
+    );
+  }
+  return id.toLowerCase();
+}
 
 async function fetchJson<T>(path: string): Promise<T> {
   // R52 audit fix: bound the fetch with a
@@ -106,7 +128,7 @@ export async function getStatus() {
 }
 
 export async function getOracles(predictId = PREDICT_OBJECT_ID): Promise<OracleInfo[]> {
-  return fetchJson(`/predicts/${predictId}/oracles`);
+  return fetchJson(`/predicts/${requireId(predictId, "predictId")}/oracles`);
 }
 
 export async function getActiveOracles(predictId = PREDICT_OBJECT_ID): Promise<OracleInfo[]> {
@@ -115,12 +137,12 @@ export async function getActiveOracles(predictId = PREDICT_OBJECT_ID): Promise<O
 }
 
 export async function getOracleState(oracleId: string): Promise<OracleState> {
-  const raw = await fetchJson<OracleStateResponse>(`/oracles/${oracleId}/state`);
+  const raw = await fetchJson<OracleStateResponse>(`/oracles/${requireId(oracleId, "oracleId")}/state`);
   return normalizeOracleState(raw);
 }
 
 export async function getVaultSummary(predictId = PREDICT_OBJECT_ID): Promise<VaultSummary> {
-  const raw = await fetchJson<VaultSummaryRaw>(`/predicts/${predictId}/vault/summary`);
+  const raw = await fetchJson<VaultSummaryRaw>(`/predicts/${requireId(predictId, "predictId")}/vault/summary`);
   return normalizeVaultSummary(raw);
 }
 
@@ -149,31 +171,41 @@ export async function getManagerForOwner(owner: string): Promise<string | null> 
 }
 
 export async function getManagerSummary(managerId: string): Promise<ManagerSummary> {
-  return fetchJson(`/managers/${managerId}/summary`);
+  return fetchJson(`/managers/${requireId(managerId, "managerId")}/summary`);
 }
 
 export async function getManagerPositions(managerId: string): Promise<PositionSummary[]> {
   const data = await fetchJson<{ positions: PositionSummary[] } | PositionSummary[]>(
-    `/managers/${managerId}/positions/summary`,
+    `/managers/${requireId(managerId, "managerId")}/positions/summary`,
   );
   if (Array.isArray(data)) return data;
   return data.positions ?? [];
 }
 
 export async function getMintedPositions(limit = 50): Promise<MintedPosition[]> {
+  // `limit` is a numeric query param; cast to integer
+  // to prevent an injection like `?limit=100&foo=bar`
+  // from being interpolated verbatim. `Number.isInteger`
+  // rejects floats, NaN, and non-numbers.
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error(`predict-server: limit must be a non-negative integer (got ${limit})`);
+  }
   return fetchJson(`/positions/minted?limit=${limit}`);
 }
 
 export async function getRedeemedPositions(limit = 50): Promise<RedeemedPosition[]> {
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error(`predict-server: limit must be a non-negative integer (got ${limit})`);
+  }
   return fetchJson(`/positions/redeemed?limit=${limit}`);
 }
 
 export async function getOracleSviLatest(oracleId: string) {
-  return fetchJson(`/oracles/${oracleId}/svi/latest`);
+  return fetchJson(`/oracles/${requireId(oracleId, "oracleId")}/svi/latest`);
 }
 
 export async function getOraclePriceLatest(oracleId: string) {
-  return fetchJson(`/oracles/${oracleId}/prices/latest`);
+  return fetchJson(`/oracles/${requireId(oracleId, "oracleId")}/prices/latest`);
 }
 
 export async function findNearestActiveOracle(

@@ -14,7 +14,7 @@ import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
 import type { AgentResult } from "./lib.js";
-import { closeSharedClient, safeInt } from "./lib.js";
+import { closeSharedClient, resetSharedJsonRpcClient, safeInt } from "./lib.js";
 import { getRecentDecisions, closeDb as closeDecisionsDb } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
@@ -634,6 +634,19 @@ async function main() {
     stopScheduler(5_000)
       .then(() => closeServer)
       .then(() => closeSharedClient())
+      .then(() => {
+        // R58.M2 audit fix: drop the cached JSON-RPC
+        // client on shutdown. The agents' SIGTERM
+        // handler already closes the gRPC channel
+        // and resets the SDK's `_sharedClient`
+        // cache; this also nulls the local
+        // JSON-RPC singleton so a restart of the
+        // same process (or a stale handle picked
+        // up by the next `getSharedJsonRpcClient()`
+        // call) doesn't reuse a torn-down
+        // `fetch`.
+        resetSharedJsonRpcClient();
+      })
       .then(() => Promise.allSettled([
         closeDecisionsDb(),
         closeGamificationDb(),

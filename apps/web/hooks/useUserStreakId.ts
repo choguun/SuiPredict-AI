@@ -7,7 +7,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { createClient, streakIdForUser } from "@suipredict/sdk";
+import { getSharedClient, streakIdForUser } from "@suipredict/sdk";
 
 const REGISTRY_ID = process.env.NEXT_PUBLIC_STREAK_REGISTRY_ID ?? "";
 
@@ -28,8 +28,15 @@ export function useUserStreakId(address: string | null | undefined): {
     staleTime: 30_000,
     queryFn: async () => {
       if (!address || !REGISTRY_ID) return null;
-      const client = createClient();
-      return streakIdForUser(client, REGISTRY_ID, address);
+      // R58.4 audit fix: route through `getSharedClient()`
+      // (process-wide gRPC client singleton) instead of
+      // `createClient()` which opens a fresh connection
+      // per query invocation. The home page, StreakProfile,
+      // and ClaimPrizeButton each fire this hook; a typical
+      // session saw ~20 idle gRPC channels after a few
+      // minutes. The other read hooks (useMarket, usePortfolio,
+      // …) already use the shared client.
+      return streakIdForUser(getSharedClient(), REGISTRY_ID, address);
     },
   });
 

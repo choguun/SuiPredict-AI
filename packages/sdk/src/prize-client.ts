@@ -88,12 +88,26 @@ export function buildFundPoolTx(
       `buildFundPoolTx: amountAtoms must be > 0 (got ${amountAtoms})`,
     );
   }
+  // R58.2 audit fix: route the optional `prizeCoinType` through
+  // `validateCoinType` so an env-var typo surfaces at build time
+  // instead of as an opaque "Invalid type argument" at signature.
+  // The other prize builders (claim, distribute, etc.) already
+  // validate; this one was the only survivor.
+  const validatedCoinType = validateCoinType(prizeCoinType);
   const tx = new Transaction();
   // R45 audit fix: normalize the source coin id (the R42 audit
   // pass added `normalizeObjectId` to `poolId` but skipped the
   // `coinId` on the splitCoins source). Mixed-case or
   // whitespace-suffixed coin ids from env-derived values fail
   // with `invalid input object` at BCS resolution. The
+  // R58 audit pass adds `validateCoinType` for symmetry with
+  // the other prize builders.
+  // R58.2 audit fix: route the optional `prizeCoinType`
+  // through `validateCoinType` so an env-var typo surfaces
+  // at build time instead of as an opaque "Invalid type
+  // argument" at signature. The other prize builders
+  // (claim, distribute, etc.) already validate; this one was
+  // the only survivor.
   // R38 `splitCoins` fix was the right pattern; R42 was the
   // right idempotency-pattern for the pool id; this is the
   // matching source-side guard.
@@ -103,7 +117,7 @@ export function buildFundPoolTx(
   );
   tx.moveCall({
     target: `${PKG()}::prize_pool::fund_pool`,
-    typeArguments: [prizeCoinType],
+    typeArguments: [validatedCoinType],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.object(fundCoin)],
   });
   return tx;
@@ -148,13 +162,17 @@ export function buildCreatePoolTx(params: {
     );
   }
   const tx = new Transaction();
+  // R58.2 audit fix: route the optional `prizeCoinType` through
+  // `validateCoinType` so an env-var typo surfaces at build time
+  // instead of as an opaque "Invalid type argument" at signature.
+  const seedPrizeCoinType = validateCoinType(params.prizeCoinType ?? DUSDC_TYPE);
   const [seedCoin] = tx.splitCoins(
     tx.object(normalizeObjectId(params.initialCoinId)),
     [tx.pure.u64(params.seedAtoms)],
   );
   tx.moveCall({
     target: `${PKG()}::prize_pool::create_pool`,
-    typeArguments: [params.prizeCoinType ?? DUSDC_TYPE],
+    typeArguments: [seedPrizeCoinType],
     arguments: [tx.object(seedCoin), tx.pure.u64(params.initialWeek)],
   });
   return tx;
@@ -322,10 +340,14 @@ export function buildSettleWeekTx(
       `buildSettleWeekTx: weekIndex must be a bigint >= 0 (got ${weekIndex})`,
     );
   }
+  // R58.2 audit fix: route the optional `prizeCoinType` through
+  // `validateCoinType` so an env-var typo surfaces at build time
+  // instead of as an opaque "Invalid type argument" at signature.
+  const settledPrizeCoinType = validateCoinType(prizeCoinType);
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::settle_week`,
-    typeArguments: [prizeCoinType],
+    typeArguments: [settledPrizeCoinType],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(adminCapId)), tx.pure.u64(weekIndex)],
   });
   return tx;
@@ -351,10 +373,13 @@ export function buildRotateWeekTx(
       `buildRotateWeekTx: newWeek must be a bigint >= 0 (got ${newWeek})`,
     );
   }
+  // R58.2 audit fix: route the optional `prizeCoinType` through
+  // `validateCoinType` for symmetry with the other prize builders.
+  const rotatedPrizeCoinType = validateCoinType(prizeCoinType);
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::rotate_week`,
-    typeArguments: [prizeCoinType],
+    typeArguments: [rotatedPrizeCoinType],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(adminCapId)), tx.pure.u64(newWeek)],
   });
   return tx;
@@ -473,10 +498,13 @@ export function buildSetDistributionTx(
       `buildSetDistributionTx: bps must sum to BPS (${BPS}) (got ${sumBps})`,
     );
   }
+  // R58.2 audit fix: route the optional `prizeCoinType` through
+  // `validateCoinType` for symmetry with the other prize builders.
+  const distPrizeCoinType = validateCoinType(prizeCoinType);
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prize_pool::set_distribution`,
-    typeArguments: [prizeCoinType],
+    typeArguments: [distPrizeCoinType],
     arguments: [
       tx.object(normalizeObjectId(poolId)),
       tx.object(normalizeObjectId(adminCapId)),

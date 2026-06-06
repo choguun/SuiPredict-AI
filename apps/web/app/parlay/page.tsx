@@ -210,6 +210,27 @@ export default function ParlayPage() {
       setDusdcBalance(null);
       return;
     }
+    // R58.M3 audit fix: gate the post-create
+    // refetch on `document.visibilityState ===
+    // "visible"`. A 5-minute backgrounded tab
+    // creates a parlay, switches to another tab,
+    // and switches back: the effect re-fires
+    // because `created?.parlayId` is in the dep
+    // list, but the `refreshDusdcBalance()`
+    // inside doesn't check the page is visible.
+    // On resume the user sees a brief "Loading…"
+    // spinner for the balance; on a slow node the
+    // fetch can take > 1s. Skip the call when
+    // hidden so the resume re-fires only when the
+    // user actually looks at the page. The
+    // `getSharedClient()` and the SDK already
+    // handle a stale read gracefully.
+    if (
+      typeof document !== "undefined" &&
+      document.visibilityState !== "visible"
+    ) {
+      return;
+    }
     refreshDusdcBalance();
     // Also re-fetch right after a successful create — `created`
     // transitions from null to a value, which means a coin just got

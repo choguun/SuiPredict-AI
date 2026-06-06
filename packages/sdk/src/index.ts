@@ -24,6 +24,17 @@ export {
   POOL_SUI_DBUSDC,
   POOL_DEEP_DBUSDC,
   POOL_CREATION_FEE_DEEP,
+  // R58.3 audit fix: re-export the hot-patch getters
+  // `resolveDeepbookPackageId()` and
+  // `resolveDeepbookRegistryId()` from the barrel. They
+  // are sibling getters to the already-exported
+  // `resolveMarketPackageId` (R57.12) and
+  // `resolveAgentPolicyPackageId` (R55), so a caller
+  // picking up a deep-book config change after the SDK
+  // is already loaded needs the same hot-patchability.
+  resolveDeepbookPackageId,
+  resolveDeepbookRegistryId,
+  resolveDeepType,
 } from "./deepbook/constants.js";
 export * from "./deepbook/client.js";
 

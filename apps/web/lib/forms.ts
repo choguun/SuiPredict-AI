@@ -44,3 +44,55 @@ export function clampNumberString(
   if (n > max) return max;
   return n;
 }
+
+/**
+ * Convert a `clampNumberString`-cleaned human-readable decimal to
+ * base-unit BigInt atoms using integer-only string parsing.
+ *
+ * R58.M7 audit fix: the previous
+ * `BigInt(Math.round(amount * 1_000_000))` pattern
+ * coerces the string through a `Number` (IEEE-754
+ * double) before rounding and BigInt-casting. For
+ * the typical vault-deposit range (1 to 1_000_000
+ * DUSDC) this is safe — the value is at most 1e12
+ * atoms, well below 2^53. But the helper is
+ * paranoid-by-default: a future caller that lifts
+ * the clamp ceiling to, say, 1e9 DUSDC (1e15 atoms)
+ * would silently lose 1-ULP precision and the
+ * downstream `splitCoins` would build a PTB that
+ * is 1 atom short of the user's intent.
+ *
+ * The implementation parses the integer and
+ * fractional parts as separate `BigInt`s and
+ * combines them, skipping the `Number(...)`
+ * intermediate. `scale` is the number of fraction
+ * digits (6 for dUSDC, 9 for spot prices in
+ * `tick_size` units). Throws on a malformed input
+ * — callers are expected to run `clampNumberString`
+ * first, so the throw is a programmer error and
+ * should surface in dev.
+ */
+export function decimalStringToAtoms(
+  raw: string,
+  scale: number,
+): bigint {
+  if (!Number.isInteger(scale) || scale < 0 || scale > 18) {
+    throw new Error(
+      `decimalStringToAtoms: scale must be an integer in [0, 18] (got ${scale})`,
+    );
+  }
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed || !POSITIVE_DECIMAL_RE.test(trimmed)) {
+    throw new Error(
+      `decimalStringToAtoms: "${raw}" is not a valid positive decimal with up to ${scale} fraction digits`,
+    );
+  }
+  const [whole, frac = ""] = trimmed.split(".");
+  const scaleBig = BigInt(10) ** BigInt(scale);
+  const wholeAtoms = BigInt(whole) * scaleBig;
+  // Pad the fractional part to `scale` digits and
+  // convert to BigInt directly — never via `Number`.
+  const padded = frac.padEnd(scale, "0").slice(0, scale);
+  const fracAtoms = BigInt(padded || "0");
+  return wholeAtoms + fracAtoms;
+}
