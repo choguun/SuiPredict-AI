@@ -18,6 +18,7 @@ use deepbook::balance_manager::{
 use deepbook::order_info;
 use deepbook::pool::{Self, Pool};
 use deepbook::registry::Registry;
+use deepbook::constants::{Self, pool_creation_fee};
 use token::deep::DEEP;
 use sui::balance::{Self, Balance};
 use sui::clock::Clock;
@@ -334,15 +335,17 @@ public fun create_market<Q>(
     tick_size: u64,
     lot_size: u64,
     min_size: u64,
-    deep_coin: Coin<DEEP>,
-    // Topic code carried on the `MarketCreatedEvent` (0=none, 1=AI
-    // news, 2=crypto price, 3=other). Not stored on the
-    // `PredictionMarket` itself — the indexer reads it from the
-    // event stream to feed off-chain leaderboards.
+    mut deep_coin: Coin<DEEP>,
     category: u8,
     ctx: &mut TxContext,
 ): (ID, ID, ID) {
     let creator = ctx.sender();
+
+    // Split DEEP to exact pool creation fee; return remainder to creator.
+    let fee_amount = pool_creation_fee();
+    let total = coin::value(&deep_coin);
+    assert!(total >= fee_amount, EZeroAmount);
+    let fee_coin = coin::split(&mut deep_coin, fee_amount, ctx);
 
     // 1. Create the DeepBook permissionless pool
     //    Pool type: Pool<YES<Q>, Q>
@@ -351,7 +354,7 @@ public fun create_market<Q>(
         tick_size,
         lot_size,
         min_size,
-        deep_coin,
+        fee_coin,
         ctx,
     );
 
@@ -420,6 +423,12 @@ public fun create_market<Q>(
     });
 
     transfer::share_object(market);
+    // Return remaining DEEP to creator
+    if (coin::value(&deep_coin) > 0) {
+        transfer::public_transfer(deep_coin, creator);
+    } else {
+        coin::destroy_zero(deep_coin);
+    };
     (market_id, pool_id, balance_manager_id)
 }
 

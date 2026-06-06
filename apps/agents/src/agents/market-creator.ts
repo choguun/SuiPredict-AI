@@ -10,7 +10,6 @@ import {
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { Transaction } from "@mysten/sui/transactions";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
 import { listMarkets, upsertMarket, patchMarketReferralId } from "../markets/store.js";
 
@@ -290,29 +289,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       });
     }
 
-    // Step 2: split DEEP to exact fee, retry query until coin found
-    let feeCoinId: string;
-    if (BigInt(deepCoin.balance) === POOL_CREATION_FEE_DEEP) {
-      feeCoinId = deepCoin.objectId;
-    } else {
-      const splitTx = new Transaction();
-      const splitResults = splitTx.splitCoins(
-        splitTx.object(deepCoin.objectId),
-        [splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
-      );
-      splitTx.transferObjects([splitResults[0]], splitTx.pure.address(agentAddr));
-      await executeTransaction(client, splitTx, ctx.signer);
-      // Retry finding the 500M coin (gRPC may lag)
-      for (let attempt = 0; attempt < 10; attempt++) {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
-        const coins = await listAllCoins(client, agentAddr, DEEP_TYPE);
-        const hit = coins.find(c => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
-        if (hit) { feeCoinId = hit.objectId; break; }
-      }
-      if (!feeCoinId!) throw new Error("Failed to find 500M fee coin after split");
-    }
-
-    // Step 3: create the market using the SDK builder
+    // Step 2: create the market (contract handles DEEP split internally)
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -320,7 +297,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       tickSize: BigInt(1_000_000),
       lotSize: BigInt(1_000_000),
       minSize: BigInt(1_000_000),
-      deepCoinId: feeCoinId,
+      deepCoinId: deepCoin.objectId,
       category: categoryToCode(spec.category),
     });
 
