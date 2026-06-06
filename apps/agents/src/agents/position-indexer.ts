@@ -617,6 +617,11 @@ export async function runPositionIndexer(
       // 2=crypto_price, 3=other) added in r14; for markets not
       // created by this agent, falling through to `existing.category`
       // would silently drop the on-chain value to "general".
+      // Rxx fix: on-chain `vector<u8>` fields (e.g. title) come as
+      // number arrays in event JSON. Convert to string for SQLite.
+      const safeTitle = typeof j.title === "string" ? j.title
+        : Array.isArray(j.title) ? String.fromCharCode(...j.title)
+        : "";
       const existing = getMarket(j.market_id);
       const onChainCategory = j.category != null ? categoryLabel(Number(j.category)) : null;
       // Prefer the on-chain emission timestamp (always present on
@@ -626,7 +631,7 @@ export async function runPositionIndexer(
       const onChainTs = ev.timestampMs ? Number(ev.timestampMs) : 0;
       upsertMarket({
         id: j.market_id,
-        title: existing?.title ?? j.title ?? "",
+        title: existing?.title ?? safeTitle,
         description: existing?.description ?? "",
         category: existing?.category ?? onChainCategory ?? "general",
         // R49 audit fix: route through `u64ToSafeNumber` for the
