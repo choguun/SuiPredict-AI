@@ -10,6 +10,7 @@ import {
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
+import { Transaction } from "@mysten/sui/transactions";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
 import { listMarkets, upsertMarket, patchMarketReferralId } from "../markets/store.js";
 
@@ -244,52 +245,40 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
   const client = getSharedClient();
 
   try {
-    // Step 1: acquire a Coin<DEEP> with enough for pool creation fee (500 DEEP)
+    // Step 1: acquire or create a Coin<DEEP> with exactly pool creation fee (500 DEEP)
     const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
-    // R53 audit fix: paginate
-    // `listCoins` via `listAllCoins`
-    // (mirrors the prize-admin
-    // fix). A busy agent with
-    // 50+ DEEP fragments would
-    // have the eligible coin
-    // missed and fall through to
-    // the demo-market fallback.
     const deepCoins = await listAllCoins(client, agentAddr, DEEP_TYPE);
-    const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
-    if (!deepCoin) {
-      // Fall back to demo market. The previous behavior was to hard-fail
-      // with `action: "no_deep"`, which left the protocol with zero
-      // active markets on a fresh testnet deploy (the agent gets 0.1
-      // SUI from the faucet, never 500 DEEP). Treating this as
-      // "off-chain-only" keeps the UI populated with markets the
-      // resolver can still act on, and the agent stays observable
-      // rather than silently inert.
-      console.warn(
-        `[market-creator] no DEEP coin >= ${POOL_CREATION_FEE_DEEP} ` +
-          `(${deepCoins.length} candidate(s) found); falling back to demo market.`,
-      );
-      const demoId = `demo-${Date.now()}`;
-      upsertMarket({
-        id: demoId,
-        title: spec.title,
-        description: spec.description,
-        category: spec.category,
-        expiry_ms: Number(expiryMs),
-        resolution_source: spec.resolution_source,
-        status: "active",
-        created_at_ms: Date.now(),
+    let feeCoinId: string | undefined;
+    const exactMatch = deepCoins.find((c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
+    if (exactMatch) {
+      feeCoinId = exactMatch.objectId;
+    } else {
+      const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
+      if (!deepCoin) {
+        console.warn(`[market-creator] no DEEP coin >= ${POOL_CREATION_FEE_DEEP} (${deepCoins.length} candidate(s) found); falling back to demo market.`);
+        const demoId = `demo-${Date.now()}`;
+        upsertMarket({ id: demoId, title: spec.title, description: spec.description, category: spec.category, expiry_ms: Number(expiryMs), resolution_source: spec.resolution_source, status: "active", created_at_ms: Date.now() });
+        return recordResult("MarketCreator", { action: "demo_market", reasoning: `No DEEP for pool creation (${deepCoins.length} candidate(s) found). Created demo market.`, confidence: 60 });
+      }
+      // Split to exact amount using 0x2::coin::split
+      const splitTx = new Transaction();
+      splitTx.moveCall({
+        target: "0x2::coin::split",
+        typeArguments: [DEEP_TYPE],
+        arguments: [splitTx.object(deepCoin.objectId), splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
       });
-      return recordResult("MarketCreator", {
-        action: "demo_market",
-        reasoning:
-          `No DEEP for pool creation (${deepCoins.length} candidate(s) found). ` +
-          `Created demo market${sourceTag}: ${spec.title}. ` +
-          `Fund the agent with 500 DEEP to enable on-chain CLOB.`,
-        confidence: 60,
-      });
+      await executeTransaction(client, splitTx, ctx.signer);
+      // Retry finding the exact 500M coin (gRPC may lag)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+        const coins = await listAllCoins(client, agentAddr, DEEP_TYPE);
+        const hit = coins.find(c => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
+        if (hit) { feeCoinId = hit.objectId; break; }
+      }
+      if (!feeCoinId) throw new Error("Failed to find fee coin after split");
     }
 
-    // Step 2: create the market (contract handles DEEP split internally)
+    // Step 2: create the market
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -297,7 +286,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       tickSize: BigInt(1_000_000),
       lotSize: BigInt(1_000_000),
       minSize: BigInt(1_000_000),
-      deepCoinId: deepCoin.objectId,
+      deepCoinId: feeCoinId!,
       category: categoryToCode(spec.category),
     });
 
