@@ -145,12 +145,35 @@ export async function callLlm(prompt: string): Promise<string | null> {
         temperature: 0.2,
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // R56 audit fix: log the HTTP status (without the key, body,
+      // or URL) so the operator can distinguish a 401 (revoked
+      // key — one-time fix) from a 429 (rate limit — wait for
+      // cooldown) from a 5xx (OpenAI outage — no action). The
+      // previous bare `return null` hid every failure mode behind
+      // the same decision-log reason (`LLM call returned null`).
+      console.warn(
+        `[lib.callLlm] OpenAI returned HTTP ${res.status} ${res.statusText}`,
+      );
+      return null;
+    }
     const data = (await res.json()) as {
       choices: { message: { content: string } }[];
     };
     return data.choices[0]?.message.content ?? null;
-  } catch {
+  } catch (err) {
+    // R56 audit fix: log the underlying error class (TypeError
+    // from `fetch` failing on a DNS/network error, SyntaxError
+    // from malformed JSON, etc.) so the operator can tell
+    // "OPENAI is down" from "the model returned garbage" from
+    // "the network is partitioned". The key is never included
+    // in the log (the catch only sees the throw, which doesn't
+    // include the request body).
+    console.warn(
+      `[lib.callLlm] call threw ${err instanceof Error ? err.name : typeof err}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
     return null;
   }
 }

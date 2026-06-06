@@ -13,7 +13,8 @@ import { runReferralKeeper } from "./agents/referral-keeper.js";
 import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
 import type { AgentContext } from "./lib.js";
-import { closeSharedClient } from "./lib.js";
+import type { AgentResult } from "./lib.js";
+import { closeSharedClient, safeInt } from "./lib.js";
 import { getRecentDecisions, closeDb as closeDecisionsDb } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
@@ -36,7 +37,15 @@ import { corsFor } from "./http-cors.js";
 // path (line 297) and the boot log (line 510) call these getters
 // instead of reading the frozen values.
 function readMaxBudget(): number {
-  return Number(process.env.AGENT_MAX_BUDGET_USDC ?? 500);
+  // R56 audit fix: route through `safeInt` so a
+  // typo'd env value (e.g. `AGENT_MAX_BUDGET_USDC=500_USDC`
+  // or `=1e20` OOM) doesn't return NaN. NaN propagates
+  // into `ctx.maxBudgetUsdc` and into the risk-monitor's
+  // `policyBudget > 0` check (`NaN > 0` is false), which
+  // collapses the dashboard's budget-pressure indicator.
+  // The R55 sweep added `safeInt` for exactly this
+  // pattern but missed this site.
+  return safeInt(process.env.AGENT_MAX_BUDGET_USDC, 500, 0, 1e12);
 }
 function readLegacyPredict(): boolean {
   return process.env.ENABLE_LEGACY_PREDICT_AGENTS === "true";
@@ -219,7 +228,19 @@ function secretFingerprint(value: string): string {
 function buildSchedule() {
   const env = (key: string, fallback: string) =>
     process.env[key] ?? fallback;
-  return [
+  // R56 audit fix: validate every cron expression at boot
+  // time. A typo'd AGENT_CRON_* (e.g. `*/1 * * *` — 4
+  // fields instead of 5) was previously caught silently:
+  // `msUntilNext` returns the readPollMs() fallback (60s)
+  // and the worker ran on a 1-minute cadence regardless of
+  // the configured intent. Crash loud at boot so a fresh
+  // deploy doesn't run every agent on the wrong schedule
+  // for the rest of the process lifetime.
+  const entries: Array<{
+    name: string;
+    cron: string;
+    fn: (ctx: AgentContext) => Promise<AgentResult>;
+  }> = [
     { name: "MarketCreator",     cron: env("AGENT_CRON_MARKET_CREATOR",     "0 0 * * *"),  fn: runMarketCreator },
     { name: "MarketResolver",    cron: env("AGENT_CRON_MARKET_RESOLVER",    "58 23 * * *"), fn: runMarketResolver },
     { name: "StreakSweeper",     cron: env("AGENT_CRON_STREAK_SWEEPER",     "2 0 * * *"),   fn: runStreakSweeper },
@@ -232,6 +253,15 @@ function buildSchedule() {
     { name: "RiskMonitor",       cron: env("AGENT_CRON_RISK_MONITOR",       "*/5 * * * *"), fn: runRiskMonitor },
     { name: "MarketMaker",       cron: env("AGENT_CRON_MARKET_MAKER",       "*/1 * * * *"), fn: runMarketMaker },
   ];
+  for (const entry of entries) {
+    if (entry.cron.trim().split(/\s+/).length !== 5) {
+      throw new Error(
+        `[agents] invalid cron expression for ${entry.name}: "${entry.cron}" ` +
+          `(expected 5 whitespace-separated fields). Update the AGENT_CRON_${entry.name.toUpperCase().replace(/([A-Z])/g, "_$1").replace(/^_/, "")} env var.`,
+      );
+    }
+  }
+  return entries;
 }
 
 /**
@@ -334,7 +364,13 @@ async function runCycle(ctx: AgentContext) {
 let healthServer: ReturnType<typeof createServer> | null = null;
 
 function startHealthServer() {
-  const port = Number(process.env.PORT ?? 3001);
+  // R56 audit fix: route through `safeInt` so a non-numeric
+  // `PORT` value (`PORT=""` from a Railway stale env entry, or
+  // `PORT=abc` from a typo) doesn't bind to a random privileged
+  // port (Number("")=0) or throw `TypeError` from
+  // `listen(NaN, ...)`. The R55 sweep added `safeInt` for
+  // exactly this pattern but missed this site.
+  const port = safeInt(process.env.PORT, 3001, 1, 65535);
   // R35 audit fix: every response set `Access-Control-Allow-Origin: *`
   // (markets/routes.ts, gamification/routes.ts, /health, /decisions,
   // /agents/manifest). That lets any origin drive a victim's

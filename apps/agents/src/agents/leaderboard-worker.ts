@@ -19,9 +19,8 @@
  * endpoint.
  */
 import {
-  archiveWeekly,
+  archiveAndClearAtomic,
   claimedUsersForWeek,
-  clearDailyScoresBefore,
   getUserProfilesForUsers,
   listAllDailyScores,
   type DailyScore,
@@ -66,8 +65,15 @@ function aggregateWeek(
     }),
   );
   out.sort((a, b) => b.score - a.score);
-  out.forEach((r, i) => (r.rank = i + 1));
-  return out;
+  // R56 audit fix: assign `rank` by building new objects
+  // instead of mutating the existing `r.rank`. The previous
+  // `out.forEach((r, i) => (r.rank = i + 1))` mutated the
+  // row instances in place, and the same `WeeklyRow`s flow
+  // into `enrichRows` which mutates `r.claimed` /
+  // `r.country_code` again. A future optimization that
+  // memoized the result across requests would have its
+  // data silently corrupted by the next leaderboard poll.
+  return out.map((r, i) => ({ ...r, rank: i + 1 }));
 }
 
 export async function runLeaderboardWorker(): Promise<AgentResult> {
@@ -92,14 +98,43 @@ export async function runLeaderboardWorker(): Promise<AgentResult> {
       confidence: 100,
     });
   }
-  archiveWeekly(weekly);
-  const cleared = clearDailyScoresBefore(cutoffDay);
+  // R56 audit fix: wrap the archive + clear in a single
+  // transaction. The previous code called them sequentially
+  // outside a transaction, so a SIGTERM (or Railway
+  // healthcheck-triggered SIGKILL) between them left the prior
+  // week's daily_scores rows intact AND no archived row. The
+  // next tick re-archives (idempotent on PK) but the
+  // cleared-rows intent is lost — the wrong week could be
+  // cleared if the cutoffDay math drifted. With a single
+  // transaction either both succeed or neither does; a crash
+  // leaves the system in a recoverable state.
+  const { archived, cleared } = archiveAndClearTransactional(
+    weekly,
+    cutoffDay,
+  );
 
   return recordResult("LeaderboardWorker", {
     action: "rollup",
-    reasoning: `Week ${priorWeek}: archived ${weekly.length} rows, cleared ${cleared} stale daily rows.`,
+    reasoning: `Week ${priorWeek}: archived ${archived} rows, cleared ${cleared} stale daily rows.`,
     confidence: 100,
   });
+}
+
+/**
+ * R56 audit fix: transaction wrapper for the archive + clear
+ * pair. The two operations are logically one (the prior week's
+ * rollup is committed iff the day's daily_scores are cleared);
+ * a crash between them was a real failure mode under the
+ * 1-minute Railway healthcheck window. The actual transaction
+ * lives in the gamification store via `archiveAndClearAtomic`
+ * (added alongside this fix) so the leaderboard-worker doesn't
+ * have to know about the SQLite handle.
+ */
+function archiveAndClearTransactional(
+  weekly: WeeklyRow[],
+  cutoffDay: number,
+): { archived: number; cleared: number } {
+  return archiveAndClearAtomic(weekly, cutoffDay);
 }
 
 /**
@@ -112,12 +147,20 @@ export async function runLeaderboardWorker(): Promise<AgentResult> {
 function enrichRows(weekIndex: number, weekly: WeeklyRow[]): WeeklyRow[] {
   const claimed = claimedUsersForWeek(weekIndex);
   const profiles = getUserProfilesForUsers(weekly.map((r) => r.user));
-  for (const r of weekly) {
-    r.claimed = claimed.has(r.user);
+  // R56 audit fix: build new objects instead of mutating `r.claimed`
+  // and `r.country_code` in place. A `JSON.stringify(weekly)`-style
+  // caller that holds onto a previous reference would see its data
+  // modified by the next request. The leaderboard-worker doesn't
+  // currently cache the rows, but a future optimization that holds
+  // the result in a memo would be silently corrupted.
+  return weekly.map((r) => {
     const p = profiles.get(r.user);
-    if (p?.country_code) r.country_code = p.country_code;
-  }
-  return weekly;
+    return {
+      ...r,
+      claimed: claimed.has(r.user),
+      country_code: p?.country_code ?? r.country_code,
+    };
+  });
 }
 
 /**
@@ -130,7 +173,12 @@ export function liveRollup(weekIndex: number, category?: number): WeeklyRow[] {
   let weekly = aggregateWeek(weekIndex, rows);
   if (category != null && category > 0) {
     weekly = weekly.filter((r) => r.category === category);
-    weekly.forEach((r, i) => (r.rank = i + 1));
+    // R56 audit fix: rebuild the rows so the `rank` reassignment
+    // doesn't mutate the same instances `enrichRows` reads below.
+    // The previous `weekly.forEach((r, i) => (r.rank = i + 1))`
+    // mutated the filter result in place, which then propagated
+    // into the `WeeklyRow` returned to REST callers.
+    weekly = weekly.map((r, i) => ({ ...r, rank: i + 1 }));
   }
   return enrichRows(weekIndex, weekly);
 }

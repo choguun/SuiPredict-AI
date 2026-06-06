@@ -11,7 +11,7 @@ import {
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
-import { listMarkets, upsertMarket } from "../markets/store.js";
+import { listMarkets, upsertMarket, getDb } from "../markets/store.js";
 
 // R43 audit fix: removed the module-level MAX_ACTIVE and
 // INITIAL_MINT_ATOMS constants. Both are re-read at the top of
@@ -56,6 +56,16 @@ const FALLBACK_MARKETS = [
   },
 ];
 
+// R56 audit fix: process-lifetime guard for the
+// "OPENAI_API_KEY missing" warning. The decision log
+// surfaces `[FALLBACK: OPENAI_API_KEY not set]` on every
+// tick, which the operator can read, but there's no
+// single boot-time "this is missing" line. Warn once at
+// the first detection, then stay quiet for the
+// remainder of the process lifetime so the log stream
+// doesn't get spammed.
+let missingKeyWarned = false;
+
 interface MarketSpec {
   title: string;
   description: string;
@@ -75,7 +85,22 @@ Respond ONLY with JSON: {"title":"...","description":"...","category":"crypto|po
   // Reason the LLM path was skipped — recorded in the agent decision
   // and the boot health endpoint so an operator can tell at a glance
   // whether the agent is brainstorming or running on autopilot.
+  //
+  // R56 audit fix: warn once at process startup rather than
+  // silently using FALLBACK_MARKETS on every tick. The
+  // decision log already shows `[FALLBACK: OPENAI_API_KEY
+  // not set]` for every cron cycle, but the operator has
+  // no way to grep a one-line "the API key is missing, will
+  // use FALLBACK_MARKETS until you set it" message at boot.
+  // The `let warned = false` guard prevents log spam.
   if (!process.env.OPENAI_API_KEY) {
+    if (!missingKeyWarned) {
+      console.warn(
+        "[market-creator] OPENAI_API_KEY is not set; proposeMarket " +
+          "will use FALLBACK_MARKETS every tick until it is configured.",
+      );
+      missingKeyWarned = true;
+    }
     return pickFallback("OPENAI_API_KEY not set");
   }
   const raw = await callLlm(prompt);
@@ -260,9 +285,57 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     // Step 3: setup DeepBook referral for this market's pool
     // We need the pool ID and referral ID from the market — fetch market object
     const { object } = await client.core.getObject({ objectId: marketId, include: { json: true } });
-    const poolId = object?.json?.pool_id as string | undefined;
+    // R56 audit fix: validate the on-chain `pool_id` shape
+    // before passing it to the SDK. The Move `pool_id: ID`
+    // can render as either a plain string (older SDK
+    // versions), an `{ id: string }` object wrapper
+    // (newer gRPC JSON shape), or null when the field is
+    // unset. The previous `as string | undefined` cast
+    // accepted any of these silently — a wrapper object
+    // would pass the truthy `if (poolId)` check at the
+    // line below and feed a non-string into
+    // `buildSetupReferralTx`, which the Move runtime
+    // rejects with a confusing `EInvalidPoolType` abort.
+    // Normalize to a string (or null) before the check.
+    const rawPoolId = object?.json?.pool_id;
+    const poolId: string | null =
+      typeof rawPoolId === "string"
+        ? rawPoolId
+        : typeof rawPoolId === "object" && rawPoolId && "id" in rawPoolId &&
+            typeof (rawPoolId as { id: unknown }).id === "string"
+          ? (rawPoolId as { id: string }).id
+          : null;
     let referralId: string | null = null;
     if (poolId) {
+      // R56 audit fix: write the off-chain `markets` row FIRST
+      // (with referral_id=null) so a failed referral setup
+      // doesn't leave the on-chain market unmirrored. The
+      // referral-keeper can then detect
+      // `referral_id == null && status == 'active'` and retry
+      // the setup on a follow-up tick. The previous code
+      // called `upsertMarket` only at the bottom of this
+      // try-block, so a thrown error from
+      // `buildSetupReferralTx` or `executeTransaction` was
+      // caught by the surrounding `try/catch` and the row
+      // was never written.
+      upsertMarket({
+        id: marketId,
+        title: spec.title,
+        description: spec.description,
+        category: spec.category,
+        expiry_ms: Number(expiryMs),
+        resolution_source: spec.resolution_source,
+        status: "active",
+        pool_id: poolId,
+        deepbook_pool_key: `market_${marketId.slice(0, 8)}`,
+        deepbook_pool_id: poolId,
+        deepbook_base_coin_type: yesCoinType(),
+        deepbook_quote_coin_type: DUSDC_TYPE,
+        deepbook_base_scalar: 1_000_000,
+        deepbook_quote_scalar: 1_000_000,
+        referral_id: null,
+        created_at_ms: Date.now(),
+      });
       const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
       const referralResult = await executeTransaction(client, referralTx, ctx.signer);
       // `extractCreatedObjectId` returns null if the struct name
@@ -286,6 +359,25 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
             `referral-keeper will skip this market. Inspect the tx in SuiVision ` +
             `and update the suffix above.`,
         );
+      } else {
+        // R56 audit fix: now that the referral tx succeeded,
+        // patch the existing row with the actual referral_id.
+        // The pre-R56 code only wrote the row once, at the
+        // bottom of the try-block; a successful referral that
+        // wrote `referralId` would overwrite the original
+        // upsert, but a failed one would leave the row
+        // un-written entirely. Patch in-place so the
+        // already-written row picks up the resolved id.
+        try {
+          getDb()
+            .prepare(`UPDATE markets SET referral_id = ? WHERE id = ?`)
+            .run(referralId, marketId);
+        } catch (patchErr) {
+          console.warn(
+            `[market-creator] failed to patch referral_id for ${marketId}:`,
+            patchErr instanceof Error ? patchErr.message : patchErr,
+          );
+        }
       }
     }
 
@@ -352,24 +444,34 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       }
     }
 
-    upsertMarket({
-      id: marketId,
-      title: spec.title,
-      description: spec.description,
-      category: spec.category,
-      expiry_ms: Number(expiryMs),
-      resolution_source: spec.resolution_source,
-      status: "active",
-      pool_id: poolId ?? null,
-      deepbook_pool_key: poolId ? `market_${marketId.slice(0, 8)}` : null,
-      deepbook_pool_id: poolId ?? null,
-      deepbook_base_coin_type: poolId ? yesCoinType() : null,
-      deepbook_quote_coin_type: poolId ? DUSDC_TYPE : null,
-      deepbook_base_scalar: 1_000_000,
-      deepbook_quote_scalar: 1_000_000,
-      referral_id: referralId,
-      created_at_ms: Date.now(),
-    });
+    // R56 audit fix: only write the row at the bottom of the
+    // try-block if the referral branch above didn't already
+    // upsert it. The pre-R56 code called `upsertMarket`
+    // unconditionally, but the new flow writes the row early
+    // (with referral_id=null) inside the `if (poolId)` branch
+    // so a failed referral tx doesn't lose the off-chain
+    // mirror. A second upsert here would clobber the
+    // referral_id we just patched in the success path.
+    if (!poolId) {
+      upsertMarket({
+        id: marketId,
+        title: spec.title,
+        description: spec.description,
+        category: spec.category,
+        expiry_ms: Number(expiryMs),
+        resolution_source: spec.resolution_source,
+        status: "active",
+        pool_id: null,
+        deepbook_pool_key: null,
+        deepbook_pool_id: null,
+        deepbook_base_coin_type: null,
+        deepbook_quote_coin_type: null,
+        deepbook_base_scalar: 1_000_000,
+        deepbook_quote_scalar: 1_000_000,
+        referral_id: null,
+        created_at_ms: Date.now(),
+      });
+    }
 
     return recordResult("MarketCreator", {
       action: "create_market",

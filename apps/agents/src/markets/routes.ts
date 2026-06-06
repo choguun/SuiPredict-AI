@@ -34,9 +34,21 @@ export function handleMarketsRoute(
     // when ALLOWED_ORIGIN is set; this matches the no-side-effects
     // policy for /health, /decisions, /agents/manifest in
     // index.ts.
+    //
+    // R56 audit fix: also advertise POST/PUT/DELETE/PATCH in
+    // Allow-Methods. A future contributor adding a
+    // `POST /markets/:id/cancel` (e.g. a maker-bot cancel
+    // endpoint) without updating this preflight would
+    // silently have the browser block the request. Better
+    // to advertise the full method set up front so a
+    // preflight-pass / actual-block race never happens.
+    // The `corsFor(true)` keep the allowlist restriction
+    // consistent with the side-effecting methods we
+    // permit here.
     res.writeHead(204, {
-      ...corsFor(false),
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      ...corsFor(true),
+      "Access-Control-Allow-Methods":
+        "GET, POST, PUT, DELETE, PATCH, OPTIONS",
     });
     res.end();
     return true;

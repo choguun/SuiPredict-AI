@@ -435,9 +435,26 @@ export async function runParlayWorker(
   // is ready to settle. R37 audit fix: scope to the worker-owned
   // pool, matching the leg-recording loop above.
   const allReady = listReadyToFinalizeParlays();
-  const ready = WORKER_POOL_ID
+  const readyUncapped = WORKER_POOL_ID
     ? allReady.filter((p) => p.pool_id === WORKER_POOL_ID)
     : allReady;
+  // R56 audit fix: cap the finalize loop per tick to match
+  // the leg-recording cap (`MAX_PARLAYS_PER_TICK`).
+  // `MAX_FINALIZES_PER_TICK` defaults to 25, the same default
+  // the leg cap uses. Without a cap, a settle burst that
+  // produces 1000 ready parlays would try to finalize all
+  // 1000 in one tick — the agent wallet's gas coin would
+  // be exhausted, every subsequent tx would abort with
+  // `INSUFFICIENT_GAS`, and the next tick would find the
+  // same 1000 parlays still ready and retry the doomed
+  // txs forever.
+  const MAX_FINALIZES_PER_TICK = safeInt(
+    process.env.MAX_FINALIZES_PER_TICK,
+    MAX_PARLAYS_PER_TICK,
+    1,
+    500,
+  );
+  const ready = readyUncapped.slice(0, MAX_FINALIZES_PER_TICK);
   let finalized = 0;
   let finalizeFailures = 0;
   const finalizeSample: string[] = [];
@@ -483,6 +500,9 @@ export async function runParlayWorker(
     `${finalized} finalized, ${finalizeFailures} finalize failures. ` +
     (scopedAndCapped.length < scoped.length
       ? ` Capped at ${MAX_PARLAYS_PER_TICK}/${scoped.length} this tick.`
+      : "") +
+    (readyUncapped.length > ready.length
+      ? ` Finalize capped at ${MAX_FINALIZES_PER_TICK}/${readyUncapped.length} this tick.`
       : "") +
     (sampleFailures.length > 0
       ? `Sample failures: ${sampleFailures.join(" | ")}.`

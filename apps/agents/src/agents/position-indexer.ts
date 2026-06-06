@@ -39,7 +39,7 @@ import {
   upsertMarket,
   upsertPosition,
 } from "../markets/store.js";
-import { logPolicyEvent } from "../store.js";
+import { logPolicyEvent, logAgentAction, logReferralSet } from "../store.js";
 import {
   recordPrizeClaim,
   recordStreakEvent,
@@ -334,10 +334,22 @@ async function pollAndApply(
       failedEvents++;
       const eid = (ev as { id?: { txDigest?: string; eventSeq?: string } })
         .id;
+      // R56 audit fix: build the `txDigest:eventSeq` pair
+      // into a local first to avoid the operator-precedence
+      // trap in the previous expression
+      // `eid?.txDigest ?? "?" + ":" + (eid?.eventSeq ?? "?")`
+      // which JS parses as
+      // `eid?.txDigest ?? ("?" + ":" + eid?.eventSeq ?? "?")`.
+      // The result is that when `txDigest` is set the
+      // message reads `0xabc...` (the digest, with the
+      // string concat silently dropped), and when
+      // `txDigest` is missing it reads `?:?` (the
+      // nullish-coalescing returns `"?" + ":" + "?"`).
+      // Concatenate explicitly so the operator gets a
+      // structured `txDigest:eventSeq` pair in both cases.
+      const eidLabel = `${eid?.txDigest ?? "?"}:${eid?.eventSeq ?? "?"}`;
       console.error(
-        `[position-indexer] ${stateKey} apply failed for event ${
-          eid?.txDigest ?? "?" + ":" + (eid?.eventSeq ?? "?")
-        }:`,
+        `[position-indexer] ${stateKey} apply failed for event ${eidLabel}:`,
         err instanceof Error ? err.message : err,
       );
     }
@@ -1024,16 +1036,47 @@ export async function runPositionIndexer(
   // who spent what under which policy, so risk-monitor alerting and
   // future compliance queries need it indexed. The round-17 audit
   // flagged this as a coverage gap (finding #4).
+  //
+  // R56 audit fix: the previous handler was a no-op (the cursor
+  // advanced but the event was discarded). The decision log is
+  // structured for cron outputs (one row per agent run), not for
+  // per-event Move actions. Persist to a dedicated `agent_actions`
+  // table keyed on (tx_digest) so an operator investigating "who
+  // authorized this $X spend" can query the indexer mirror
+  // without an RPC round-trip.
   const agentActions = await guardedPoll(
     "AgentAction",
     `${predictPackageId}::agent_policy::AgentActionEvent`,
     "position_indexer.agent_action",
     (ev) => {
-      // No DB write yet — this advances the cursor and prepares the
-      // hook for a future risk-monitor log table. The decision log
-      // is enough surface for now.
-      const j = ev.parsedJson as { agent?: string; action?: string };
+      const j = ev.parsedJson as {
+        agent?: string;
+        action?: string;
+        policy_id?: string;
+        amount?: string | number;
+      };
       if (!j?.agent) return;
+      try {
+        logAgentAction({
+          tx_digest: ev.id?.txDigest ?? "",
+          policy_id: j.policy_id ?? "",
+          agent: j.agent,
+          action: j.action ?? "",
+          ts_ms: Number(ev.timestampMs ?? Date.now()),
+          details: JSON.stringify({
+            amount: j.amount ?? null,
+            event_seq: ev.id?.eventSeq ?? null,
+          }),
+        });
+      } catch (e) {
+        // Don't let a DB write failure stop the indexer; the
+        // cursor still advances and a future tick will retry.
+        console.warn(
+          `[position-indexer] agent_actions insert failed for AgentAction ${ev.id?.txDigest ?? "?"}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     },
   );
 
@@ -1100,13 +1143,34 @@ export async function runPositionIndexer(
           details.paused = !!j.paused;
         }
         try {
+          // R56 audit fix: wrap JSON.stringify in its own
+          // try/catch. A circular reference or a BigInt in
+          // `details` (a Move u64 rendered as bigint by
+          // some SDK versions) throws a `TypeError` from
+          // the JSON serializer, which the surrounding
+          // `try/catch` was logging without the field
+          // name that triggered the throw. Capture the
+          // offending key, log it, and fall back to a
+          // stringified view so the row still gets
+          // written.
+          let detailsJson: string;
+          try {
+            detailsJson = JSON.stringify(details);
+          } catch (stringifyErr) {
+            console.warn(
+              `[position-indexer] policy_events JSON.stringify failed for ${sub.name} ${j.policy_id}: ${
+                stringifyErr instanceof Error ? stringifyErr.message : String(stringifyErr)
+              }; falling back to String(details).`,
+            );
+            detailsJson = String(details);
+          }
           logPolicyEvent({
             policyId: j.policy_id,
             eventType: sub.type,
             actor: sub.type === "paused" ? "" : (j.owner ?? ""),
             tsMs: Number(ev.timestampMs ?? Date.now()),
             txDigest: ev.id?.txDigest ?? "",
-            details: JSON.stringify(details),
+            details: detailsJson,
           });
         } catch (e) {
           // Don't let a DB write failure (disk full, schema drift)
@@ -1127,6 +1191,13 @@ export async function runPositionIndexer(
   // event (round-17 audit finding #4). The on-chain
   // `ReferralSetEvent.referral_id: ID` is the shared object the
   // keeper reads at sweep time.
+  //
+  // R56 audit fix: the previous handler was a no-op — the
+  // cursor advanced but the event was discarded. Persist to
+  // `referral_setup_log` keyed on (market_id, tx_digest,
+  // event_seq) so a market-creator bug that produces the wrong
+  // `referral_id` can be detected retroactively by querying
+  // the indexer mirror.
   const referralSet = await guardedPoll(
     "ReferralSet",
     `${predictPackageId}::prediction_market::ReferralSetEvent`,
@@ -1137,6 +1208,23 @@ export async function runPositionIndexer(
         referral_id?: string;
       };
       if (!j?.market_id || !j?.referral_id) return;
+      try {
+        logReferralSet({
+          market_id: j.market_id,
+          tx_digest: ev.id?.txDigest ?? "",
+          event_seq: ev.id?.eventSeq ?? "",
+          referral_id: j.referral_id,
+          ts_ms: Number(ev.timestampMs ?? Date.now()),
+        });
+      } catch (e) {
+        // Don't let a DB write failure stop the indexer; the
+        // cursor still advances and a future tick will retry.
+        console.warn(
+          `[position-indexer] referral_setup_log insert failed for ReferralSet ${j.market_id} ${ev.id?.txDigest ?? "?"}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     },
   );
 
@@ -1404,6 +1492,13 @@ export async function runPositionIndexer(
       // atoms — well under 2^53, so today's payouts don't
       // trigger the warning, but a future increase in
       // `max_payout_bps` or collateral would.
+      //
+      // R56 audit fix: tag the row with `payout_source` so a
+      // 0-payout (parlay legitimately lost) is distinguishable
+      // from a 0-payout because the on-chain event was missing
+      // the `payout` field (an SDK drift signal). The web
+      // /parlay page renders "lost" vs "unknown" differently.
+      const payoutPresent = j.payout != null;
       const payoutBig = BigInt(String(j.payout ?? 0));
       const legsLostBig = BigInt(String(j.legs_lost ?? 0));
       const payout = u64ToSafeNumber(
@@ -1424,6 +1519,7 @@ export async function runPositionIndexer(
         payout,
         legs_lost,
         ts_ms: ts,
+        payout_source: payoutPresent ? "onchain" : "missing",
       });
     },
   );

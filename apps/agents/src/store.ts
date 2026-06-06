@@ -92,6 +92,42 @@ export function getDb(): Database.Database {
     db.exec(
       `CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions(timestamp DESC)`,
     );
+    // R56 audit fix: append-only audit tables for on-chain events
+    // the round-17 audit wired cursor subscriptions for but the
+    // R56 audit found still have no DB writer. The AgentAction
+    // and ReferralSet handlers in position-indexer were
+    // no-ops; the cursor advanced on every tick, the event was
+    // gone, and there was no off-chain trail for an operator
+    // investigating "who authorized this $X spend" or "did the
+    // referral-keeper actually set a referral_id for this
+    // market". Each table is idempotent on (tx_digest) so a
+    // re-run on the same event is a no-op.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_actions (
+        tx_digest TEXT PRIMARY KEY,
+        policy_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        action TEXT NOT NULL,
+        ts_ms INTEGER NOT NULL,
+        details TEXT
+      )
+    `);
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_agent_actions_policy_id ON agent_actions(policy_id)`,
+    );
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS referral_setup_log (
+        market_id TEXT NOT NULL,
+        tx_digest TEXT NOT NULL,
+        event_seq TEXT NOT NULL,
+        referral_id TEXT NOT NULL,
+        ts_ms INTEGER NOT NULL,
+        PRIMARY KEY (market_id, tx_digest, event_seq)
+      )
+    `);
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_referral_setup_market ON referral_setup_log(market_id)`,
+    );
   }
   return db;
 }
@@ -144,6 +180,78 @@ export function getRecentPolicyEvents(limit = 50): PolicyEventLog[] {
         txDigest: r.tx_digest as string,
         details: (r.details as string | null) ?? undefined,
       };
+    });
+}
+
+/**
+ * R56 audit fix: persist the AgentActionEvent emitted by
+ * agent_policy.move. The previous handler in position-indexer
+ * was a no-op (the cursor advanced but the event was discarded);
+ * an operator investigating "who authorized this $X spend at
+ * policy P" had to find the txDigest and call the RPC. INSERT
+ * OR IGNORE on (tx_digest) makes a re-run idempotent and
+ * the cursor still advances via `guardedPoll`.
+ */
+export interface AgentActionLog {
+  tx_digest: string;
+  policy_id: string;
+  agent: string;
+  action: string;
+  ts_ms: number;
+  details?: string;
+}
+export function logAgentAction(
+  entry: Omit<AgentActionLog, never>,
+): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO agent_actions
+         (tx_digest, policy_id, agent, action, ts_ms, details)
+       VALUES
+         (@txDigest, @policyId, @agent, @action, @tsMs, @details)`,
+    )
+    .run({
+      txDigest: entry.tx_digest,
+      policyId: entry.policy_id,
+      agent: entry.agent,
+      action: entry.action,
+      tsMs: entry.ts_ms,
+      details: entry.details ?? null,
+    });
+}
+
+/**
+ * R56 audit fix: persist the ReferralSetEvent so the
+ * referral-keeper can verify its own writes against the
+ * on-chain event (round-17 finding #4 was the audit goal,
+ * but the writer was never implemented). The PK is
+ * (market_id, tx_digest, event_seq) so a re-run on the
+ * same event is a no-op and the cursor still advances
+ * via `guardedPoll`.
+ */
+export interface ReferralSetupLog {
+  market_id: string;
+  tx_digest: string;
+  event_seq: string;
+  referral_id: string;
+  ts_ms: number;
+}
+export function logReferralSet(
+  entry: Omit<ReferralSetupLog, never>,
+): void {
+  getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO referral_setup_log
+         (market_id, tx_digest, event_seq, referral_id, ts_ms)
+       VALUES
+         (@marketId, @txDigest, @eventSeq, @referralId, @tsMs)`,
+    )
+    .run({
+      marketId: entry.market_id,
+      txDigest: entry.tx_digest,
+      eventSeq: entry.event_seq,
+      referralId: entry.referral_id,
+      tsMs: entry.ts_ms,
     });
 }
 

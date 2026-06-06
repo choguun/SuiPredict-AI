@@ -189,6 +189,18 @@ function scheduleNext(ctx: AgentContext, entry: ScheduleEntry): void {
         inFlight.delete(entry.name);
       }
     }
+    // R56 audit fix: re-check `shuttingDown` after the
+    // `await entry.fn(ctx)` above. The previous code
+    // unconditionally called `scheduleNext(ctx, entry)` in
+    // both the success and error paths (and the in-flight
+    // skip branch), re-registering a fresh timer on a
+    // process that has already begun shutdown. The new
+    // tick would re-enter `entry.fn`, which would call
+    // into closed SQLite handles and the closed gRPC
+    // client, log "database is closed" errors, and
+    // extend shutdown past the Railway healthcheck
+    // timeout.
+    if (shuttingDown) return;
     scheduleNext(ctx, entry);
   }, delay);
   activeTimers.set(entry.name, timer);

@@ -894,24 +894,6 @@ export async function handleGamificationRoute(
       });
       return true;
     }
-    // Re-derive the canonical amount from the rank table. The
-    // `amount` in the request body is ignored — accepting it would let
-    // a client pollute the off-chain row with a wrong value, and the
-    // `ON CONFLICT DO UPDATE` in `recordPrizeClaim` would race the
-    // indexer's correct on-chain amount on the next poll. The server
-    // is the single source of truth for the rank table.
-    const amount = expectedAmountForRank(
-      // R55 audit fix: route through `safeBigInt` so a
-      // non-integer env value (e.g. `100.5`, `10_USDC`,
-      // or `""` from a missing var) doesn't throw
-      // `SyntaxError` synchronously and turn every claim
-      // into a 500. The R55 audit flag is HIGH because
-      // this site runs inside the `POST /prize/claims`
-      // request handler — the most-touched prize flow.
-      safeBigInt(process.env.PRIZE_WEEKLY_AMOUNT, 0n),
-      body.rank,
-      DEFAULT_DISTRIBUTION_BPS,
-    );
     // Idempotency: a second POST for an already-claimed (user, week)
     // returns 409. Without this, two concurrent claims both pass the
     // membership check (both see `claimed: false`), both submit
@@ -952,6 +934,35 @@ export async function handleGamificationRoute(
         error:
           "poolId is required: send a valid poolId in the body or " +
           "configure PRIZE_POOL_ID on the agents service.",
+      });
+      return true;
+    }
+    // R56 audit fix: re-derive the amount from the same on-chain
+    // source as the `/prize/signature` route. The previous code
+    // read the amount solely from `process.env.PRIZE_WEEKLY_AMOUNT`
+    // via `safeBigInt`, but `/prize/signature` reads the on-chain
+    // `PrizePool.weekly_prize` first and falls back to env. When
+    // the on-chain value diverged from the env (operator funds the
+    // pool directly, manual `fund_pool` tx, etc.), the user's
+    // signed claim payload carried the on-chain amount (what the
+    // contract will actually pay), but the off-chain
+    // `prize_claims.amount` mirror row recorded the env-derived
+    // amount. The mirror row disagreed with the on-chain payout
+    // forever, with no way to reconcile. Call the same
+    // `resolvePrizeAmount` helper that `/prize/signature` uses so
+    // both surfaces report the same number.
+    const { amount, amountSource } = await resolvePrizeAmount(
+      claimPoolId,
+      weekIndex,
+      body.rank,
+    );
+    if (amount === 0n) {
+      json(res, 503, {
+        error:
+          "PrizePool weekly_prize is 0 — no funds available for this week. " +
+          "Run `fund_pool` on-chain to seed it, then retry.",
+        week_index: weekIndex,
+        rank: body.rank,
       });
       return true;
     }
@@ -1012,7 +1023,18 @@ export async function handleGamificationRoute(
         // updated to send `poolId`.
         pool_id: claimPoolId || null,
       });
-      json(res, 200, { ok: true });
+      // R56 audit fix: surface the amount and the source
+      // (onchain | env) in the response so the operator dashboard
+      // can confirm the off-chain mirror row matches the on-chain
+      // payout. `amount` is the same bigint the on-chain tx
+      // carries (the one `/prize/signature` signs); `amountSource`
+      // tells the operator which fallback path was taken if the
+      // on-chain read failed.
+      json(res, 200, {
+        ok: true,
+        amount: amount.toString(),
+        amountSource,
+      });
     } catch (err) {
       // R35 audit fix: same leak as /prize/signature above. The
       // raw `err.message` from the SQLite write or the gRPC indexer
@@ -1106,10 +1128,19 @@ export async function handleGamificationRoute(
       : listUnfinalizedParlaysForUser(addr);
     // R49 audit fix: NaN-safe limit. Same pattern as
     // /leaderboard/week above.
+    //
+    // R56 audit fix: bump the cap to 500 to match the
+    // /leaderboard/week route. A 200 ceiling on a per-user
+    // parlay list was inconsistent with the 500 ceiling on
+    // the leaderboard, and a power user with hundreds of
+    // historical parlays hit the 200 ceiling silently
+    // (the response truncated without an error). The cap is
+    // also a defense against a requester asking for `limit=1e20`
+    // — Number.isFinite is true but Math.min clamps it.
     const rawLimit = Number(url.searchParams.get("limit") ?? 50);
     const limit =
       Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(rawLimit, 200)
+        ? Math.min(rawLimit, 500)
         : 50;
     // Map the SQL row shape to the wire shape the web's ParlayHistory
     // component expects. The on-chain / DB column names diverge from

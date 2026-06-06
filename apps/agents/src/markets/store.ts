@@ -179,6 +179,25 @@ export function getDb(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_registered_markets_index
         ON registered_markets(market_index);
+
+      -- R56 audit fix: persistent per-market demo order counter.
+      -- The market-maker generates synthetic order_id values for
+      -- the demo path (no on-chain digest to derive from). The R47
+      -- audit's comment claimed the counter was "SQLite-backed"
+      -- but the implementation was an in-process Map (see
+      -- apps/agents/src/agents/market-maker.ts:74). A SIGTERM or
+      -- Railway redeploy cleared the Map, and the next tick
+      -- re-seeded from Date.now() - which on a fast redeploy can
+      -- be the same value as a previously-written order_id,
+      -- colliding on the (market_id, order_id) PK in demo_orders
+      -- and silently flipping a cancelled row back to filled=0.
+      -- Persist the next-id per market so the counter survives
+      -- process restarts and is also shared across replicas (if
+      -- the agents service is ever horizontally scaled).
+      CREATE TABLE IF NOT EXISTS demo_order_counters (
+        market_id TEXT PRIMARY KEY,
+        next_id INTEGER NOT NULL
+      );
     `);
     migrateMarketColumns();
     migrateIndexerStateColumns();
@@ -584,6 +603,50 @@ export function upsertOrder(order: {
     });
 }
 
+/**
+ * R56 audit fix: per-market monotonic `order_id` for the demo
+ * path, backed by the `demo_order_counters` table. The previous
+ * in-process `Map` (R47) was cleared on every redeploy, so the
+ * next tick re-seeded from `Date.now()` and could collide with
+ * a previously-written `order_id` (a fast Railway redeploy keeps
+ * `Date.now()` the same or smaller), flipping a cancelled row
+ * back to `filled=0` via the `ON CONFLICT` clause in
+ * `upsertOrder`. Atomic UPSERT inside a transaction so two MM
+ * ticks racing across replicas (if the agents service is ever
+ * horizontally scaled) cannot both read the same `next_id`.
+ *
+ * The `MAX(order_id)+1` seed is a safety net for the case where
+ * a row was written directly to `demo_orders` (bypassing this
+ * helper, e.g. by a future migration script) and the counter
+ * table is empty. The `RETURNING next_id` returns the new
+ * value for the caller's next bid/ask pair.
+ */
+export function nextDemoOrderId(marketId: string): number {
+  const db = getDb();
+  // Atomic UPSERT: if a row exists, advance by 2 (one bid + one
+  // ask) and return the OLD value; if not, seed from MAX(order_id)+1
+  // for the market, or `Date.now()` if the table is empty.
+  const stmt = db.prepare(
+    `INSERT INTO demo_order_counters (market_id, next_id)
+     VALUES (
+       @marketId,
+       COALESCE(
+         (SELECT MAX(order_id) + 1 FROM demo_orders WHERE market_id = @marketId),
+         @seed
+       ) + 2
+     )
+     ON CONFLICT(market_id) DO UPDATE SET next_id = next_id + 2
+     RETURNING next_id - 2 AS issued`,
+  );
+  const row = stmt.get({ marketId, seed: Date.now() }) as { issued: number } | undefined;
+  if (row == null) {
+    // Should be unreachable: UPSERT always returns a row.
+    const fallback = Date.now();
+    return fallback;
+  }
+  return Number(row.issued);
+}
+
 export function recordTrade(trade: Omit<TradeRecord, "market_id"> & { market_id: string }): void {
   const id = `${trade.market_id}-${trade.order_id}-${trade.timestamp_ms}`;
   getDb()
@@ -784,15 +847,48 @@ export function getVaultSummaryFromEnv(): {
   // on a non-existent vault and pause the agent policy. The 1B
   // default was a leftover from the predict-server shadow that
   // intentionally faked liquidity for UI demos.
+  //
+  // R56 audit fix: route both reads through `safeFloat`. The R55
+  // sweep added `safeFloat` to lib.ts specifically for this
+  // pattern (`Number("10_USDC")=NaN` from a unit-suffix paste,
+  // `Number("1e20")` OOM, etc.) but this site was missed. A
+  // `NaN` total falls to the `total_balance > 0 ? allocated /
+  // total_balance : 0` branch in `risk-monitor.ts` (0% utilization),
+  // so a critically over-utilized vault would never trip the
+  // pause threshold. The opposite (env missing, total=0) reports
+  // 0% utilization when the vault is actually over-budget.
+  // Logged at warn so the operator can see the bad value in the
+  // agent stderr and fix the env.
   const vaultId = process.env.VAULT_OBJECT_ID ?? "";
-  const total = Number(process.env.VAULT_TOTAL_BALANCE ?? 0);
-  const allocated = Number(process.env.VAULT_ALLOCATED ?? 0);
+  const total = safeFloatFromEnv("VAULT_TOTAL_BALANCE", 0);
+  const allocated = safeFloatFromEnv("VAULT_ALLOCATED", 0);
   return {
     vault_id: vaultId,
     total_balance: total,
     allocated,
     available: Math.max(0, total - allocated),
   };
+}
+
+// R56 audit fix: inlined env-safe float parse for the vault summary.
+// `safeFloat` lives in `lib.ts` to keep the import surface small for
+// callers that don't already pull from `lib.js`. This module's other
+// helpers (`upsertOrder`, `getOrderBook`, etc.) only use the local
+// `getDb()` singleton and the `@suipredict/sdk` types, so adding a
+// full `lib.js` import would have been a heavier change for a single
+// call site. Keep the guard semantics identical to `lib.safeFloat`:
+// warn on non-finite, return the fallback.
+function safeFloatFromEnv(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (v === undefined || v === null) return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) {
+    console.warn(
+      `[markets.store] env ${name}="${v}" is not a finite number; using fallback ${fallback}.`,
+    );
+    return fallback;
+  }
+  return n;
 }
 
 export function recordChainOrder(o: {

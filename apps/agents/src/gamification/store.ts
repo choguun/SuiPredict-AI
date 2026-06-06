@@ -366,6 +366,21 @@ function getDb(): Database.Database {
     } catch {
       // Column already present; ignore.
     }
+    // R56 migration: pre-R56 parlays rows don't have a
+    // payout_source column. Distinguishes "payout=0 because
+    // all legs lost" (a legitimate outcome) from "payout=0
+    // because the on-chain event was missing the field" (an
+    // SDK drift signal). The web /parlay page can render
+    // "lost" vs "unknown" differently — the previous code
+    // collapsed both into 0. Swallow "duplicate column" on
+    // re-run so the migration is idempotent.
+    try {
+      getDb().exec(
+        `ALTER TABLE parlays ADD COLUMN payout_source TEXT NOT NULL DEFAULT ''`,
+      );
+    } catch {
+      // Column already present; ignore.
+    }
     // R39 migration: pre-R39 databases have a synthetic
     // id INTEGER PRIMARY KEY AUTOINCREMENT on
     // streak_events instead of the natural PK on
@@ -665,6 +680,39 @@ export function archiveWeekly(rows: WeeklyRow[]): void {
     for (const r of items) insert.run(r);
   });
   tx(rows);
+}
+
+/**
+ * R56 audit fix: archive + clear in a single transaction.
+ * The previous leaderboard-worker called `archiveWeekly(weekly)`
+ * followed by `clearDailyScoresBefore(cutoffDay)` as two
+ * separate SQLite calls. A SIGTERM between them left the prior
+ * week's daily_scores rows intact AND no archived row; the
+ * next tick would re-archive (idempotent on PK) but the
+ * clear intent was lost. Wrap both in a transaction so either
+ * both succeed or neither does.
+ */
+export function archiveAndClearAtomic(
+  weekly: WeeklyRow[],
+  cutoffDay: number,
+): { archived: number; cleared: number } {
+  const insert = getDb().prepare(
+    `INSERT INTO weekly_archive
+     (user, week_index, score, rank, correct_days, longest_streak, category)
+     VALUES (@user, @week_index, @score, @rank, @correct_days, @longest_streak, @category)
+     ON CONFLICT(user, week_index) DO UPDATE SET
+       score=excluded.score, rank=excluded.rank, correct_days=excluded.correct_days,
+       longest_streak=excluded.longest_streak, category=excluded.category`,
+  );
+  const del = getDb().prepare(
+    `DELETE FROM daily_scores WHERE day_index < ?`,
+  );
+  const tx = getDb().transaction((items: WeeklyRow[], cutoff: number) => {
+    for (const r of items) insert.run(r);
+    const changes = del.run(cutoff).changes ?? 0;
+    return { archived: items.length, cleared: Number(changes) };
+  });
+  return tx(weekly, cutoffDay);
 }
 
 export function listWeeklyLeaderboard(
@@ -1200,8 +1248,17 @@ export function recordParlayFinalized(p: {
   payout: number;
   legs_lost: number;
   ts_ms: number;
+  // R56 audit fix: 'onchain' when j.payout was present in the
+  // event payload, 'missing' when the field was undefined/null
+  // (the indexer recorded 0 in that case to keep the column
+  // non-null). The web /parlay page renders the two cases
+  // differently: a 'missing' source is an SDK-drift signal
+  // that the operator should investigate; a 'onchain' 0 is
+  // the user's parlay legitimately lost all legs.
+  payout_source?: "onchain" | "missing";
 }): void {
   const won = p.won ? 1 : 0;
+  const payoutSource = p.payout_source ?? "onchain";
   // R36 audit fix: the on-chain `parlay::ParlayFinalized` event
   // carries `pool_id`, `user`, and `legs_lost` in addition to
   // `parlay_id`/`won`/`payout`. The off-chain indexer previously
@@ -1252,6 +1309,7 @@ export function recordParlayFinalized(p: {
              legs_lost = @legs_lost,
              pool_id = COALESCE(NULLIF(@pool_id, ''), pool_id),
              user = COALESCE(NULLIF(@user, ''), user),
+             payout_source = COALESCE(NULLIF(@payout_source, ''), payout_source),
              updated_at_ms = @ts_ms
        WHERE parlay_id = @parlay_id
          AND finalized = 0`,
@@ -1264,6 +1322,7 @@ export function recordParlayFinalized(p: {
       payout: p.payout,
       legs_lost: p.legs_lost,
       ts_ms: p.ts_ms,
+      payout_source: payoutSource,
     });
 }
 

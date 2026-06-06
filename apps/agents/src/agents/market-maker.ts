@@ -11,7 +11,7 @@ import {
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
-import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
+import { getMarket, listMarkets, upsertOrder, nextDemoOrderId as nextDemoOrderIdFromStore } from "../markets/store.js";
 
 /**
  * BalanceManager ID resolution order:
@@ -59,29 +59,20 @@ function loadBalanceManagerId(): string | undefined {
  * `Date.now()` / `Date.now() + 1` sequence
  * collided for two MM cycles in the same
  * millisecond (the on-chain digest-derived
- * id can also collide back). Use a small
- * in-process map keyed by market id; the
- * `runMarketMaker` tick is single-flight
- * (the scheduler only runs one MM at a
- * time) so the in-process state is
- * consistent. The counter advances by 2
- * per tick (one bid + one ask) and is
- * initialized from `Date.now()` on the
- * first call, which gives a stable,
- * monotonically-increasing sequence per
- * market across the process lifetime.
+ * id can also collide back). R56 audit fix:
+ * the in-process `Map` (added by R47) was
+ * cleared on every Railway redeploy, and the
+ * next tick re-seeded from `Date.now()` — a
+ * fast redeploy can keep `Date.now()` the
+ * same or smaller, so two `upsertOrder`
+ * calls would collide on the (market_id,
+ * order_id) PK and silently re-flip a
+ * cancelled demo order. The counter is now
+ * SQLite-backed (`demo_order_counters`
+ * table) and atomic across replicas.
  */
-const demoOrderCounters = new Map<string, number>();
 function nextDemoOrderId(marketId: string): number {
-  const cur = demoOrderCounters.get(marketId);
-  if (cur != null) {
-    const next = cur + 2;
-    demoOrderCounters.set(marketId, next);
-    return cur;
-  }
-  const initial = Date.now();
-  demoOrderCounters.set(marketId, initial + 2);
-  return initial;
+  return nextDemoOrderIdFromStore(marketId);
 }
 
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
@@ -119,6 +110,20 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   const PER_ORDER_NOTIONAL_DOLLARS = Math.max(
     1,
     Math.round((QUOTE_SIZE * (SPREAD_THRESHOLD_BPS / 10_000 + 0.05)) / 1_000_000),
+  );
+  // R56 audit fix: clamp the per-cycle auth amount to the policy
+  // budget. With QUOTE_SIZE=1e15 and SPREAD_THRESHOLD_BPS=10000
+  // (the R55-safe max), PER_ORDER_NOTIONAL_DOLLARS computes to
+  // ~1.05e9, so *2 (both sides) is ~2.1e9 — far above the default
+  // ctx.maxBudgetUsdc=500. The on-chain authorize_spend would
+  // abort with a budget error, the worker catches it at line 298
+  // and logs quote_failed, then retries the same doomed tx every
+  // minute. Clamp to the budget so the worker can either
+  // authorize (when budget is reasonable) or skip cleanly with
+  // over_budget_skip when it's not.
+  const cycleAuthDollars = Math.min(
+    PER_ORDER_NOTIONAL_DOLLARS * 2,
+    ctx.maxBudgetUsdc,
   );
 
   // Find an active market that has a DeepBook pool
@@ -240,10 +245,21 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
     // Authorize this cycle's spend against the on-chain policy (no-op if
     // AGENT_POLICY_ID is unset, e.g. on demo deployments).
+    //
+    // R56 audit fix: pass `cycleAuthDollars` (clamped to
+    // ctx.maxBudgetUsdc) instead of `PER_ORDER_NOTIONAL_DOLLARS * 2`
+    // (unclamped). A pathological QUOTE_SIZE / SPREAD_THRESHOLD_BPS
+    // combination computes a notional far above the policy budget;
+    // authorize_spend would abort on-chain and the worker would
+    // log quote_failed every minute forever. Clamping here turns
+    // the failure into either a clean auth (when the budget is
+    // sane) or a no-op when the per-cycle cost exceeds the budget
+    // (the actual quote placement below still runs — over_budget
+    // is an operator config issue, not a market condition).
     if (AGENT_POLICY_ID) {
       const authTx = buildAuthorizeSpendTx(
         AGENT_POLICY_ID,
-        PER_ORDER_NOTIONAL_DOLLARS * 2, // both sides
+        cycleAuthDollars, // clamped to ctx.maxBudgetUsdc (see R56 fix)
       );
       await executeTransaction(client, authTx, ctx.signer);
     }
