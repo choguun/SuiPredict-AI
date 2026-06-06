@@ -335,27 +335,19 @@ public fun create_market<Q>(
     tick_size: u64,
     lot_size: u64,
     min_size: u64,
-    mut deep_coin: Coin<DEEP>,
+    deep_coin: Coin<DEEP>,
     category: u8,
     ctx: &mut TxContext,
 ): (ID, ID, ID) {
     let creator = ctx.sender();
 
-    // Split DEEP to exact pool creation fee; return remainder to creator.
-    let fee_amount = pool_creation_fee();
-    let total = coin::value(&deep_coin);
-    assert!(total >= fee_amount, 1);
-    let fee_balance = coin::balance_mut(&mut deep_coin).split(fee_amount);
-    let fee_coin = coin::from_balance(fee_balance, ctx);
-
     // 1. Create the DeepBook permissionless pool
-    //    Pool type: Pool<YES<Q>, Q>
     let pool_id = pool::create_permissionless_pool<YES<Q>, Q>(
         registry,
         tick_size,
         lot_size,
         min_size,
-        fee_coin,
+        deep_coin,
         ctx,
     );
 
@@ -424,12 +416,6 @@ public fun create_market<Q>(
     });
 
     transfer::share_object(market);
-    // Return remaining DEEP to creator
-    if (coin::value(&deep_coin) > 0) {
-        transfer::public_transfer(deep_coin, creator);
-    } else {
-        coin::destroy_zero(deep_coin);
-    };
     (market_id, pool_id, balance_manager_id)
 }
 
