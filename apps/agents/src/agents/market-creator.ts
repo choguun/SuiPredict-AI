@@ -296,11 +296,13 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       feeCoinId = deepCoin.objectId;
     } else {
       const splitTx = new Transaction();
-      const [fresh] = splitTx.splitCoins(
+      const splitResults = splitTx.splitCoins(
         splitTx.object(deepCoin.objectId),
         [splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
-      ) as [any];
-      splitTx.transferObjects([fresh], splitTx.pure.address(agentAddr));
+      );
+      const coinResults: any[] = [];
+      coinResults.push(splitResults[0] as unknown as any);
+      splitTx.transferObjects(coinResults, splitTx.pure.address(agentAddr));
       await executeTransaction(client, splitTx, ctx.signer);
       // Retry finding the 500M coin (gRPC may lag)
       for (let attempt = 0; attempt < 10; attempt++) {
