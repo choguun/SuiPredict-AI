@@ -9,9 +9,8 @@ import {
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
-import { DEEPBOOK_REGISTRY_ID, encodeUtf8, resolveAgentPolicyPackageId } from "@suipredict/sdk";
-import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
+import { Transaction } from "@mysten/sui/transactions";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
 import { listMarkets, upsertMarket, patchMarketReferralId } from "../markets/store.js";
 
@@ -291,29 +290,38 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       });
     }
 
-    // Step 2: create the market with DEEP coin split in the same transaction
-    // DeepBook's create_permissionless_pool requires the exact fee amount.
-    const createTx = new Transaction();
-    // Split the DEEP coin: feeCoin is the 500M split
-    const [feeCoin] = createTx.splitCoins(
-      createTx.object(deepCoin.objectId),
-      [createTx.pure.u64(POOL_CREATION_FEE_DEEP)],
-    );
-    // Now call create_market with the split fee coin inline
-    createTx.moveCall({
-      target: `${resolveAgentPolicyPackageId()}::prediction_market::create_market`,
-      typeArguments: [DUSDC_TYPE],
-      arguments: [
-        createTx.object(DEEPBOOK_REGISTRY_ID),
-        createTx.pure.vector("u8", encodeUtf8(spec.title)),
-        createTx.pure.vector("u8", encodeUtf8(spec.resolution_source)),
-        createTx.pure.u64(expiryMs),
-        createTx.pure.u64(1_000_000n),  // tick
-        createTx.pure.u64(1_000_000n),  // lot
-        createTx.pure.u64(1_000_000n),  // min
-        feeCoin,                         // 500M DEEP coin
-        createTx.pure.u8(categoryToCode(spec.category)),
-      ],
+    // Step 2: split DEEP to exact fee, retry query until coin found
+    let feeCoinId: string;
+    if (BigInt(deepCoin.balance) === POOL_CREATION_FEE_DEEP) {
+      feeCoinId = deepCoin.objectId;
+    } else {
+      const splitTx = new Transaction();
+      const [fresh] = splitTx.splitCoins(
+        splitTx.object(deepCoin.objectId),
+        [splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
+      );
+      splitTx.transferObjects([fresh], splitTx.pure.address(agentAddr));
+      await executeTransaction(client, splitTx, ctx.signer);
+      // Retry finding the 500M coin (gRPC may lag)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+        const coins = await listAllCoins(client, agentAddr, DEEP_TYPE);
+        const hit = coins.find(c => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
+        if (hit) { feeCoinId = hit.objectId; break; }
+      }
+      if (!feeCoinId!) throw new Error("Failed to find 500M fee coin after split");
+    }
+
+    // Step 3: create the market using the SDK builder
+    const createTx = buildCreateMarketTx({
+      title: spec.title,
+      resolutionSource: spec.resolution_source,
+      expiryMs,
+      tickSize: BigInt(1_000_000),
+      lotSize: BigInt(1_000_000),
+      minSize: BigInt(1_000_000),
+      deepCoinId: feeCoinId,
+      category: categoryToCode(spec.category),
     });
 
     const createResult = await executeTransaction(client, createTx, ctx.signer);
