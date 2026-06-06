@@ -403,15 +403,28 @@ export function buildRecordLegTx(args: {
   // burns hundreds of these per tick on a stale
   // counter, so the build-time guard saves real
   // gas. Also reject non-integer number inputs.
+  //
+  // R56.5 audit fix: cap the upper bound at `u64::MAX`
+  // rather than `MAX_LEGS - 1`. The on-chain
+  // `leg_index: u64` accepts a 64-bit value; the
+  // R55 soft cap at `MAX_LEGS - 1` (= 4) was a
+  // property-of-this-build assumption — a future
+  // DeepBook bump to 6 legs would silently re-open
+  // the bug. The on-chain `record_leg` asserts
+  // `leg_index < legs.length` for the per-parlay
+  // bound, which is the only check that survives a
+  // leg-count change. Capping at `u64::MAX` here
+  // mirrors the R54 `buildPlaceOrderTx` pattern.
   if (typeof args.legIndex === "number" && !Number.isInteger(args.legIndex)) {
     throw new Error(
       `buildRecordLegTx: legIndex must be an integer (got ${args.legIndex})`,
     );
   }
   const legIndex = BigInt(args.legIndex);
-  if (legIndex < 0n || legIndex > BigInt(MAX_LEGS - 1)) {
+  if (legIndex < 0n || legIndex > 0xFFFFFFFFFFFFFFFFn) {
     throw new Error(
-      `buildRecordLegTx: legIndex must be in [0, ${MAX_LEGS - 1}] (got ${args.legIndex})`,
+      `buildRecordLegTx: legIndex must be in [0, u64::MAX] (got ${args.legIndex}); ` +
+        `the on-chain record_leg enforces the per-parlay [0, legs.length) bound`,
     );
   }
   const tx = new Transaction();

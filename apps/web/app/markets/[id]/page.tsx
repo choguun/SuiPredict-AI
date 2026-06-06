@@ -250,7 +250,18 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       queryKey: ["streakInfo"],
       type: "active",
     });
-  }, [queryClient, account?.address]);
+    // R56.12 audit fix: also invalidate this market's
+    // order-book key. The local `refresh()` + `setRefreshCounter`
+    // work around this for the current page, but a future
+    // refactor that caches the order book in React Query would
+    // hit a stale "no order yet" view for the hook's
+    // `staleTime` after a successful placeOrder. Cheap to
+    // add now and stops the foot-gun.
+    void queryClient.invalidateQueries({
+      queryKey: ["marketOrderBook", marketId],
+      type: "active",
+    });
+  }, [queryClient, account?.address, marketId]);
   const initializedPrice = useRef(false);
   // R36 audit fix: a single AbortController for the component's
   // lifetime. Polling intervals and the post-submit order-confirm
@@ -623,7 +634,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     }
     if (!deepBookMarket) return;
     setBusy("placeOrder");
-    const clientOrderId = String(Date.now());
+    // R56.18 audit fix: millisecond-granularity `Date.now()`
+    // collisions are unlikely but possible (a programmatic
+    // submit, or two tabs the same user opens for the same
+    // market). Append a 6-char random suffix so the
+    // on-chain `client_order_id` is unique even for
+    // back-to-back submits in the same millisecond. The
+    // `chain_orders` de-duplication in the indexer would
+    // otherwise attribute the second order to the first.
+    const clientOrderId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const toastId = toast.loading("Submitting DeepBook V3 limit order...");
     try {
       // R55 audit fix: pre-flight DUSDC balance for a
@@ -821,6 +840,27 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         }
       }
       await new Promise((r) => setTimeout(r, 1_500));
+      // R56.13 audit fix: pause the poll loop while the tab
+      // is hidden. A user who mints and immediately
+      // switches tabs for the full 65s timeout would
+      // otherwise fire 43 `fetch` calls against the agents
+      // service to confirm an order they can't see. The
+      // 4s `setInterval` on line 362-365 was visibility-
+      // gated by R42; the order-confirm poll was missed.
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState !== "visible"
+      ) {
+        await new Promise<void>((resolve) => {
+          const onVis = () => {
+            if (document.visibilityState === "visible") {
+              document.removeEventListener("visibilitychange", onVis);
+              resolve();
+            }
+          };
+          document.addEventListener("visibilitychange", onVis);
+        });
+      }
     }
     return false;
   }
@@ -1057,7 +1097,20 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         // objectId.
         limit: 100,
       });
-      const coin = objects[0];
+      // R56.1 audit fix: sort the response by `balance` and
+      // pick the largest. The R52 page-size fix made this
+      // bug more likely (not less): a winner with 10
+      // 0.1-share fragments and one 0.5-share fragment
+      // would redeem a 0.1 fragment first, abort on-chain
+      // with `EInsufficientBalance` (the on-chain
+      // `redeem` redeems the whole input coin), pay gas,
+      // and need to retry until the largest fragment
+      // happened to land first. Mirror the
+      // `splitCollateral` sort at line 522-524.
+      const sortedWinning = [...objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const coin = sortedWinning[0];
       if (!coin) {
         throw new Error(
           `You don't hold any ${winningSide.toUpperCase()} tokens for this market`,

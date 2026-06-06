@@ -69,9 +69,19 @@ export interface PortfolioPosition {
   outcome?: string | null;
 }
 
+// R56.9 audit fix: the on-the-wire balance fields are
+// `string` (bigint-as-string) rather than `number`. The
+// R55 sweep coerced to `Number(raw.total_balance)` etc.
+// to defend against a future bigint-as-string migration,
+// but `Number(bigintString)` loses precision above
+// 2^53 - 1 (DUSDC has 6 decimals, so 2^53 atoms = ~$9
+// trillion). The type definition previously lied about
+// the wire shape. Render the values on the admin / home
+// / vault pages with `BigInt(s).toString()` and a
+// `formatDusdc` helper that divides by 1e6 safely.
 export interface VaultSummaryClob {
   vault_id: string;
-  total_balance: number;
-  allocated: number;
-  available: number;
+  total_balance: string;
+  allocated: string;
+  available: string;
 }

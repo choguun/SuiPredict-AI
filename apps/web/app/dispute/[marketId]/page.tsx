@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useCurrentAccount,
   useCurrentClient,
@@ -41,6 +42,18 @@ export default function DisputeMarketPage() {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const router = useRouter();
+  // R56.6 audit fix: invalidate cross-page caches after a
+  // successful dispute. The success branch toasts
+  // "Dispute filed" but never refetches the indexer-backed
+  // state on the markets list / market detail page; a user
+  // who navigates back to `/markets/${marketId}` immediately
+  // after the dispute toast sees the pre-dispute
+  // `status === "resolved"` for ~30s (the indexer mirror's
+  // lag). They can re-click "File dispute" and hit the
+  // on-chain `EMarketDisputed` abort. R55 audited the
+  // markets/[id] page's 6 invalidation sites; the dispute
+  // success path was missed.
+  const queryClient = useQueryClient();
   const [evidenceUri, setEvidenceUri] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +146,18 @@ export default function DisputeMarketPage() {
 
   async function submit() {
     if (!canSubmit) return;
+    // R56.9 audit fix: gate on `client` like every other
+    // submitAndWait call site. The non-null assertion
+    // `client!` (line below) throws when dapp-kit is
+    // still initializing (race on initial mount) or
+    // after a wallet disconnect mid-render. The sibling
+    // markets/[id], vault, and parlay pages all gate on
+    // `!account || !client || !...` BEFORE calling
+    // `submitAndWait`; the dispute page was the survivor.
+    if (!client) {
+      toast.error("Wallet not ready");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     const toastId = toast.loading("Filing dispute...");
@@ -147,7 +172,7 @@ export default function DisputeMarketPage() {
       // toast saw the pre-dispute `status === "resolved"`
       // (stale indexer) and re-clicked "File dispute",
       // hitting `EMarketDisputed` on-chain.
-      const r = await submitAndWait(dAppKit, client!, tx);
+      const r = await submitAndWait(dAppKit, client, tx);
       // R37 audit fix: bail with an explicit error rather than
       // rendering the "Digest: submitted..." card on a Failed /
       // EffectsCert variant. The old code displayed "submitted" as
@@ -167,6 +192,24 @@ export default function DisputeMarketPage() {
       }
       setDigest(r.digest);
       toast.success("Dispute filed", { id: toastId });
+      // R56.6 audit fix: invalidate the cross-page caches
+      // that surface market state. `["marketsList"]` is
+      // the home / markets list; `["market", marketId]`
+      // is the per-market detail page that the user is
+      // about to navigate back to. The local `setDigest`
+      // above keeps the success card on this page; the
+      // invalidation ensures the next page-mount
+      // (or the user's browser back button) sees the
+      // fresh indexer state, not a 30s-stale
+      // `status === "resolved"`.
+      void queryClient.invalidateQueries({
+        queryKey: ["marketsList"],
+        type: "active",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["market", normalizeObjectId(marketId)],
+        type: "active",
+      });
     } catch (err) {
       const msg = friendlyDisputeError(err);
       setError(msg);

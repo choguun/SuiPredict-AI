@@ -58,9 +58,23 @@ export function asBalance(
   return 0n;
 }
 
+// R56.8 audit fix: mirror the gRPC `Balance<T>` shape handling
+// from `asBalance` (above). A future Move module change that
+// makes a field `asBig` reads (e.g. `allocated`, `current_week`)
+// into a `Balance<T>` would surface as `{"value": "12345"}` and
+// `BigInt({...})` throws "Cannot convert object to primitive
+// value". Latent — currently safe because all `asBig` call sites
+// read plain u64 fields — but the helper is private and shared
+// with future readers.
 function asBig(fields: Record<string, unknown> | null, key: string): bigint {
   if (!fields) return 0n;
-  return BigInt((fields[key] as string | number | undefined) ?? 0);
+  const v = fields[key];
+  if (typeof v === "string" || typeof v === "number") return BigInt(v);
+  if (v && typeof v === "object" && "value" in v) {
+    const inner = (v as { value?: string | number }).value;
+    if (inner != null) return BigInt(inner);
+  }
+  return 0n;
 }
 
 function asStr(fields: Record<string, unknown> | null, key: string): string {

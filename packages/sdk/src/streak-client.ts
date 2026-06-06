@@ -245,10 +245,22 @@ export async function streakIdForUser(
   registryId: string,
   userAddress: string,
 ): Promise<string | null> {
+  // R56.6 audit fix: lowercase the user address before the
+  // dynamic-field lookup. The on-chain
+  // `StreakRegistry.streaks: Table<address, ID>` stores the
+  // canonical lowercase 32-byte form; a mixed-case paste
+  // (e.g. from a Suiscan link that retains checksum casing, or
+  // a ZK-login sub-issuer that hands back mixed-case) would
+  // otherwise return `null` (caught as 404) and the agents'
+  // `streak-sweeper` would skip the user forever. Short-circuit
+  // on malformed input so a typo doesn't burn a getDynamicField
+  // RPC either.
+  const normalizedUser = userAddress.trim().toLowerCase();
+  if (!isValidSuiAddress(normalizedUser)) return null;
   try {
     const { dynamicField } = await client.core.getDynamicField({
       parentId: registryId,
-      name: { type: "address", value: userAddress } as unknown as never,
+      name: { type: "address", value: normalizedUser } as unknown as never,
     });
     if (!dynamicField) return null;
     const value = (dynamicField as { value?: unknown }).value;

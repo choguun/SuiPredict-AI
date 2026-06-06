@@ -21,7 +21,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { AGENT_POLICY_PACKAGE_ID } from "./constants.js";
 import type { SuiClient } from "./predict-client.js";
-import { normalizeObjectId, u64ToSafeNumber } from "./utils.js";
+import { normalizeObjectId, u64ToSafeNumber, isValidSuiAddress } from "./utils.js";
 
 const PKG = () => AGENT_POLICY_PACKAGE_ID;
 
@@ -157,10 +157,21 @@ export async function readProfileIdForUser(
   registryId: string,
   user: string,
 ): Promise<string | null> {
+  // R56.7 audit fix: lowercase the user address and reject
+  // whitespace-suffixed input before the dynamic-field lookup.
+  // The on-chain `ProfileRegistry.profiles: Table<address, ID>`
+  // stores the canonical lowercase 32-byte form; a mixed-case
+  // paste from a Suiscan link returns `null` and the settings
+  // page would claim the user has no profile (when they do),
+  // prompting them to create a second profile that aborts
+  // with `EProfileExists`. Short-circuit on malformed input so
+  // a typo doesn't burn a getDynamicField RPC either.
+  const normalizedUser = user.trim().toLowerCase();
+  if (!isValidSuiAddress(normalizedUser)) return null;
   try {
     const { dynamicField } = await client.core.getDynamicField({
       parentId: registryId,
-      name: { type: "address", value: user } as unknown as never,
+      name: { type: "address", value: normalizedUser } as unknown as never,
     });
     if (!dynamicField) return null;
     const value = (dynamicField as { value?: unknown }).value;

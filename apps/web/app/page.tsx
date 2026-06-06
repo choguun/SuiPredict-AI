@@ -13,9 +13,14 @@ import { EmptyState } from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
 
-function formatUsd(value?: number) {
-  if (typeof value !== "number") return "$0";
-  return `$${(value / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+// R56.9 audit fix: accept `string` (bigint-as-string) for the
+// vault summary fields. `Number(bigintString)` loses precision
+// above 2^53 - 1; BigInt keeps the full u64 range.
+function formatUsd(value?: number | string) {
+  if (value === undefined || value === null) return "$0";
+  const v = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(v)) return "$0";
+  return `$${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 function formatDate(ms: number) {

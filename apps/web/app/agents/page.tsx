@@ -257,7 +257,21 @@ export default function AgentsPage() {
       if (decisionsRes.status === "fulfilled" && decisionsRes.value.ok) {
         setDecisions(await decisionsRes.value.json());
         setError("");
-      } else if (decisionsRes.status === "rejected" || (decisionsRes.status === "fulfilled" && !decisionsRes.value.ok)) {
+      } else if (decisionsRes.status === "fulfilled" && !decisionsRes.value.ok) {
+        // R56.21 audit fix: distinguish "service is up but
+        // the endpoint errored" from "service is down". A
+        // 5xx from `/decisions` (e.g. an empty `decisions`
+        // table joining against a missing market id) was
+        // previously shown as "Start the agents service…"
+        // — misleading when the service is actually
+        // running. 4xx is the same path (bad URL or
+        // schema migration); the operator is best served
+        // by the agents log either way.
+        setError(
+          `Agents service is up but /decisions returned HTTP ${decisionsRes.value.status}. ` +
+            "Check the agents log for the underlying error.",
+        );
+      } else if (decisionsRes.status === "rejected") {
         setError("Start the agents service: `pnpm --filter @suipredict/agents dev`");
       }
 

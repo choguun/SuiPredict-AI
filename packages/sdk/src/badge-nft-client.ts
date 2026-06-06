@@ -114,6 +114,21 @@ export function buildMintBadgeToKioskTx(args: {
   kioskId: string;
   kioskCapId: string;
 }): Transaction {
+  // R56.4 audit fix: validate `tier` at the build boundary. R54
+  // added the same `[1, 5]` guard to the sibling `buildMintBadgeTx`
+  // (line 75-79) but missed the kiosk variant. The on-chain
+  // `streak_system::claim_badge` (called by `badge_nft::mint_badge_to_kiosk`
+  // — see badge_nft.move:173 and streak_system.move:324) asserts
+  // `tier >= 1 && tier <= 5` and aborts with `EInvalidTier` (code
+  // 5 in streak_system.move). A `tier = 0` (the
+  // `Number(undefined)` default) or `tier = 6` burns gas on a
+  // guaranteed-abort PTB. The kiosk variant is the rarer path
+  // but the wasted PTB is visible on the operator dashboard.
+  if (!Number.isInteger(args.tier) || args.tier < 1 || args.tier > 5) {
+    throw new Error(
+      `buildMintBadgeToKioskTx: tier must be an integer in [1, 5] (got ${args.tier})`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::badge_nft::mint_badge_to_kiosk`,

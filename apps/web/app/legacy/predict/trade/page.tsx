@@ -85,24 +85,28 @@ export default function TradePage() {
     const toastId = toast.loading("Creating PredictManager...");
     try {
       const tx = buildCreateManagerTx();
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      // R38 audit fix: the previous code accessed
-      // `result.FailedTransaction?.digest` on the failure path,
-      // but the dAppKit union variant is `Failed` (not
-      // `FailedTransaction`) and carries no `digest` field — so
-      // the `if (digest)` block silently skipped and the code
-      // fell through to a `getManagerForOwner` call that could
-      // return a STALE manager id from a previous user, then
-      // toast a misleading "Manager created: <stale-id>..."
-      // success. The new code requires the result to be a
-      // `Transaction` variant (where the manager has actually
-      // been created and the digest is real) before refetching
-      // the manager id.
-      if (result.$kind !== "Transaction") {
+      // R56.5 audit fix: route through `submitAndWait`
+      // (R55 helper at apps/web/lib/dapp-kit.ts:160). The
+      // sibling `mintPosition` (line 251) and
+      // `redeemPosition` (line 310) were migrated in R55;
+      // this survivor used a raw
+      // `dAppKit.signAndExecuteTransaction` + manual
+      // `client.waitForTransaction({ digest: result.Transaction.digest })`
+      // with no timeout and no `AbortSignal`, so a slow
+      // RPC could hang the modal indefinitely. The R55
+      // helper adds a 30s timeout + signal plumbing for
+      // free, and the R55 audit's stated goal ("every
+      // modern flow is fixed") was not actually achieved
+      // here.
+      const result = await submitAndWait(dAppKit, client, tx);
+      // R55 audit fix: same R34 pattern as the other
+      // handlers — bail with a clear error before reading
+      // the digest so a Failed / EffectsCert result
+      // doesn't toast a fake success.
+      if (result.$kind !== "Transaction" || !result.digest) {
         toast.error("Manager creation failed on-chain.", { id: toastId });
         return;
       }
-      await client.waitForTransaction({ digest: result.Transaction.digest });
       const id = await getManagerForOwner(account.address);
       if (id) {
         setManagerId(id);

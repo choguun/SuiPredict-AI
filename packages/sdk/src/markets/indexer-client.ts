@@ -197,18 +197,22 @@ export async function getPortfolio(address: string): Promise<PortfolioPosition[]
 }
 
 export async function getVaultSummaryClob(): Promise<VaultSummaryClob> {
-  // R55 audit fix: coerce the numeric fields at the read
-  // boundary. The on-the-wire response could swap to
-  // bigint-as-string in a future bignum migration; the
-  // previous "trust the type" approach would silently
-  // surface `NaN` in the admin page when
-  // `total_balance - allocated` is computed.
+  // R56.9 audit fix: keep the on-the-wire shape (string) at
+  // the read boundary. The R55 sweep coerced to `Number(...)`
+  // to defend against a future bigint-as-string migration,
+  // but `Number(bigintString)` loses precision above
+  // 2^53 - 1 (DUSDC has 6 decimals, so 2^53 atoms = ~$9
+  // trillion). The new contract is "string everywhere" —
+  // render with `BigInt(s).toString()` + `formatDusdc` to
+  // preserve precision through to the admin / home / vault
+  // pages. Tolerate the old `number` wire shape for
+  // backwards compat with a pre-R56 agents deploy.
   const raw = await fetchJson<VaultSummaryClob>("/vault/summary");
   return {
     ...raw,
-    total_balance: Number(raw.total_balance),
-    allocated: Number(raw.allocated),
-    available: Number(raw.available),
+    total_balance: String(raw.total_balance),
+    allocated: String(raw.allocated),
+    available: String(raw.available),
   };
 }
 

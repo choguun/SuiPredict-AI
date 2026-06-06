@@ -13,6 +13,7 @@ import {
   AGENT_POLICY_PACKAGE_ID,
   CLOCK_OBJECT_ID,
   DUSDC_TYPE,
+  resolveAgentPolicyPackageId,
 } from "./constants.js";
 import { encodeUtf8 } from "./markets/constants.js";
 import {
@@ -53,7 +54,17 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
  */
 export const PREDICT_MARKET_PACKAGE_ID = AGENT_POLICY_PACKAGE_ID;
 
-const PKG = () => PREDICT_MARKET_PACKAGE_ID;
+// R56.12 audit fix: route the local `PKG()` getter through
+// `resolveAgentPolicyPackageId()` so it actually picks up a
+// hot-patched env. The R55 sweep added
+// `resolveAgentPolicyPackageId()` in `constants.ts:331-339` for
+// callers that need hot-patch support, but the internal builders
+// in this file used `PREDICT_MARKET_PACKAGE_ID` directly, which
+// is a module-level const set at SDK import — a hot-patch of
+// `process.env.AGENT_POLICY_PACKAGE_ID` would never reach them.
+// The getter-as-function shape was already correct; the body
+// was the bug.
+const PKG = () => resolveAgentPolicyPackageId();
 
 /**
  * R54 audit fix: helper used by `buildCreateMarketTx` to validate
@@ -424,6 +435,23 @@ export function buildResolveMarketTx(
   marketId: string,
   outcome: 1 | 2,
 ): Transaction {
+  // R56.3 audit fix: validate `outcome` at the build boundary.
+  // The TS type is `1 | 2` but the on-chain
+  // `prediction_market::resolve_market<Q>` (prediction_market.move:493)
+  // asserts `outcome == 1 || outcome == 2` and aborts with
+  // `EInvalidOutcome` (code 4) for any other value. A `0` or `3+`
+  // silently builds a valid PTB and burns gas on a guaranteed-abort
+  // submit. R55 added equivalent per-element validation to the
+  // `predictions` vector in `buildCreateParlayTx`; the `outcome` arg
+  // was missed. The market-resolver agent reads the outcome from
+  // `MintedPosition` / Oracle state and a stale schema field could
+  // ship a 0 or 3 — the build-time guard surfaces the typo before
+  // the wallet opens.
+  if (outcome !== 1 && outcome !== 2) {
+    throw new Error(
+      `buildResolveMarketTx: outcome must be 1 (YES) or 2 (NO), got ${outcome}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_market`,
@@ -523,6 +551,22 @@ export function buildResolveDisputeTx(
   marketId: string,
   finalOutcome: 1 | 2,
 ): Transaction {
+  // R56.2 audit fix: validate `finalOutcome` at the build boundary.
+  // The TS type is `1 | 2` but no runtime guard is enforced. The
+  // on-chain `prediction_market::resolve_dispute<Q>` (prediction_market.move:549)
+  // asserts `final_outcome == 1 || final_outcome == 2` and aborts
+  // with `EInvalidOutcome` (code 4) for any other value. A `0` or
+  // `3+` silently builds a valid PTB and burns gas on a guaranteed
+  // abort — and the post-abort operator investigation is non-trivial
+  // because the abort surfaces deep inside `resolve_dispute` with
+  // no context. `resolve_dispute` is the *final, irreversible*
+  // decision on a market; a build-time guard is exactly what the
+  // rare-but-critical path needs.
+  if (finalOutcome !== 1 && finalOutcome !== 2) {
+    throw new Error(
+      `buildResolveDisputeTx: finalOutcome must be 1 (YES) or 2 (NO), got ${finalOutcome}`,
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_dispute`,
@@ -659,6 +703,20 @@ export function buildClaimReferralRewardsTx(
   poolId: string,
   referralId: string,
 ): Transaction {
+  // R56.14 audit fix: reject a copy-paste of `poolId` for
+  // `referralId`. Both are 32-byte hex strings and `normalizeObjectId`
+  // validates the shape, but the on-chain `claim_referral_rewards`
+  // aborts with a generic DeepBook abort on a wrong-key submit and
+  // the operator has to dig through the trace to see what they did
+  // wrong. Admin scripts that re-use the same `poolId` variable
+  // for both args (e.g. a stale `claimRewardsTx(poolId, poolId)`)
+  // are the most common shape of this bug.
+  if (normalizeObjectId(poolId) === normalizeObjectId(referralId)) {
+    throw new Error(
+      "buildClaimReferralRewardsTx: poolId and referralId must differ; " +
+        "a copy-paste of the same id is always a caller bug",
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
@@ -808,6 +866,24 @@ export function buildPlaceYesLimitOrderTx(
     expiration?: number;
   },
 ): Transaction {
+  // R56.13 audit fix: validate `price` and `quantity` at the build
+  // boundary. The R53 sweep added the equivalent checks to
+  // `buildPlaceOrderTx` (line 996-1004) but missed this older
+  // wrapper. The underlying DeepBook `place_limit_order` aborts on
+  // `price == 0` or `quantity == 0`; a typo / `0` default silently
+  // builds a valid PTB and burns gas on a guaranteed abort. The
+  // two builders are aliased through the barrel; a caller who
+  // picks the older wrapper should not get a worse error.
+  if (!(params.price > 0)) {
+    throw new Error(
+      `buildPlaceYesLimitOrderTx: price must be > 0, got ${params.price}`,
+    );
+  }
+  if (!(params.quantity > 0)) {
+    throw new Error(
+      `buildPlaceYesLimitOrderTx: quantity must be > 0, got ${params.quantity}`,
+    );
+  }
   return buildDeepBookPlaceLimitOrderTx(dbClient, {
     poolKey,
     price: params.price,
@@ -1480,6 +1556,22 @@ export function buildRegisterMarketTx(
   registryId: string,
   marketObjectId: string,
 ): Transaction {
+  // R56.10 audit fix: reject `registryId === marketObjectId`.
+  // The on-chain `registry::register_market` aborts with
+  // `EMarketExists` (code 1 in registry.move) if the market id is
+  // already in the registry, but a copy-paste of `registryId` for
+  // `marketObjectId` is the canonical admin-script mistake. The
+  // builder can't check "is this id already in the registry" at
+  // build time without an RPC call, but it CAN catch the
+  // copy-paste shape cheaply. Use the SDK's
+  // `isMarketRegistered(client, registryId, marketId)` helper for
+  // the existence check when an operator wants to pre-flight.
+  if (normalizeObjectId(registryId) === normalizeObjectId(marketObjectId)) {
+    throw new Error(
+      "buildRegisterMarketTx: registryId and marketObjectId must differ; " +
+        "a copy-paste of the same id is always a caller bug",
+    );
+  }
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::registry::register_market`,

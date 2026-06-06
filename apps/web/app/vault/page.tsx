@@ -28,11 +28,17 @@ export default function VaultPage() {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const queryClient = useQueryClient();
+  // R56.9 audit fix: the `VaultSummaryClob` type now uses
+  // `string` (bigint-as-string) for the three balance
+  // fields. The local mirror here matches. The arithmetic
+  // `s.total_balance - s.allocated` is done in BigInt and
+  // re-stringified so the display formatter doesn't lose
+  // precision above 2^53 - 1.
   const [summary, setSummary] = useState<{
     vault_id: string;
-    total_balance: number;
-    allocated: number;
-    available?: number;
+    total_balance: string;
+    allocated: string;
+    available?: string;
   } | null>(null);
   const [amount, setAmount] = useState(10);
   const [vlpBalance, setVlpBalance] = useState(0);
@@ -67,7 +73,12 @@ export default function VaultPage() {
 
   async function refresh() {
     const s = await getVaultSummaryClob();
-    setSummary({ ...s, available: s.total_balance - s.allocated });
+    // R56.9 audit fix: do the subtraction in BigInt to
+    // preserve precision above 2^53 - 1. The wire shape
+    // is `string` (bigint-as-string) so the
+    // `Number(s) - Number(s)` shortcut is unsafe.
+    const available = (BigInt(s.total_balance) - BigInt(s.allocated)).toString();
+    setSummary({ ...s, available });
   }
 
   useEffect(() => {
@@ -79,9 +90,21 @@ export default function VaultPage() {
     // resume burst to a single initial fetch when the user
     // switches back. The initial `refresh()` above is not
     // gated so the first paint after mount always sees data.
+    //
+    // R56.15 audit fix: skip the next 30s of ticks after
+    // a `refresh()` failure. A 5xx storm on
+    // `getVaultSummaryClob` would otherwise keep
+    // hammering the agents endpoint every 10s, filling
+    // the agents log with retries. The same backoff
+    // pattern was applied to the agents page in R45.
+    let backoffUntil = 0;
     const t = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      refresh().catch(console.error);
+      if (Date.now() < backoffUntil) return;
+      refresh().catch((err) => {
+        console.error("getVaultSummaryClob failed, backing off 30s:", err);
+        backoffUntil = Date.now() + 30_000;
+      });
     }, 10_000);
     return () => clearInterval(t);
   }, []);
@@ -111,7 +134,20 @@ export default function VaultPage() {
       })
       .then(({ objects }) => {
         setVlpBalance(objects.reduce((s, c) => s + Number(c.balance), 0));
-        setVlpCoinId(objects[0]?.objectId ?? "");
+        // R56.2 audit fix: sort the VLP-coin list by balance
+        // and pick the largest. The withdraw handler passes
+        // `vlpCoinId` to `buildVaultWithdrawTx` → `tx.object(...)`
+        // and the on-chain `vault::withdraw` consumes the
+        // whole input coin — a user with 5 VLP coins (typical
+        // after several deposits) would withdraw from the
+        // smallest, which on the withdraw path triggers
+        // `EInsufficientBalance` for any withdraw > smallest-
+        // coin-balance. R53 raised the page-size limit to 100
+        // but missed the largest-coin sort.
+        const sortedVlp = [...objects].sort((a, b) =>
+          BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+        );
+        setVlpCoinId(sortedVlp[0]?.objectId ?? "");
       })
       .catch(() => {});
   }, [account, client, refreshCounter]);
@@ -239,8 +275,8 @@ export default function VaultPage() {
     }
   }
 
-  const total = summary?.total_balance ?? 0;
-  const allocated = summary?.allocated ?? 0;
+  const total = Number(summary?.total_balance ?? 0);
+  const allocated = Number(summary?.allocated ?? 0);
 
   if (!account) {
     return (

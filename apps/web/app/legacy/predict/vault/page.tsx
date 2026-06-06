@@ -63,7 +63,20 @@ export default function VaultPage() {
     });
     const total = objects.reduce((s, c) => s + Number(c.balance), 0);
     setPlpBalance(total);
-    setPlpCoinId(objects[0]?.objectId ?? "");
+    // R56.4 audit fix: sort the PLP-coin list by balance
+    // and pick the largest for the withdraw path. Same
+    // root cause as the modern vault R56.2 finding — the
+    // first coin in the indexer's response order is not
+    // necessarily the largest. R53 audited the page-size
+    // limit but not the sort. The on-chain
+    // `predict::withdraw` consumes the whole input coin,
+    // so withdrawing from a small fragment triggers
+    // `EInsufficientBalance` for any withdraw > the
+    // smallest-coin balance.
+    const sortedPlp = [...objects].sort((a, b) =>
+      BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+    );
+    setPlpCoinId(sortedPlp[0]?.objectId ?? "");
   }, [account, client]);
 
   useEffect(() => {
@@ -123,7 +136,19 @@ export default function VaultPage() {
         limit: 100,
       });
       if (coins.objects.length === 0) throw new Error("No dUSDC in wallet");
-      const primary = tx.object(coins.objects[0]!.objectId);
+      // R56.3 audit fix: pick the largest DUSDC coin as
+      // the merge target. The previous
+      // `coins.objects[0]!.objectId` used the indexer's
+      // response order, which can be a tiny dust coin;
+      // the subsequent `tx.splitCoins(primary, [supplyAmount])`
+      // then asked the chain to split more atoms than
+      // `primary` held → on-chain `EInsufficientBalance`
+      // abort. The modern vault was fixed in R55; the
+      // legacy PLP vault was the survivor.
+      const sortedDusdc = [...coins.objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const primary = tx.object(sortedDusdc[0]!.objectId);
       if (coins.objects.length > 1) {
         tx.mergeCoins(
           primary,

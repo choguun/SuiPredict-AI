@@ -48,7 +48,23 @@ export function StreakWelcomeBanner() {
       return;
     }
     const raw = window.localStorage.getItem(DISMISS_KEY);
-    const dismissedAddrs: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+    // R56.8 audit fix: wrap the parse in try/catch.
+    // A user with corrupted localStorage (manually
+    // edited, or a future migration that wrote
+    // malformed JSON) would crash the effect on mount
+    // (no banner ever shows) and the only fix is a
+    // manual localStorage clear. Treat a parse failure
+    // as "no dismissed addresses" so the banner
+    // still surfaces — the user can dismiss it again.
+    let dismissedAddrs: string[] = [];
+    if (raw) {
+      try {
+        dismissedAddrs = JSON.parse(raw) as string[];
+      } catch {
+        // Fall through with the empty list; the next
+        // `dismiss()` will overwrite the bad value.
+      }
+    }
     setDismissed(dismissedAddrs.includes(account.address));
   }, [account]);
 
@@ -69,7 +85,20 @@ export function StreakWelcomeBanner() {
   async function dismiss() {
     if (!account) return;
     const raw = window.localStorage.getItem(DISMISS_KEY);
-    const list: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+    // R56.8 audit fix: same parse-with-try/catch as the
+    // mount effect. A click on "Later" against a
+    // corrupted localStorage would otherwise throw in
+    // the click handler and the banner would never
+    // dismiss for that user.
+    let list: string[] = [];
+    if (raw) {
+      try {
+        list = JSON.parse(raw) as string[];
+      } catch {
+        // Treat as empty; the write below rewrites
+        // the corrupted value with a valid array.
+      }
+    }
     if (!list.includes(account.address)) list.push(account.address);
     window.localStorage.setItem(DISMISS_KEY, JSON.stringify(list));
     setDismissed(true);
@@ -77,6 +106,18 @@ export function StreakWelcomeBanner() {
 
   async function startStreak() {
     if (!REGISTRY_ID) return;
+    // R56.9 audit fix: gate on `client` like every other
+    // `submitAndWait` call site. The non-null assertion
+    // `client!` (below) throws when dapp-kit is still
+    // initializing (race on initial mount) or after a
+    // wallet disconnect mid-render. The sibling markets/[id],
+    // vault, and parlay pages all gate on
+    // `!account || !client || !...` BEFORE calling
+    // `submitAndWait`; the streak components were missed.
+    if (!client) {
+      toast.error("Wallet not ready");
+      return;
+    }
     setSubmitting(true);
     const toastId = toast.loading("Creating your streak…");
     try {
@@ -88,7 +129,7 @@ export function StreakWelcomeBanner() {
       // away in the same tick saw a stale
       // `useUserStreakId()` and the banner re-appeared on
       // the next page load.
-      const r = await submitAndWait(dAppKit, client!, tx);
+      const r = await submitAndWait(dAppKit, client, tx);
       // `$kind === "Transaction"` means the fullnode accepted the tx;
       // other variants (`"Failed"`, `"EffectsCert"`) carry a different
       // shape. Without this guard, a failed ttx would still toast
@@ -132,10 +173,19 @@ export function StreakWelcomeBanner() {
             type: "active",
           });
         }
+        // R56.14 audit fix: dismiss the banner only on
+        // success. The previous code called
+        // `void dismiss();` after the if/else block,
+        // so a failed streak create (e.g. paused
+        // pool, insufficient gas) silently lost the
+        // banner's "Start your streak" CTA — the user
+        // had to clear localStorage to see it again.
+        void dismiss();
       } else {
         toast.error("Streak creation failed", { id: toastId });
+        // R56.14 audit fix: do NOT dismiss on failure;
+        // the user needs the retry cue.
       }
-      void dismiss();
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Streak creation failed",

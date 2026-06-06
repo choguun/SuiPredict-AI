@@ -160,7 +160,17 @@ export function extractMoveAbortCode(msg: string): number | null {
   // Sui formats Move aborts as `MoveAbort(<MoveLocation or elided>, N)`
   // optionally followed by "in command M". Match the final `, <digits>)`
   // at the end of the abort expression.
-  const m = /MoveAbort[^\n]*\)\s*,\s*(\d+)\s*\)/.exec(msg);
+  //
+  // R56.15 audit fix: use `[\s\S]*?` (non-greedy, dotAll-style)
+  // instead of `[^\n]*`. Sui's gRPC `MoveLocation` rendering can
+  // be multi-line in newer SDK bumps (e.g.
+  // `MoveAbort(MoveLocation {\n  module: "foo",\n}, 7)`); the
+  // `[^\n]*` would stop at the first newline and miss the
+  // closing `, 7)`. The current SDK only ships the single-line
+  // format, so this is a latent bug, but the regex is brittle
+  // to a future SDK bump and the entire web + agents stack
+  // depends on this translator.
+  const m = /MoveAbort[\s\S]*?\)\s*,\s*(\d+)\s*\)/.exec(msg);
   return m ? Number(m[1]) : null;
 }
 

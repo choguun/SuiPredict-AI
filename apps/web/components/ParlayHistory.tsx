@@ -75,19 +75,27 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
     const qs = includeFinalized ? "?include_finalized=1" : "";
     const url = `${AGENTS_BASE}/parlay/user/${userAddress}${qs}`;
     let cancelled = false;
-    fetch(url)
+    // R56.20 audit fix: pass an `AbortSignal` to `fetch`
+    // so navigating away mid-flight cancels the in-flight
+    // request against the agents service. The previous
+    // `let cancelled = false` correctly skipped the
+    // setState after unmount, but the request still hit
+    // the agents service for nothing. Cheap fix.
+    const ctl = new AbortController();
+    fetch(url, { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j: { parlays: ParlayRow[] }) => {
         if (!cancelled) setRows(j.parlays);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
-          setRows([]);
-        }
+        if (cancelled) return;
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setError(e instanceof Error ? e.message : String(e));
+        setRows([]);
       });
     return () => {
       cancelled = true;
+      ctl.abort();
     };
   }, [userAddress, includeFinalized]);
 

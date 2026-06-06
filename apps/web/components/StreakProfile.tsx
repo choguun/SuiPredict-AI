@@ -56,6 +56,15 @@ export function StreakProfile() {
             disabled={!REGISTRY_ID}
             onClick={async () => {
               if (!REGISTRY_ID) return;
+              // R56.9 audit fix: gate on `client` like every
+              // other `submitAndWait` call site. The non-null
+              // assertion `client!` (below) throws when
+              // dapp-kit is still initializing (race on initial
+              // mount) or after a wallet disconnect mid-render.
+              if (!client) {
+                toast.error("Wallet not ready");
+                return;
+              }
               const toastId = toast.loading("Creating your streak…");
               try {
                 const tx = buildCreateStreakTx(REGISTRY_ID);
@@ -67,7 +76,7 @@ export function StreakProfile() {
                 // navigation immediately after the toast saw a
                 // stale `useUserStreakId()` result and rendered
                 // the wrong "redeem" button.
-                const r = await submitAndWait(dAppKit, client!, tx);
+                const r = await submitAndWait(dAppKit, client, tx);
                 // `$kind === "Transaction"` means the fullnode accepted
                 // the tx; other variants ("Failed", "EffectsCert")
                 // carry a different shape. Without this guard a failed
@@ -182,6 +191,16 @@ export function StreakProfile() {
                 key={tier}
                 disabled={claimed || !eligible}
                 onClick={async () => {
+                  // R56.9 audit fix: gate on `client` like
+                  // every other `submitAndWait` call site. The
+                  // non-null assertion `client!` (below) throws
+                  // when dapp-kit is still initializing (race
+                  // on initial mount) or after a wallet
+                  // disconnect mid-render.
+                  if (!client) {
+                    toast.error("Wallet not ready");
+                    return;
+                  }
                   const toastId = toast.loading(`Claiming ${TIER_LABELS[idx]}…`);
                   try {
                     // `badge_nft::mint_badge` internally calls
@@ -202,7 +221,7 @@ export function StreakProfile() {
                     // the user saw the badge as "Claim" for ~5-30s
                     // and could re-click, hitting the on-chain
                     // `EAlreadyClaimed` abort.
-                    const r = await submitAndWait(dAppKit, client!, tx);
+                    const r = await submitAndWait(dAppKit, client, tx);
                     if (r.$kind === "Transaction") {
                       toast.success(`${TIER_LABELS[idx]} badge minted`, { id: toastId });
                       queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });

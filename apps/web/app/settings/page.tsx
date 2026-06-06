@@ -324,6 +324,15 @@ export default function SettingsPage() {
       }
       const digest = result.digest;
       setStatus(`Revoked! Tx: ${digest.slice(0, 16)}…`);
+      // R56.7 audit fix: invalidate the streak cache after a
+      // successful revoke. Of the 6 mutating actions on
+      // this page, 5 call `invalidateStreakCache()` after
+      // success; `revokePolicy` was the asymmetric survivor.
+      // After revoking, the home page's `useUserStreakId` /
+      // `useStreakInfo` queries stay stale for
+      // `staleTime: 30_000` (30s) and the user would still
+      // see the streak policy as active.
+      invalidateStreakCache();
       await loadPolicyInfo(policyId);
     } catch (e) {
       setStatus(friendlyMoveError(e, "Revoke policy"));
