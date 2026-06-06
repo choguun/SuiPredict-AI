@@ -9,6 +9,7 @@ import {
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
+import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, getSharedClient, recordResult, safeInt, safeBigInt } from "../lib.js";
 import { listMarkets, upsertMarket, patchMarketReferralId } from "../markets/store.js";
@@ -289,7 +290,29 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       });
     }
 
-    // Step 2: create the market (includes pool creation + YES/NO coin types)
+    // Step 2: split the DEEP coin to exactly POOL_CREATION_FEE_DEEP
+    // DeepBook's create_permissionless_pool requires the exact fee amount.
+    let feeCoinId: string;
+    if (BigInt(deepCoin.balance) === POOL_CREATION_FEE_DEEP) {
+      feeCoinId = deepCoin.objectId;
+    } else {
+      const splitTx = new Transaction();
+      const [feeCoin, changeCoin] = splitTx.splitCoin(
+        splitTx.object(deepCoin.objectId),
+        [splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
+      );
+      splitTx.transferObjects([changeCoin], splitTx.pure.address(agentAddr));
+      const splitResult = await executeTransaction(client, splitTx, ctx.signer);
+      // Find the fee coin by looking for a created coin with balance exactly 500M
+      const freshCoins = await listAllCoins(client, agentAddr, DEEP_TYPE);
+      const freshFeeCoin = freshCoins.find(
+        (c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP && c.objectId !== deepCoin.objectId,
+      );
+      if (!freshFeeCoin) throw new Error("Failed to find split fee coin");
+      feeCoinId = freshFeeCoin.objectId;
+    }
+
+    // Step 3: create the market (includes pool creation + YES/NO coin types)
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -297,7 +320,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       tickSize: BigInt(1_000_000),  // 0.001 DUSDC tick
       lotSize: BigInt(1_000_000),    // 1 YES minimum
       minSize: BigInt(1_000_000),    // 1 YES minimum
-      deepCoinId: deepCoin.objectId,
+      deepCoinId: feeCoinId,
       category: categoryToCode(spec.category),
     });
 

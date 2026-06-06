@@ -19,13 +19,13 @@
 export const DEEPBOOK_PACKAGE_ID = (
   process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ??
   process.env.DEEPBOOK_PACKAGE_ID ??
-  "0xfc780fa48fb5f73aee47d1f561e2b47be5409856157659f10f15a2460c129495"
+  ""
 ).trim();
 
 export const DEEPBOOK_REGISTRY_ID = (
   process.env.NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID ??
   process.env.DEEPBOOK_REGISTRY_ID ??
-  "0x1d182fe19da0fd1802999415bf61457c93c08453b332766c733e582ce811f9fd"
+  ""
 ).trim();
 
 // R55 audit fix: call-time getters parallel to the consts above.
@@ -37,14 +37,14 @@ export function resolveDeepbookPackageId(): string {
   return (
     process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ??
     process.env.DEEPBOOK_PACKAGE_ID ??
-    "0xfc780fa48fb5f73aee47d1f561e2b47be5409856157659f10f15a2460c129495"
+    ""
   ).trim();
 }
 export function resolveDeepbookRegistryId(): string {
   return (
     process.env.NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID ??
     process.env.DEEPBOOK_REGISTRY_ID ??
-    "0x1d182fe19da0fd1802999415bf61457c93c08453b332766c733e582ce811f9fd"
+    ""
   ).trim();
 }
 
