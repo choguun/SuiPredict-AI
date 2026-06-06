@@ -351,6 +351,11 @@ async function main() {
     packageId = out.packageId;
     objects = out.objects;
     log(`Package ID: ${packageId}`);
+    // Rxx fix: update process.env immediately so the SDK's PKG() resolves
+    // the new package ID instead of the stale value from .env at script start.
+    process.env.AGENT_POLICY_PACKAGE_ID = packageId;
+    process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID = packageId;
+    process.env.MARKET_PACKAGE_ID = packageId;
   }
 
   // Initialize gRPC + tx clients up front (used by step 1a + 4 + 5...).
@@ -379,7 +384,7 @@ async function main() {
     const protocolAdminCapId = await findOwnedObject(
       grpc,
       signerAddr,
-      "::prediction_market::ProtocolAdminCap",
+      `${packageId}::prediction_market::ProtocolAdminCap`,
     );
     if (!protocolAdminCapId) {
       err(
