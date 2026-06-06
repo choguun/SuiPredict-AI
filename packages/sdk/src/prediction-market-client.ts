@@ -286,6 +286,7 @@ export function buildCreateMarketTx(params: {
     target: `${PKG()}::prediction_market::create_market`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
+      tx.object("0xc"),                                   // Sui CoinRegistry
       tx.object(DEEPBOOK_REGISTRY_ID),
       tx.pure.vector("u8", encodeUtf8(params.title)),
       tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),

@@ -20,6 +20,7 @@ async function main() {
     target: resolveAgentPolicyPackageId() + "::prediction_market::create_market",
     typeArguments: [DUSDC_TYPE],
     arguments: [
+      tx.object("0xc"),
       tx.object("0x3c31f5f56222a57f43c08f4d5c12f91d645fbe6ba5fe048d300c3822b864db7e"),
       tx.pure.vector("u8", new TextEncoder().encode("Test 500M DEEP")),
       tx.pure.vector("u8", new TextEncoder().encode("Manual")),

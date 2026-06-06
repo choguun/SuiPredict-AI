@@ -22,6 +22,8 @@ use deepbook::constants::{Self, pool_creation_fee};
 use token::deep::DEEP;
 use sui::balance::{Self, Balance};
 use sui::clock::Clock;
+use std::string::{Self, String};
+use sui::coin_registry::{Self, CoinRegistry};
 use sui::coin::{Self, Coin, TreasuryCap};
 use sui::event;
 use sui::object::{Self, ID, UID};
@@ -101,10 +103,14 @@ const DEFAULT_EXPIRY: u64 = 18446744073709551615;
 // ============================================================
 
 /// Marker type for YES outcome tokens (base asset on DeepBook).
-public struct YES<phantom Q> has drop, store {}
+public struct YES<phantom Q> has key, store {
+        id: UID,
+    }
 
 /// Marker type for NO outcome tokens (held but not traded on DeepBook).
-public struct NO<phantom Q> has drop, store {}
+public struct NO<phantom Q> has key, store {
+        id: UID,
+    }
 
 // ============================================================
 // Market state
@@ -318,7 +324,8 @@ public fun init_fee_vault<Q>(
 ///   4. Create PredictionMarket<Q> with YES/NO TreasuryCaps
 ///
 /// Arguments:
-///   registry         - DeepBook registry (must be shared)
+///   coin_registry    - Sui CoinRegistry shared object (0xc)
+///   deepbook_registry - DeepBook registry (shared)
 ///   title            - Market question / title
 ///   resolution_source - URL or description of how resolution occurs
 ///   expiry_ms        - Unix timestamp (ms) after which market can be resolved
@@ -328,7 +335,8 @@ public fun init_fee_vault<Q>(
 ///   deep_coin        - Coin<DEEP> for pool creation fee (500M MIST = 0.5 SUI)
 ///   ctx
 public fun create_market<Q>(
-    registry: &mut Registry,
+    coin_registry: &mut CoinRegistry,
+    deepbook_registry: &mut Registry,
     title: vector<u8>,
     resolution_source: vector<u8>,
     expiry_ms: u64,
@@ -343,7 +351,7 @@ public fun create_market<Q>(
 
     // 1. Create the DeepBook permissionless pool
     let pool_id = pool::create_permissionless_pool<YES<Q>, Q>(
-        registry,
+        deepbook_registry,
         tick_size,
         lot_size,
         min_size,
@@ -352,7 +360,6 @@ public fun create_market<Q>(
     );
 
     // 2. Create BalanceManager for this market (shared object)
-    //    The BM must be created and shared so it can be used across PTBs
     let balance_manager = balance_manager::new_with_custom_owner(
         creator,
         ctx,
@@ -360,27 +367,22 @@ public fun create_market<Q>(
     let balance_manager_id = object::id(&balance_manager);
     transfer::public_share_object(balance_manager);
 
-    // 3. Create YES and NO coin currencies
-    let (yes_cap, yes_meta) = coin::create_currency(
-        YES<Q> {},
-        0,
-        b"YES",
-        b"YES",
-        b"YES outcome token",
-        option::none(),
+    // 3. Create YES and NO coin currencies via coin_registry (bypasses broken is_one_time_witness on testnet v1.73)
+    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
+        coin_registry, 0,
+        string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
         ctx,
     );
-    transfer::public_freeze_object(yes_meta);
-    let (no_cap, no_meta) = coin::create_currency(
-        NO<Q> {},
-        0,
-        b"NO",
-        b"NO",
-        b"NO outcome token",
-        option::none(),
+    let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
+    transfer::public_transfer(yes_meta_cap, creator);
+
+    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
+        coin_registry, 0,
+        string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
         ctx,
     );
-    transfer::public_freeze_object(no_meta);
+    let no_meta_cap = coin_registry::finalize(no_init, ctx);
+    transfer::public_transfer(no_meta_cap, creator);
 
     // 4. Create the PredictionMarket with YES/NO TreasuryCaps
     let market = PredictionMarket<Q> {
