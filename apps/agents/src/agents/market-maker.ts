@@ -74,6 +74,11 @@ function nextDemoOrderId(marketId: string): number {
 }
 
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
+  // Boot marker — ensures this module is loaded
+  if (!(globalThis as any).__mm_booted) {
+    (globalThis as any).__mm_booted = true;
+    console.log("[market-maker] Module loaded, starting ticks");
+  }
   // R47 audit fix: re-read the runtime-tunable knobs
   // (`SPREAD_THRESHOLD_BPS`, `QUOTE_SIZE`,
   // `BALANCE_MANAGER_ID`, `AGENT_POLICY_ID`) at the
