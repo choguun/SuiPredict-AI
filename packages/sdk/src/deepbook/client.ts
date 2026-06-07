@@ -57,7 +57,6 @@ export function createDeepBookClient(
       ?? process.env.DEEP_TREASURY_ID
       ?? undefined,
   };
-  console.log(`[DeepBookClient] packageIds: DEEPBOOK=${packageIds.DEEPBOOK_PACKAGE_ID}, REGISTRY=${packageIds.REGISTRY_ID}, TREASURY=${packageIds.DEEP_TREASURY_ID}`);
   return new DeepBookClient({
     client,
     address,
