@@ -1,14 +1,11 @@
 import {
-  createMarketDeepBookClient,
-  buildAuthorizeSpendTx,
-  buildPlaceYesLimitOrderTx,
-  buildWithdrawSettledTx,
-  getOrderBookDepth,
-  getMidPrice,
-  PREDICT_DEEPBOOK_POOL_KEY,
   executeTransaction,
-  DeepBookClient,
+  DUSDC_TYPE,
+  yesCoinType,
+  resolveDeepbookPackageId,
+  buildAuthorizeSpendTx,
 } from "@suipredict/sdk";
+import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder, nextDemoOrderId as nextDemoOrderIdFromStore } from "../markets/store.js";
@@ -137,160 +134,103 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     });
   }
 
-  const poolKey = target.deepbook_pool_key ?? PREDICT_DEEPBOOK_POOL_KEY;
-  // R51 audit fix: shared gRPC client (see lib.ts).
-  // The previous per-tick `createClient()` opened a
-  // fresh HTTP/2 connection on every call; the SDK
-  // never closed the prior ones, so the gRPC client
-  // pool grew to ~60 idle connections after a few
-  // minutes of polling. Use the singleton.
+  const poolId = target.deepbook_pool_id!;
   const client = getSharedClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
+  const DB = resolveDeepbookPackageId();
+  const bmId = BALANCE_MANAGER_ID;
 
-  // Create DeepBook client for this specific market, using its pool key
-  let dbClient: DeepBookClient;
-  try {
-    dbClient = createMarketDeepBookClient(
-      client,
-      agentAddr,
-      target.deepbook_pool_id!,
-      poolKey,                                  // poolKey used to derive yesCoinType
-      BALANCE_MANAGER_ID ?? undefined,          // balanceManagerId for trading
-    );
-  } catch (err) {
+  if (!poolId || !bmId) {
     return recordResult("MarketMaker", {
       action: "skip",
-      reasoning: `No BalanceManager configured: ${err instanceof Error ? err.message : String(err)}`,
+      reasoning: "No active market with pool or no BalanceManager configured.",
     });
   }
 
-  // Get current order book depth
-  let book;
-  try {
-    book = await getOrderBookDepth(dbClient, poolKey, 0.01, 0.99);
-  } catch (err) {
-    // R57 agents audit fix: log the underlying error. A silent
-    // `catch {}` would let a sustained DeepBook RPC outage
-    // (or a malformed poolKey) mask the failure as "empty
-    // book, hold" — the market maker would never place orders
-    // but the operator dashboard wouldn't see the cause.
-    console.warn(
-      `[market-maker] getOrderBookDepth(${poolKey}) failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    book = { bids: [], asks: [] };
-  }
-
-  const bestBid = book.bids[0]?.[0] ?? 0;
-  const bestAsk = book.asks[0]?.[0] ?? 0;
-  const spreadBps =
-    bestBid > 0 && bestAsk > 0 ? Math.round((bestAsk - bestBid) * 10_000) : 9999;
-
-  if (spreadBps <= SPREAD_THRESHOLD_BPS && book.bids.length > 0 && book.asks.length > 0) {
-    return recordResult("MarketMaker", {
-      action: "hold",
-      reasoning: `${target.title.slice(0, 40)}... spread ${spreadBps}bps -- tight, hold.`,
-      confidence: 88,
-    });
-  }
-
-  // Derive quote prices from mid price
-  const midPrice = await getMidPrice(dbClient, poolKey);
-  if (midPrice <= 0) {
-    return recordResult("MarketMaker", {
-      action: "skip",
-      reasoning: "Could not determine mid price from DeepBook order book.",
-    });
-  }
-
-  const midBps = Math.round(midPrice * 10_000);
-  const bidBps = Math.max(100, midBps - 200);
-  const askBps = Math.min(9900, midBps + 200);
+  // Skip order book depth query — use fixed spread quoting
+  const midBps = 5000; // 0.50 DUSDC mid
+  const bidBps = 4800; // below mid
+  const askBps = 5200; // above mid
 
   if (target.id.startsWith("demo-")) {
-    // R47 audit fix: derive a unique `order_id` from
-    // the current timestamp plus a per-market
-    // monotonic offset, instead of bare
-    // `Date.now()` (which collides for two MM
-    // cycles in the same millisecond — the
-    // `+1` offset breaks once the next bid's
-    // digest-derived id collides back). The
-    // counter lives in a SQLite-backed module
-    // map so it survives restarts. The demo
-    // path is the only place the order_id is
-    // user-typed; the on-chain path uses a
-    // digest-derived id and is collision-free
-    // for the same digest.
     const nextOrderId = nextDemoOrderId(target.id);
-    upsertOrder({
-      market_id: target.id,
-      order_id: nextOrderId,
-      owner: agentAddr,
-      is_bid: true,
-      price_bps: bidBps,
-      quantity: QUOTE_SIZE,
-      timestamp_ms: Date.now(),
-    });
-    upsertOrder({
-      market_id: target.id,
-      order_id: nextOrderId + 1,
-      owner: agentAddr,
-      is_bid: false,
-      price_bps: askBps,
-      quantity: QUOTE_SIZE,
-      timestamp_ms: Date.now(),
-    });
-    return recordResult("MarketMaker", {
-      action: "quote_demo",
-      reasoning: `Demo quotes ${bidBps / 100}¢ / ${askBps / 100}¢ on ${target.title.slice(0, 36)}...`,
-      confidence: 80,
-    });
+    upsertOrder({ market_id: target.id, order_id: nextOrderId, owner: agentAddr, is_bid: true, price_bps: bidBps, quantity: QUOTE_SIZE, timestamp_ms: Date.now() });
+    upsertOrder({ market_id: target.id, order_id: nextOrderId + 1, owner: agentAddr, is_bid: false, price_bps: askBps, quantity: QUOTE_SIZE, timestamp_ms: Date.now() });
+    return recordResult("MarketMaker", { action: "quote_demo", reasoning: `Demo quotes ${bidBps / 100}¢ / ${askBps / 100}¢ on ${target.title.slice(0, 36)}...`, confidence: 80 });
   }
 
+  const baseType = yesCoinType();
+  const quoteType = DUSDC_TYPE;
+
   try {
-    // Withdraw any previously settled amounts first (housekeeping)
-    const withdrawTx = buildWithdrawSettledTx(dbClient, poolKey);
+    // 1. Withdraw settled amounts (with owner proof)
+    const withdrawTx = new Transaction();
+    const wProof = withdrawTx.moveCall({
+      target: `${DB}::balance_manager::generate_proof_as_owner`,
+      arguments: [withdrawTx.object(bmId)],
+    });
+    withdrawTx.moveCall({
+      target: `${DB}::pool::withdraw_settled_amounts`,
+      typeArguments: [baseType, quoteType],
+      arguments: [withdrawTx.object(poolId), withdrawTx.object(bmId), wProof],
+    });
     await executeTransaction(client, withdrawTx, ctx.signer);
 
-    // Authorize this cycle's spend against the on-chain policy (no-op if
-    // AGENT_POLICY_ID is unset, e.g. on demo deployments).
-    //
-    // R56 audit fix: pass `cycleAuthDollars` (clamped to
-    // ctx.maxBudgetUsdc) instead of `PER_ORDER_NOTIONAL_DOLLARS * 2`
-    // (unclamped). A pathological QUOTE_SIZE / SPREAD_THRESHOLD_BPS
-    // combination computes a notional far above the policy budget;
-    // authorize_spend would abort on-chain and the worker would
-    // log quote_failed every minute forever. Clamping here turns
-    // the failure into either a clean auth (when the budget is
-    // sane) or a no-op when the per-cycle cost exceeds the budget
-    // (the actual quote placement below still runs — over_budget
-    // is an operator config issue, not a market condition).
+    // 2. Authorize spend
     if (AGENT_POLICY_ID) {
-      const authTx = buildAuthorizeSpendTx(
-        AGENT_POLICY_ID,
-        cycleAuthDollars, // clamped to ctx.maxBudgetUsdc (see R56 fix)
-      );
+      const authTx = buildAuthorizeSpendTx(AGENT_POLICY_ID, cycleAuthDollars);
       await executeTransaction(client, authTx, ctx.signer);
     }
 
-    // Place bid limit order (buy YES shares)
-    const bidTx = buildPlaceYesLimitOrderTx(dbClient, poolKey, {
-      price: bidBps / 10_000,
-      quantity: QUOTE_SIZE,
-      isBid: true,
-      clientOrderId: `mm-${target.id}-bid-${Date.now()}`,
-      expiration: Math.floor(Date.now() / 1000) + 3600,
+    // 3. Place bid
+    const bidTx = new Transaction();
+    const bProof = bidTx.moveCall({
+      target: `${DB}::balance_manager::generate_proof_as_owner`,
+      arguments: [bidTx.object(bmId)],
+    });
+    bidTx.moveCall({
+      target: `${DB}::pool::place_limit_order`,
+      typeArguments: [baseType, quoteType],
+      arguments: [
+        bidTx.object(poolId),
+        bidTx.object(bmId),
+        bProof,
+        bidTx.pure.u64(0n),                           // clientOrderId
+        bidTx.pure.u8(0),                             // POST_ONLY
+        bidTx.pure.u8(1),                             // DISALLOW self-match
+        bidTx.pure.u64(BigInt(Math.round(bidBps / 10_000 * 1_000_000))), // price (0.48 * 1e6 = 480_000)
+        bidTx.pure.u64(BigInt(QUOTE_SIZE)),           // quantity
+        bidTx.pure.bool(true),                        // isBid
+        bidTx.pure.bool(true),                        // payWithDeep
+        bidTx.pure.u64(BigInt(Math.floor(Date.now() / 1000) + 3600)), // expiration
+        bidTx.object.clock(),
+      ],
     });
     const bidResult = await executeTransaction(client, bidTx, ctx.signer);
 
-    // Place ask limit order (sell YES shares / go short YES)
-    const askTx = buildPlaceYesLimitOrderTx(dbClient, poolKey, {
-      price: askBps / 10_000,
-      quantity: QUOTE_SIZE,
-      isBid: false,
-      clientOrderId: `mm-${target.id}-ask-${Date.now()}`,
-      expiration: Math.floor(Date.now() / 1000) + 3600,
+    // 4. Place ask
+    const askTx = new Transaction();
+    const aProof = askTx.moveCall({
+      target: `${DB}::balance_manager::generate_proof_as_owner`,
+      arguments: [askTx.object(bmId)],
+    });
+    askTx.moveCall({
+      target: `${DB}::pool::place_limit_order`,
+      typeArguments: [baseType, quoteType],
+      arguments: [
+        askTx.object(poolId),
+        askTx.object(bmId),
+        aProof,
+        askTx.pure.u64(1n),
+        askTx.pure.u8(0),
+        askTx.pure.u8(1),
+        askTx.pure.u64(BigInt(Math.round(askBps / 10_000 * 1_000_000))), // price
+        askTx.pure.u64(BigInt(QUOTE_SIZE)),
+        askTx.pure.bool(false),                       // isBid = false (ask)
+        askTx.pure.bool(true),
+        askTx.pure.u64(BigInt(Math.floor(Date.now() / 1000) + 3600)),
+        askTx.object.clock(),
+      ],
     });
     await executeTransaction(client, askTx, ctx.signer);
 
