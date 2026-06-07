@@ -1,0 +1,223 @@
+import { createClient, getSharedClient as sdkGetSharedClient, closeClient, resetSharedClient, pickAtmStrike, } from "@suipredict/sdk";
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
+import { logDecision } from "./store.js";
+// R55 audit fix: lazy singleton for the JSON-RPC
+// `SuiJsonRpcClient`. The gRPC `getSharedClient()` was
+// already a singleton (R51) but the JSON-RPC client
+// used for `queryEvents` / `listDynamicFields` was
+// rebuilt per tick in `position-indexer` and
+// `streak-sweeper`. `position-indexer` runs at 1min
+// cadence, so the connection churn was 1440/day per
+// process. Mirror the gRPC pattern; the helper
+// resolves the URL at call time so a `bootstrap-env.ts`
+// hot-patch of `SUI_NETWORK` is honored (the cached
+// `SUI_NETWORK` is also re-read on every call).
+let _cachedJsonRpcClient = null;
+let _cachedJsonRpcNetwork = null;
+export function getSharedJsonRpcClient() {
+    const network = process.env.SUI_NETWORK ?? "testnet";
+    // Re-build the client if the network hot-patched.
+    // The old client is GC'd; the underlying HTTP
+    // keepalive connection is dropped after the next
+    // request by Node's default `node-fetch` agent.
+    if (!_cachedJsonRpcClient || _cachedJsonRpcNetwork !== network) {
+        _cachedJsonRpcClient = new SuiJsonRpcClient({
+            url: getJsonRpcFullnodeUrl(network),
+            network: network,
+        });
+        _cachedJsonRpcNetwork = network;
+    }
+    return _cachedJsonRpcClient;
+}
+// R58.M2 audit fix: drop the cached JSON-RPC client
+// during SIGTERM. The agents' SIGTERM handler in
+// `index.ts` calls `closeSharedClient()` to release
+// the gRPC channel + reset the SDK's `_sharedClient`
+// cache, but the local `_cachedJsonRpcClient` was
+// never nulled — a subsequent reconnect (e.g. a
+// SIGTERM-then-immediate-restart under Railway's
+// healthcheck window) returned the stale client
+// whose `fetch` was already torn down. The fix is a
+// symmetric "drop cache" entry point.
+export function resetSharedJsonRpcClient() {
+    _cachedJsonRpcClient = null;
+    _cachedJsonRpcNetwork = null;
+}
+// R55 audit fix: `safeInt` / `safeFloat` / `safeBigInt`
+// helpers for hot-patchable env reads. A `.env` typo
+// (e.g. `MAX_PARLAYS_PER_TICK=NaN` from `Number("abc")`,
+// or `PRIZE_WEEKLY_AMOUNT=10_USDC` from a unit-suffix
+// paste) used to silently break the worker — a
+// `slice(0, NaN) = []` parked the parlay-worker, and
+// `BigInt("10_USDC")` threw a `SyntaxError` that the
+// surrounding `try/catch` didn't catch. Centralize the
+// validation so a future env addition gets it for free.
+export function safeInt(v, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
+    if (v === undefined || v === null)
+        return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+        console.warn(`[lib.safeInt] env value "${v}" is not a finite number; using fallback ${fallback}.`);
+        return fallback;
+    }
+    const truncated = Math.trunc(n);
+    const clamped = Math.max(min, Math.min(max, truncated));
+    if (clamped !== n) {
+        console.warn(`[lib.safeInt] env value "${v}" (${n}) clamped to [${min}, ${max}] -> ${clamped}.`);
+    }
+    return clamped;
+}
+export function safeFloat(v, fallback, min = 0, max = Number.MAX_VALUE) {
+    if (v === undefined || v === null)
+        return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+        console.warn(`[lib.safeFloat] env value "${v}" is not a finite number; using fallback ${fallback}.`);
+        return fallback;
+    }
+    // R58.L2 audit fix: log a warning when the env
+    // value is silently clamped. A deployer's
+    // `MAX_PARLAY_PAYOUT_BPS=20000` (intended 2x
+    // cap, mistakenly typed as 2.0x) used to clamp
+    // to 1.0 with no log; the next deploy of
+    // `.env.production` brought the bug back. The
+    // R55 helper already logged the non-finite
+    // branch; this adds the clamp branch. The
+    // helper is private — the warn is for the
+    // operator, not the caller.
+    const clamped = Math.max(min, Math.min(max, n));
+    if (clamped !== n) {
+        console.warn(`[lib.safeFloat] env value "${v}" (${n}) clamped to [${min}, ${max}] -> ${clamped}.`);
+    }
+    return clamped;
+}
+export function safeBigInt(v, fallback) {
+    if (v === undefined || v === null || v === "")
+        return fallback;
+    try {
+        return BigInt(v);
+    }
+    catch (err) {
+        console.warn(`[lib.safeBigInt] env value "${v}" is not a valid bigint (${err instanceof Error ? err.message : String(err)}); using fallback ${fallback}.`);
+        return fallback;
+    }
+}
+export async function callLlm(prompt) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey)
+        return null;
+    try {
+        // R58.H1 audit fix: bound the fetch with a
+        // 30s timeout. The previous `await fetch(...)` had
+        // no `signal`; a hung OpenAI connection (TLS
+        // handshake stalls, dead proxy) would hang the
+        // worker tick indefinitely, blocking the next
+        // `await callLlm(prompt)` call on the same event
+        // loop and silently backing up the cron. 30s is
+        // above p99 for gpt-4o-mini (typically < 8s) but
+        // well below the cron loop period (~60s).
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                model: "gpt-4o-mini",
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are an autonomous trading agent on DeepBook Predict. Respond ONLY with valid JSON.",
+                    },
+                    { role: "user", content: prompt },
+                ],
+                temperature: 0.2,
+            }),
+            signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) {
+            // R56 audit fix: log the HTTP status (without the key, body,
+            // or URL) so the operator can distinguish a 401 (revoked
+            // key — one-time fix) from a 429 (rate limit — wait for
+            // cooldown) from a 5xx (OpenAI outage — no action). The
+            // previous bare `return null` hid every failure mode behind
+            // the same decision-log reason (`LLM call returned null`).
+            console.warn(`[lib.callLlm] OpenAI returned HTTP ${res.status} ${res.statusText}`);
+            return null;
+        }
+        const data = (await res.json());
+        return data.choices[0]?.message.content ?? null;
+    }
+    catch (err) {
+        // R56 audit fix: log the underlying error class (TypeError
+        // from `fetch` failing on a DNS/network error, SyntaxError
+        // from malformed JSON, etc.) so the operator can tell
+        // "OPENAI is down" from "the model returned garbage" from
+        // "the network is partitioned". The key is never included
+        // in the log (the catch only sees the throw, which doesn't
+        // include the request body).
+        console.warn(`[lib.callLlm] call threw ${err instanceof Error ? err.name : typeof err}: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+    }
+}
+export function recordResult(agent, result) {
+    logDecision({
+        agent,
+        action: result.action,
+        reasoning: result.reasoning,
+        confidence: result.confidence,
+        txDigest: result.txDigest,
+        timestamp: Date.now(),
+    });
+    return result;
+}
+export { createClient, pickAtmStrike };
+// R55 audit fix: shrink the local getSharedClient /
+// closeSharedClient into thin wrappers around the SDK's
+// `getSharedClient` and `closeClient` (R54 added both
+// to the SDK). The previous local `closeSharedClient`
+// did `(client as any).close?.()` — the exact `as any`
+// cast R54 was trying to fix in the SDK. The SDK's
+// `closeClient` is therefore a dead export. With this
+// migration the typed escape hatch lives in one place
+// (the SDK) and the agents' SIGTERM handler in
+// `index.ts` reuses the same helper.
+//
+// Backward compat: `getSharedClient` and
+// `closeSharedClient` keep their local names so the
+// rest of the agents package (every worker that
+// imports `getSharedClient` from `./lib.js`) doesn't
+// need to change. Both are thin wrappers around the
+// SDK's helpers.
+export function getSharedClient() {
+    return sdkGetSharedClient();
+}
+export async function closeSharedClient() {
+    await closeClient(sdkGetSharedClient());
+    resetSharedClient();
+}
+// Rate-limit retry wrapper for JSON RPC queries. Exponential backoff
+// on HTTP 429 / 502 / 503 / 504 / network errors. Up to 3 retries
+// (1s, 2s, 4s). Returns the result or throws on permanent errors.
+export async function retryQuery(tag, fn, maxRetry = 3) {
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetry; attempt++) {
+        try {
+            return await fn();
+        }
+        catch (e) {
+            lastErr = e;
+            const msg = e instanceof Error ? e.message : String(e);
+            const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg);
+            if (isTransient && attempt < maxRetry) {
+                const delay = 1000 * 2 ** attempt;
+                console.warn(`[retryQuery:${tag}] transient error (attempt ${attempt + 1}/${maxRetry + 1}), retrying in ${delay}ms: ${msg.slice(0, 100)}`);
+                await new Promise((r) => setTimeout(r, delay));
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastErr;
+}
+//# sourceMappingURL=lib.js.map

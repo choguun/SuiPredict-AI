@@ -2,11 +2,11 @@
   "$schema": "https://schema.railpack.com",
   "provider": "node",
   "deploy": {
-    "startCommand": "pnpm --filter @suipredict/agents start"
+    "startCommand": "rm -rf packages/sdk/dist packages/sdk/tsconfig.tsbuildinfo apps/agents/dist apps/agents/tsconfig.tsbuildinfo && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build && node apps/agents/dist/index.js"
   },
   "steps": {
     "build": {
-      "commands": ["rm -rf packages/sdk/dist packages/sdk/tsconfig.tsbuildinfo apps/agents/dist apps/agents/tsconfig.tsbuildinfo && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build"]
+      "commands": ["echo 'build at runtime, not during image creation'"]
     }
   }
 }
