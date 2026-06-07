@@ -34,7 +34,7 @@ import {
   type SuiClient,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedClient, getSharedJsonRpcClient, recordResult } from "../lib.js";
+import { getSharedClient, getSharedJsonRpcClient, recordResult, retryQuery } from "../lib.js";
 import {
   acquireSweepLock,
   dayIndexFor,
@@ -239,12 +239,14 @@ async function queryAllEvents(
   // `markets/store.ts`.
   let cursor: EventPageCursor = readCursor(stateKey);
   do {
-    const page = await client.queryEvents({
-      query,
-      cursor,
-      limit: 1000,
-      order: "ascending",
-    });
+    const page = await retryQuery(`streakSweeper:${stateKey}`, () =>
+      client.queryEvents({
+        query,
+        cursor,
+        limit: 1000,
+        order: "ascending",
+      }),
+    );
     out.push(...page.data);
     cursor = page.nextCursor ?? null;
   } while (cursor);

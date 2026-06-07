@@ -22,7 +22,7 @@
  */
 import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import type { AgentContext, AgentResult } from "../lib.js";
-import { getSharedJsonRpcClient, recordResult } from "../lib.js";
+import { getSharedJsonRpcClient, recordResult, retryQuery } from "../lib.js";
 import {
   decrementPosition,
   getDb,
@@ -299,12 +299,14 @@ async function pollAndApply(
   apply: (ev: EventEnvelope) => void,
 ): Promise<number> {
   const cursor = readCursor(stateKey);
-  const page = await client.queryEvents({
-    query: { MoveEventType: eventType },
-    cursor,
-    limit: POLL_BATCH,
-    order: "ascending",
-  });
+  const page = await retryQuery(`queryEvents:${eventType.split("::").pop() ?? eventType}`, () =>
+    client.queryEvents({
+      query: { MoveEventType: eventType },
+      cursor,
+      limit: POLL_BATCH,
+      order: "ascending",
+    }),
+  );
   // R40 audit fix: previously a single throwing `apply(ev)`
   // (e.g. an `upsertMarket` unique-index collision, an
   // SQLite disk error, an unhandled JSON shape change) aborted

@@ -254,11 +254,34 @@ export function getSharedClient(): SuiClient {
   return sdkGetSharedClient();
 }
 export async function closeSharedClient(): Promise<void> {
-  // R57 agents audit fix: close the underlying gRPC
-  // channel AND reset the SDK's internal `_sharedClient`
-  // cache. Without the reset, a subsequent
-  // `getSharedClient()` would return the closed client
-  // and every `core.getObject` would silently fail.
   await closeClient(sdkGetSharedClient());
   resetSharedClient();
+}
+
+// Rate-limit retry wrapper for JSON RPC queries. Exponential backoff
+// on HTTP 429 / 502 / 503 / 504 / network errors. Up to 3 retries
+// (1s, 2s, 4s). Returns the result or throws on permanent errors.
+export async function retryQuery<T>(
+  tag: string,
+  fn: () => Promise<T>,
+  maxRetry = 3,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetry; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg);
+      if (isTransient && attempt < maxRetry) {
+        const delay = 1000 * 2 ** attempt;
+        console.warn(`[retryQuery:${tag}] transient error (attempt ${attempt + 1}/${maxRetry + 1}), retrying in ${delay}ms: ${msg.slice(0, 100)}`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
 }
