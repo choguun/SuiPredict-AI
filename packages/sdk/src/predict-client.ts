@@ -97,77 +97,62 @@ export async function executeTransaction(
   client: SuiClient,
   tx: Transaction,
   signer: Ed25519Keypair,
+  options?: { maxRetry?: number },
 ): Promise<TxResult> {
-  tx.setSender(signer.getPublicKey().toSuiAddress());
-  const result = await client.signAndExecuteTransaction({
-    transaction: tx,
-    signer,
-  });
+  const MAX_RETRY = options?.maxRetry ?? 2;
+  let lastError: unknown;
 
-  if (result.$kind === "FailedTransaction") {
-    throw new Error(
-      `Transaction failed: ${result.FailedTransaction.status.error?.message ?? "unknown"}`,
-    );
+  for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    try {
+      tx.setSender(signer.getPublicKey().toSuiAddress());
+      const result = await client.signAndExecuteTransaction({
+        transaction: tx,
+        signer,
+      });
+
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          `Transaction failed: ${result.FailedTransaction.status.error?.message ?? "unknown"}`,
+        );
+      }
+      if (result.$kind !== "Transaction") {
+        const kind = (result as { $kind: string }).$kind;
+        throw new Error(
+          `signAndExecuteTransaction returned unexpected kind: ${kind}`,
+        );
+      }
+
+      const finalized = await client.waitForTransaction({
+        digest: result.Transaction.digest,
+        timeout: 30_000,
+        include: { effects: true, events: true },
+      });
+
+      if (finalized.$kind === "FailedTransaction") {
+        throw new Error(
+          `Transaction failed: ${finalized.FailedTransaction.status.error?.message ?? "unknown"}`,
+        );
+      }
+
+      return {
+        digest: finalized.Transaction.digest,
+        effects: finalized.Transaction.effects,
+        events: finalized.Transaction.events,
+      };
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg);
+      if (isTransient && attempt < MAX_RETRY) {
+        const delay = 1000 * 2 ** attempt;
+        console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw e;
+    }
   }
-  // R53 audit fix: narrow to
-  // "Transaction" only. The
-  // gRPC `signAndExecuteTransaction`
-  // discriminated union is
-  // `$kind: "Transaction" |
-  // "FailedTransaction" |
-  // "EffectsCert"`. A future
-  // Sui SDK bump that adds a
-  // new variant (e.g. a
-  // "Pending" status for
-  // indexer-laggard flows) would
-  // crash at `result.Transaction`
-  // with "Cannot read properties
-  // of undefined". Branch on
-  // the kind explicitly so the
-  // post-await access is
-  // type-safe.
-  if (result.$kind !== "Transaction") {
-    // At this point the union has been narrowed to "Transaction"
-    // or "EffectsCert" (FailedTransaction was rejected above).
-    // EffectsCert is a real variant the gRPC client returns for
-    // signed effects without a confirmed transaction; treat it
-    // the same as a missing digest. Reading `result.Transaction`
-    // here would crash with "Cannot read properties of undefined".
-    const kind = (result as { $kind: string }).$kind;
-    throw new Error(
-      `signAndExecuteTransaction returned unexpected kind: ${kind}`,
-    );
-  }
-
-  // R52 audit fix: cap `waitForTransaction`
-  // at 30s. The default is 60s and a slow
-  // indexer holds the calling function
-  // open for that whole window, blocking
-  // the agents' `market-maker` tick and
-  // the web's mint/redeem path. 30s is
-  // the empirical p99 for the public Sui
-  // mainnet gRPC endpoint; anything
-  // longer means the tx is genuinely
-  // stuck and the caller's outer
-  // `withTimeout` (or just a re-poll by
-  // digest) should handle it.
-  const finalized = await client.waitForTransaction({
-    digest: result.Transaction.digest,
-    timeout: 30_000,
-    include: { effects: true, events: true },
-  });
-
-  if (finalized.$kind === "FailedTransaction") {
-    throw new Error(
-      `Transaction failed: ${finalized.FailedTransaction.status.error?.message ?? "unknown"}`,
-    );
-  }
-
-  return {
-    digest: finalized.Transaction.digest,
-    effects: finalized.Transaction.effects,
-    events: finalized.Transaction.events,
-  };
+  throw lastError;
 }
 
 export function buildCreateManagerTx(): Transaction {
