@@ -73,6 +73,8 @@ function nextDemoOrderId(marketId: string): number {
   return nextDemoOrderIdFromStore(marketId);
 }
 
+process.on("uncaughtException", (e) => console.error("[market-maker] CRASH:", e.message));
+process.on("unhandledRejection", (e) => console.error("[market-maker] REJECT:", e));
 export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
   // Boot marker — ensures this module is loaded
   if (!(globalThis as any).__mm_booted) {
