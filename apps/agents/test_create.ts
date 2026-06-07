@@ -31,9 +31,9 @@ async function main() {
   const coins = await listAllCoins(client, addr, DEEP_TYPE);
   console.log("DEEP type:", DEEP_TYPE);
   console.log("Found", coins.length, "coins");
-  const deepCoin = coins.find((c: any) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
+  const deepCoin = coins.find((c: any) => BigInt(c.balance) === 500_000_000n);
   if (!deepCoin) {
-    console.log("No DEEP coin >= 500M. Listing all:");
+    console.log("No 500M DEEP coin. Listing all:");
     for (const c of coins) console.log(`  ${c.objectId}: ${c.balance}`);
     return;
   }
@@ -44,8 +44,9 @@ async function main() {
     target: `${resolveAgentPolicyPackageId()}::prediction_market::create_market`,
     typeArguments: [DUSDC_TYPE],
     arguments: [
+      tx.object("0xc"),                                          // Sui CoinRegistry
       tx.object(DEEPBOOK_REGISTRY_ID),
-      tx.pure.vector("u8", new TextEncoder().encode("Test Market via CLI")),
+      tx.pure.vector("u8", new TextEncoder().encode("Test Market CLI")),
       tx.pure.vector("u8", new TextEncoder().encode("Manual test")),
       tx.pure.u64(BigInt(Date.now() + 7 * 86400000)),
       tx.pure.u64(1_000_000n),

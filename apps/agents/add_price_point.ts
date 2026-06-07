@@ -10,7 +10,7 @@ import { keypairFromPrivateKey, executeTransaction } from "@suipredict/sdk";
 async function test() {
   const s = keypairFromPrivateKey(process.env.AGENT_PRIVATE_KEY!);
   const c = new SuiGrpcClient({ network: "testnet", baseUrl: "https://fullnode.testnet.sui.io:443" });
-  const DB = "0x0e99a58323bfe5db564e66ddbe760f7328c694b64174370933ca19d56549691d";
+  const DB = "0x4f179980d20c9bcc9347494d65d21fda8f54093971d476be8e5230f4aa6ddf36";
   const YES_POOL = "0x93a00df8200f5383b6d348b057346a31e6c15b95cda8001c3fc465f76bc98e6f";
   const BASE = "0xd93cd206be97e6f801d378baa95a31afb54a2fd08ce3e3e9d2cb51e62fa11555::prediction_market::YES<0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705::dusdc::DUSDC>";
   const QUOTE = "0xe9a73a6f4457f6ecad6260a37a200745a8009e9ee1a235ab91f8d3c030d3a705::dusdc::DUSDC";

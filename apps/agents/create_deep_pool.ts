@@ -11,8 +11,8 @@ async function test() {
   const s = keypairFromPrivateKey(process.env.AGENT_PRIVATE_KEY!);
   const addr = s.getPublicKey().toSuiAddress();
   const c = new SuiGrpcClient({ network: "testnet", baseUrl: "https://fullnode.testnet.sui.io:443" });
-  const DB = "0x0e99a58323bfe5db564e66ddbe760f7328c694b64174370933ca19d56549691d";
-  const REG = "0x3c31f5f56222a57f43c08f4d5c12f91d645fbe6ba5fe048d300c3822b864db7e";
+  const DB = "0xc93ae840671495202260c7afb93c820bf11c081b884b660106399208871dec5a";
+  const REG = "0xe14eba90fc8cc14a2eac1199b207d4e664931f8196f612b5aacf0c4a7f7d7a6f";
   const DEEP_TYPE = "0x7b86477fb48be71179877784f75c44d260e15e429bce8da658a0ebf7aa48ae7b::deep::DEEP";
 
   const coins = await listAllCoins(c, addr, DEEP_TYPE);

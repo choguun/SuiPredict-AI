@@ -10,7 +10,7 @@ import { keypairFromPrivateKey, executeTransaction, yesCoinType, DUSDC_TYPE } fr
 async function test() {
   const signer = keypairFromPrivateKey(process.env.AGENT_PRIVATE_KEY!);
   const client = new SuiGrpcClient({ network: "testnet", baseUrl: "https://fullnode.testnet.sui.io:443" });
-  const DB = "0x0e99a58323bfe5db564e66ddbe760f7328c694b64174370933ca19d56549691d";
+  const DB = "0x4f179980d20c9bcc9347494d65d21fda8f54093971d476be8e5230f4aa6ddf36";
   const POOL = "0x93a00df8200f5383b6d348b057346a31e6c15b95cda8001c3fc465f76bc98e6f";
   const BM = "0x932b87dfc8f7a9e75e37d21e7c8fb1ef2cb139ffb4aa466e207d796ed32a7562";
   const base = yesCoinType();
@@ -37,9 +37,9 @@ async function test() {
   tx3.moveCall({ target: DB + "::pool::place_limit_order", typeArguments: [base, quote], arguments: [
     tx3.object(POOL), tx3.object(BM), p3,
     tx3.pure.u64(0n), tx3.pure.u8(0), tx3.pure.u8(1),
-    tx3.pure.u64(480_000n), tx3.pure.u64(1_000_000n),
+    tx3.pure.u64(500_000_000n), tx3.pure.u64(1_000_000n),
     tx3.pure.bool(true), tx3.pure.bool(true),
-    tx3.pure.u64(BigInt(Math.floor(Date.now()/1000)+3600)),
+    tx3.pure.u64(BigInt(Date.now() + 3600_000)),
     tx3.object.clock(),
   ]});
   try { const r = await executeTransaction(client, tx3, signer); console.log("3. Bid: OK", r.digest); }

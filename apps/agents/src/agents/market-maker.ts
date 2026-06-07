@@ -4,6 +4,7 @@ import {
   yesCoinType,
   resolveDeepbookPackageId,
   buildAuthorizeSpendTx,
+  listAllCoins,
 } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -161,8 +162,30 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
   const baseType = yesCoinType();
   const quoteType = DUSDC_TYPE;
+  const TICK = 1_000_000n; // pool tick_size
 
   try {
+    // 0. Find or mint DUSDC for fee payment
+    const dusdcCoins = await listAllCoins(client, agentAddr, quoteType);
+    let dusdcId = dusdcCoins.find((c: any) => BigInt(c.balance) >= 1_000_000n)?.objectId;
+    if (!dusdcId) {
+      // Mint DUSDC via TreasuryCap
+      const mintTx = new Transaction();
+      mintTx.moveCall({
+        target: "0x2::coin::mint_and_transfer",
+        typeArguments: [quoteType],
+        arguments: [mintTx.object("0x6754966565db058de1358d6db773510c5d2991937215d8e42d7c968acb3e8012"), mintTx.pure.u64(1_000_000_000_000n), mintTx.pure.address(agentAddr)],
+      });
+      await executeTransaction(client, mintTx, ctx.signer);
+      const freshCoins = await listAllCoins(client, agentAddr, quoteType);
+      dusdcId = freshCoins.find((c: any) => BigInt(c.balance) >= 1_000_000n)?.objectId;
+      if (!dusdcId) throw new Error("Failed to mint DUSDC");
+    }
+
+    // 1. Deposit DUSDC into BM
+    const depTx = new Transaction();
+    depTx.moveCall({ target: `${DB}::balance_manager::deposit`, typeArguments: [quoteType], arguments: [depTx.object(bmId), depTx.object(dusdcId)] });
+    await executeTransaction(client, depTx, ctx.signer);
     // 1. Withdraw settled amounts (with owner proof)
     const withdrawTx = new Transaction();
     const wProof = withdrawTx.moveCall({
@@ -182,7 +205,9 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       await executeTransaction(client, authTx, ctx.signer);
     }
 
-    // 3. Place bid
+    // 3. Place bid (price must be multiple of tick_size=1_000_000)
+    const bidPrice = BigInt(Math.round(5000 / 10000 * 1_000_000 * 1_000_000)); // 500_000_000 = 0.5
+    const askPrice = BigInt(Math.round(5000 / 10000 * 1_000_000 * 1_000_000)); // same for demo
     const bidTx = new Transaction();
     const bProof = bidTx.moveCall({
       target: `${DB}::balance_manager::generate_proof_as_owner`,
@@ -195,14 +220,14 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
         bidTx.object(poolId),
         bidTx.object(bmId),
         bProof,
-        bidTx.pure.u64(0n),                           // clientOrderId
-        bidTx.pure.u8(0),                             // POST_ONLY
-        bidTx.pure.u8(1),                             // DISALLOW self-match
-        bidTx.pure.u64(BigInt(Math.round(bidBps / 10_000 * 1_000_000))), // price (0.48 * 1e6 = 480_000)
-        bidTx.pure.u64(BigInt(QUOTE_SIZE)),           // quantity
-        bidTx.pure.bool(true),                        // isBid
-        bidTx.pure.bool(true),                        // payWithDeep
-        bidTx.pure.u64(BigInt(Math.floor(Date.now() / 1000) + 3600)), // expiration
+        bidTx.pure.u64(0n),
+        bidTx.pure.u8(0),
+        bidTx.pure.u8(1),
+        bidTx.pure.u64(bidPrice),
+        bidTx.pure.u64(BigInt(QUOTE_SIZE)),
+        bidTx.pure.bool(true),
+        bidTx.pure.bool(false),                        // payWithDeep=false (use DUSDC)
+        bidTx.pure.u64(BigInt(Date.now() + 3600_000)),
         bidTx.object.clock(),
       ],
     });
@@ -224,11 +249,11 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
         askTx.pure.u64(1n),
         askTx.pure.u8(0),
         askTx.pure.u8(1),
-        askTx.pure.u64(BigInt(Math.round(askBps / 10_000 * 1_000_000))), // price
+        askTx.pure.u64(askPrice),
         askTx.pure.u64(BigInt(QUOTE_SIZE)),
-        askTx.pure.bool(false),                       // isBid = false (ask)
-        askTx.pure.bool(true),
-        askTx.pure.u64(BigInt(Math.floor(Date.now() / 1000) + 3600)),
+        askTx.pure.bool(false),
+        askTx.pure.bool(false),                        // payWithDeep=false
+        askTx.pure.u64(BigInt(Date.now() + 3600_000)),
         askTx.object.clock(),
       ],
     });
