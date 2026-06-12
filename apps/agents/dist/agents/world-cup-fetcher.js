@@ -337,6 +337,60 @@ export async function fetchMatchResult(match) {
         const text = data.parse?.wikitext?.["*"] ?? "";
         // Find the match section. We look for the date row and the score.
         // e.g. "A1vA3" or "17 June 2026<br />17:00|MEX|1-0|KOR|Estadio Azteca"
+        //
+        // R58.H13 audit fix: the live Wikipedia 2026
+        // group pages use a different shape than the
+        // pre-R58 ones the regex was written for. The
+        // modern format wraps each match in
+        // `<section begin=HOMECODE /> ... <section end=HOMECODE />`
+        // and stores the score in the per-section
+        // `goals1=` / `goals2=` fields. The pre-fix regex
+        // only matched the flat `<rowId>|||...|HOMECODE||N-M||AWAYCODE`
+        // table, which the new pages don't emit. Result:
+        // `fetchMatchResult` returned null for every
+        // in-play match and the resolver fell back to
+        // the LLM-extractor path (which can also fail
+        // when the goals fields are empty pre-tournament).
+        //
+        // The fix: try the section-marker form first
+        // (the new format), then fall back to the
+        // pre-R58 flat-table form (still in use for some
+        // older pages). The section form requires us
+        // to extract `goals1=N|goals2=M` from inside
+        // the section block.
+        const sectionId = match.homeCode;
+        const sectionBlockMatch = text.match(new RegExp(`<section begin=${sectionId} />([\\s\\S]*?)<section end=${sectionId} />`, "i"));
+        if (sectionBlockMatch) {
+            const block = sectionBlockMatch[1] ?? "";
+            const goals1 = block.match(/goals1\s*=\s*([0-9]+)/i);
+            const goals2 = block.match(/goals2\s*=\s*([0-9]+)/i);
+            if (goals1 && goals2) {
+                const homeGoals = parseInt(goals1[1], 10);
+                const awayGoals = parseInt(goals2[1], 10);
+                if (Number.isFinite(homeGoals) && Number.isFinite(awayGoals)) {
+                    logDecision({
+                        agent: "WcFetcher",
+                        action: "match_result",
+                        reasoning: `${match.id}: ${homeGoals}-${awayGoals} (section block)`,
+                        confidence: 85,
+                        timestamp: Date.now(),
+                    });
+                    return {
+                        matchId: match.id,
+                        homeGoals,
+                        awayGoals,
+                        winner: homeGoals > awayGoals
+                            ? "home"
+                            : homeGoals < awayGoals
+                                ? "away"
+                                : "draw",
+                        status: "completed",
+                        source: "Wikipedia (Group " + match.group + ")",
+                        confidence: 85,
+                    };
+                }
+            }
+        }
         const sectionRe = new RegExp(`\\|\\s*${match.id}\\s*\\|\\|([^|\\n]+)\\|\\|\\s*\\|\\s*${match.homeCode}\\s*\\|\\|\\s*([0-9]+)\\s*-\\s*([0-9]+)\\s*\\|\\|\\s*${match.awayCode}`, "i");
         const m = text.match(sectionRe);
         if (!m) {

@@ -109,15 +109,16 @@ const SCHEMA_PROMPTS = {
   - name: full country name
   - pot: 1, 2, 3, or 4 (the seeding pot)
 Return JSON: {"letter": "A", "teams": [{"code": "MEX", "name": "Mexico", "pot": 1}, ...]}`,
-    WcMatchResult: `Extract the result of this World Cup match. For a completed match return:
+    WcMatchResult: `Extract ALL World Cup match results visible on this page. For every completed or in-progress match in the group, return an object in a top-level "matches" array. For each match:
   - match_id: stable id like "A1vA3" (infer from teams + group)
   - home_team, away_team: country names
-  - home_goals, away_goals: integer scores
+  - home_goals, away_goals: integer scores (0 if not yet played)
   - status: "completed" for played matches, "scheduled" for future, "in_progress" if live, "postponed" if delayed
   - competition_stage: e.g. "Group A", "Round of 16", "Quarter-final"
   - venue: stadium name
   - source: the URL or page title
-Return JSON only. No commentary.`,
+Return JSON only. The shape MUST be {"matches": [...]}. Empty matches array if no matches visible.
+No commentary.`,
     WcFixture: `Extract this upcoming World Cup fixture. Return:
   - home_team, away_team: country names
   - kickoff_utc: ISO-8601 timestamp in UTC (e.g. "2026-06-11T17:00:00Z")

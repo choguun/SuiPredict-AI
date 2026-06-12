@@ -184,16 +184,50 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       // didn't), boost confidence and commit. If both
       // miss, skip.
       const llmResult = await extractFromUrl<{
-        matches: WcMatchResult[];
+        matches?: WcMatchResult[];
+        // The pre-R58.H14 extractor returned a
+        // single match (no array wrapper). Accept
+        // both shapes so a stale extractor or a
+        // different prompt doesn't break the
+        // resolver.
+        match_id?: string;
+        home_goals?: number;
+        away_goals?: number;
+        status?: string;
       }>(
         `https://en.wikipedia.org/wiki/2026_FIFA_World_Cup_Group_${match.group}`,
         "WcMatchResult",
       );
-      if (llmResult?.data?.matches) {
-        const llmMatch = llmResult.data.matches.find(
-          (m) => m.match_id === match.id,
-        );
-        if (llmMatch && llmMatch.status === "completed") {
+      // Normalize the response shape. The
+      // canonical contract is `{ matches: [...] }`,
+      // but the current LLM prompt returns a
+      // single match (the one most likely to be
+      // resolved). Accept either.
+      const llmMatches: WcMatchResult[] = Array.isArray(llmResult?.data?.matches)
+        ? (llmResult!.data!.matches as WcMatchResult[])
+        : llmResult?.data?.match_id
+          ? [llmResult.data as WcMatchResult]
+          : [];
+      // R58.H14.1 audit fix: the LLM extractor uses
+      // the canonical Wikipedia match-id format
+      // "A1vA3" (with the group letter before the
+      // away-position), but the schedule uses the
+      // shorter "A1v3". Try both forms when looking
+      // up the LLM result so a 1-character naming
+      // drift doesn't silently drop the match and
+      // leave the boot log full of "0 resolved, 5
+      // skipped".
+      const altId = (() => {
+        if (!match.id.includes("v")) return match.id;
+        const [prefix = "", rest = ""] = match.id.split("v", 2);
+        if (!prefix || !rest) return match.id;
+        // Schedule: A1v3 → LLM: A1vA3
+        return `${prefix}vA${rest}`;
+      })();
+      const llmMatch = llmMatches.find(
+        (m) => m.match_id === match.id || m.match_id === altId,
+      );
+      if (llmMatch && llmMatch.status === "completed") {
           const syntheticWinner: "home" | "away" | "draw" =
             llmMatch.home_goals > llmMatch.away_goals
               ? "home"
@@ -206,8 +240,8 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
             awayGoals: llmMatch.away_goals,
             winner: syntheticWinner,
             status: "completed" as const,
-            source: `LLM extractor (${llmResult.source})`,
-            confidence: llmResult.confidence,
+            source: `LLM extractor (${llmResult?.source ?? "Wikipedia"})`,
+            confidence: llmResult?.confidence ?? 70,
           };
           await commitResolution(
             match,
@@ -221,7 +255,6 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
           );
           resolved++;
           continue;
-        }
       }
       skipped++;
       continue;
