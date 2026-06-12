@@ -260,8 +260,6 @@ function validateBootConfig() {
  * "yes this is my key" without the secret ever reaching the log.
  */
 function secretFingerprint(value) {
-    if (!value)
-        return "(empty)";
     // Use the Web Crypto API via globalThis.crypto.subtle (Node 20+).
     // The previous `require("node:crypto")` is not defined in ESM
     // context, which crashes the boot config validator at startup.
@@ -275,6 +273,72 @@ function secretFingerprint(value) {
     // placeholder is fine while we await the digest).
     const hex = syncSha256Hex(value);
     return `${hex.slice(0, 4)}…${hex.slice(-4)}`;
+}
+/**
+ * R58.H8 audit fix: detect `AGENT_POLICY_PACKAGE_ID` drift at
+ * boot. The RiskMonitor's `buildPausePolicyTx` Move-calls
+ * `${packageId}::agent_policy::pause` and passes the
+ * `AGENT_POLICY_ID` object as the first argument. If the env's
+ * `AGENT_POLICY_PACKAGE_ID` points to a *different* package
+ * than the one that actually deployed the on-chain policy,
+ * the PTB resolves with `CommandArgumentError { arg_idx: 0 }`
+ * (the policy object's type tag references a different
+ * package than the Move call target) and every pause attempt
+ * silently fails.
+ *
+ * A 5-line RPC check at boot fetches the on-chain type of
+ * `AGENT_POLICY_ID` and prints a single, clear warning if the
+ * embedded package id doesn't match the env's
+ * `AGENT_POLICY_PACKAGE_ID`. The check is best-effort: any RPC
+ * error is swallowed and the agents start as normal (the
+ * `RiskMonitor.pause_failed` path is still the source of
+ * truth at runtime).
+ */
+async function verifyPolicyPackageDrift() {
+    const policyId = process.env.AGENT_POLICY_ID;
+    const envPkg = process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
+        process.env.AGENT_POLICY_PACKAGE_ID;
+    if (!policyId || !envPkg)
+        return;
+    // Avoid pulling in @mysten/sui in the cold-start path; use
+    // a direct HTTP fetch (the validator above already pulled
+    // in the SDK; this is just a typed getObject call).
+    const network = process.env.SUI_NETWORK ?? "testnet";
+    const urls = {
+        testnet: "https://fullnode.testnet.sui.io",
+        mainnet: "https://fullnode.mainnet.sui.io",
+        devnet: "https://fullnode.devnet.sui.io",
+    };
+    const url = urls[network] ?? urls.testnet ?? urls.testnet;
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "sui_getObject",
+            params: [policyId, { showType: true }],
+        }),
+    });
+    if (!res.ok)
+        return;
+    const json = (await res.json());
+    const onChainType = json.result?.data?.type ?? "";
+    // `type` looks like `0xPKG::module::Type<...>`. Pull the
+    // 0x-prefixed package id out of the front.
+    const match = onChainType.match(/^(0x[0-9a-fA-F]+)::/);
+    if (!match || !match[1])
+        return;
+    const onChainPkg = match[1].toLowerCase();
+    const envPkgLower = envPkg.toLowerCase();
+    if (onChainPkg !== envPkgLower) {
+        console.warn(`[agents] AGENT_POLICY_PACKAGE_ID drift detected!\n` +
+            `          env:     ${envPkgLower}\n` +
+            `          on-chain:${onChainPkg} (from ${policyId.slice(0, 16)}…)\n` +
+            `          The RiskMonitor's pause tx will fail with\n` +
+            `          CommandArgumentError. Update your .env to:\n` +
+            `            AGENT_POLICY_PACKAGE_ID=${onChainPkg}`);
+    }
 }
 /**
  * Tiny SHA-256 implementation for the boot config logger.
@@ -695,6 +759,27 @@ async function main() {
     // (which watches for an
     // empty `package_id`).
     validateBootConfig();
+    // R58.H8 audit fix: detect AGENT_POLICY_PACKAGE_ID
+    // drift at boot. The RiskMonitor's `buildPausePolicyTx`
+    // Move-calls `${packageId}::agent_policy::pause` and
+    // passes the `AGENT_POLICY_ID` object as the first
+    // argument. If the env's `AGENT_POLICY_PACKAGE_ID`
+    // points to a *different* package than the one that
+    // actually deployed the on-chain policy, the PTB
+    // resolves with `CommandArgumentError { arg_idx: 0 }`
+    // (the policy object is typed against the old
+    // package) and every pause attempt silently fails.
+    //
+    // The user discovered this only because the
+    // RiskMonitor's high-utilization guard fired and
+    // the boot log was full of `RiskMonitor →
+    // pause_failed: ... CommandArgumentError`. A 5-line
+    // RPC check at boot catches the mismatch before the
+    // first pause attempt, with a clear "fix your .env"
+    // message.
+    void verifyPolicyPackageDrift().catch(() => {
+        // Best-effort; ignore RPC failures.
+    });
     startHealthServer();
     // Seed World Cup 2026 demo markets so the home page is alive
     // even in API-only mode (no AGENT_PRIVATE_KEY). The seed is

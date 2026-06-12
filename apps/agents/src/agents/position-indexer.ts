@@ -181,6 +181,13 @@ export function readCursor(stateKey: string): EventCursor {
   // point, dropping events. Refuse to reuse on
   // mismatch; the indexer re-bootstraps from the
   // genesis cursor on the new chain.
+  //
+  // R58.H7 audit fix: parse the stored JSON cursor.
+  // The pre-R58.H7 writer did `String(cursor)` which
+  // produced the literal `"[object Object]"` for the
+  // Sui EventCursor object. We treat any non-JSON
+  // value (the broken legacy rows AND a freshly-nulled
+  // row) as null and re-bootstrap.
   const expectedTag = cursorTag();
   const row = getDb()
     .prepare(
@@ -199,7 +206,27 @@ export function readCursor(stateKey: string): EventCursor {
     );
     return null as unknown as EventCursor;
   }
-  return (row.cursor ?? null) as EventCursor;
+  if (!row.cursor) return null as unknown as EventCursor;
+  // R58.H7: backward-compat shim. Old rows store the
+  // literal string "[object Object]". Anything that
+  // doesn't parse as a `{txDigest, eventSeq}` object
+  // is treated as null.
+  try {
+    const parsed = JSON.parse(row.cursor) as unknown;
+    if (
+      parsed && typeof parsed === "object" &&
+      "txDigest" in parsed && typeof (parsed as { txDigest: unknown }).txDigest === "string" &&
+      "eventSeq" in parsed && typeof (parsed as { eventSeq: unknown }).eventSeq === "string"
+    ) {
+      return parsed as EventCursor;
+    }
+    return null as unknown as EventCursor;
+  } catch {
+    // R58.H7: legacy `[object Object]` rows from
+    // the pre-fix `String(cursor)` writer. Discard
+    // and re-bootstrap.
+    return null as unknown as EventCursor;
+  }
 }
 
 /**
@@ -278,6 +305,24 @@ export function writeCursor(stateKey: string, cursor: EventCursor): void {
   // (network, package_id) so a future
   // `readCursor` can detect a mismatch and refuse
   // to replay the cursor on a different chain.
+  //
+  // R58.H7 audit fix: serialize the cursor as JSON,
+  // not via `String()`. The Sui cursor is a
+  // `{txDigest, eventSeq}` object; `String(cursor)`
+  // returns the literal string `"[object Object]"`
+  // (Object.prototype.toString with no override).
+  // The next readCursor cast it back to
+  // `EventCursor` and re-sent it to `queryEvents`,
+  // which the Sui RPC rejected with "Invalid
+  // params" on every tick. The boot log was full
+  // of:
+  //   [position-indexer] MarketCreated poll failed: Invalid params
+  //   [position-indexer] VaultCreated poll failed: Invalid params
+  //   [position-indexer] RegistryCreated poll failed: Invalid params
+  // The fix: JSON.stringify on write, JSON.parse
+  // on read (with backward compat for the old
+  // broken rows — they're treated as null so the
+  // indexer re-bootstraps from the genesis cursor).
   const tag = cursorTag();
   getDb()
     .prepare(
@@ -289,7 +334,7 @@ export function writeCursor(stateKey: string, cursor: EventCursor): void {
          package_id=excluded.package_id,
          updated_at_ms=excluded.updated_at_ms`,
     )
-    .run(stateKey, String(cursor), tag.network, tag.packageId, Date.now());
+    .run(stateKey, JSON.stringify(cursor), tag.network, tag.packageId, Date.now());
 }
 
 async function pollAndApply(
