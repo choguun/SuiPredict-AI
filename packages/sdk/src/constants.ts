@@ -329,11 +329,22 @@ export function resolveDusdcPackageId(): string {
   ).trim();
 }
 export function resolveAgentPolicyPackageId(): string {
+  // R58.H10 audit fix: prefer MARKET_PACKAGE_ID over
+  // AGENT_POLICY_PACKAGE_ID. The historical resolution
+  // order checked AGENT first (with MARKET as a legacy
+  // alias), but the canonical "events live here" package
+  // is the one the CLOB / prediction_market / vault /
+  // registry Move calls target. A two-package deploy
+  // (AgentPolicy at one address, CLOB at another) needs
+  // MARKET for the create_market / resolve / mint calls.
+  // We still fall back to AGENT_POLICY_PACKAGE_ID (then
+  // the bundled testnet default) for the common
+  // single-package case.
   return (
-    process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
-    process.env.AGENT_POLICY_PACKAGE_ID ??
     process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
     process.env.MARKET_PACKAGE_ID ??
+    process.env.NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID ??
+    process.env.AGENT_POLICY_PACKAGE_ID ??
     "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf"
   ).trim();
 }

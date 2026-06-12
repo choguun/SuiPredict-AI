@@ -14,6 +14,7 @@ import {
 } from "../agents/world-cup-fetcher.js";
 import { upcomingWcMarkets } from "../agents/world-cup-resolver.js";
 import {
+  cacheStats,
   clearExtractionCache,
   extractFromUrl,
   type ExtractionSchema,
@@ -256,14 +257,29 @@ export function handleMarketsRoute(
     return true;
   }
   if (url.pathname === "/wc/extract/cache") {
-    // The whole handler is GET-only (see the early-return
-    // at the top of the function), so a DELETE/POST
-    // endpoint can't live here. Use `?action=clear` instead.
+    // R58.H9 audit fix: plain GET returns the cache
+    // contents + stats (size, max, hits, misses). The
+    // pre-fix handler only matched `?action=clear` and
+    // fell through to 404 for an unparameterised GET,
+    // so a `curl /wc/extract/cache` to inspect the
+    // LLM cache returned 404 even though the comment
+    // implied the route existed for read access too.
     if (url.searchParams.get("action") === "clear") {
       const n = clearExtractionCache();
       json(res, 200, { cleared: n });
       return true;
     }
+    const limit = Math.min(
+      Math.max(Number(url.searchParams.get("limit") ?? 50), 1),
+      500,
+    );
+    const rows = recentExtractions(limit);
+    json(res, 200, {
+      stats: cacheStats(),
+      rows,
+      limit,
+    });
+    return true;
   }
 
   return false;

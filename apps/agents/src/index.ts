@@ -518,6 +518,21 @@ function bootstrapEnv() {
   // wins — silently picking the first non-empty value (the previous
   // behavior) let stale PREDICT_PACKAGE_ID values override the real
   // deployed package, which made every event-indexer find zero hits.
+  //
+  // R58.H10 audit fix: do NOT overwrite MARKET_PACKAGE_ID
+  // when it differs from the canonical. The previous
+  // behaviour assumed all three vars were aliases for the
+  // same Move package, but a deployment with TWO published
+  // `suipredict_agent_policy` packages (e.g. a fresh
+  // redeploy while the AgentPolicy object still points to
+  // the previous package) needs to use MARKET_PACKAGE_ID
+  // for the CLOB / prediction_market events and
+  // AGENT_POLICY_PACKAGE_ID for the agent_policy Move
+  // calls. Clobbering MARKET_PACKAGE_ID here makes the
+  // position-indexer query the wrong package for events
+  // and return zero matches forever. PREDICT_PACKAGE_ID
+  // is still treated as a legacy alias (it's the Mysten
+  // predict-server address on a different module).
   const canonical = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
   const legacyA = process.env.PREDICT_PACKAGE_ID ?? "";
   const legacyB = process.env.MARKET_PACKAGE_ID ?? "";
@@ -526,18 +541,29 @@ function bootstrapEnv() {
       `[agents] AGENT_POLICY_PACKAGE_ID (${canonical}) differs from PREDICT_PACKAGE_ID (${legacyA}); using AGENT_POLICY_PACKAGE_ID. ` +
         "Update your .env to drop the stale PREDICT_PACKAGE_ID line.",
     );
+    if (!process.env.PREDICT_PACKAGE_ID) {
+      process.env.PREDICT_PACKAGE_ID = canonical;
+    }
   }
   if (canonical && legacyB && canonical !== legacyB) {
+    // R58.H10: warn but don't clobber. The user has
+    // deliberately set a different MARKET_PACKAGE_ID —
+    // they likely have a two-package deploy where the
+    // CLOB lives at MARKET_PACKAGE_ID and the
+    // AgentPolicy lives at AGENT_POLICY_PACKAGE_ID.
+    // The position-indexer is now updated (R58.H10) to
+    // prefer MARKET_PACKAGE_ID for events and fall back
+    // to AGENT_POLICY_PACKAGE_ID for agent_policy
+    // events.
     console.warn(
-      `[agents] AGENT_POLICY_PACKAGE_ID (${canonical}) differs from MARKET_PACKAGE_ID (${legacyB}); using AGENT_POLICY_PACKAGE_ID. ` +
-        "Update your .env to drop the stale MARKET_PACKAGE_ID line.",
+      `[agents] AGENT_POLICY_PACKAGE_ID (${canonical}) differs from MARKET_PACKAGE_ID (${legacyB}).\n` +
+        `          If both are deployed (CLOB at MARKET, AgentPolicy at AGENT_POLICY), this is expected.\n` +
+        `          If only one Move package is published, run \`pnpm bootstrap\` to align them.`,
     );
   }
   const pkg = canonical || legacyA || legacyB || "";
-  if (pkg) {
+  if (pkg && !process.env.AGENT_POLICY_PACKAGE_ID) {
     process.env.AGENT_POLICY_PACKAGE_ID = pkg;
-    process.env.PREDICT_PACKAGE_ID = pkg;
-    process.env.MARKET_PACKAGE_ID = pkg;
   }
   const deepRegistry =
     process.env.DEEPBOOK_REGISTRY_ID ?? "0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1";

@@ -279,11 +279,25 @@ async function pollAndApply(client, eventType, stateKey, apply) {
     return page.data.length;
 }
 export async function runPositionIndexer(_ctx) {
-    const predictPackageId = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+    // R58.H10 audit fix: prefer MARKET_PACKAGE_ID for
+    // events. The previous code hard-coded
+    // `AGENT_POLICY_PACKAGE_ID` for every event filter
+    // (`MarketCreatedEvent`, `VaultCreated`, etc), but those
+    // modules live in the CLOB deploy (`MARKET_PACKAGE_ID`).
+    // On a two-package deploy (AgentPolicy at one package,
+    // CLOB at another) the pre-fix indexer queried the
+    // AgentPolicy package for `prediction_market::MarketCreatedEvent`
+    // and got zero matches forever, even though the
+    // events fired correctly. Fall back to
+    // `AGENT_POLICY_PACKAGE_ID` only when MARKET is unset
+    // (the common single-package case).
+    const predictPackageId = process.env.MARKET_PACKAGE_ID ??
+        process.env.AGENT_POLICY_PACKAGE_ID ??
+        "";
     if (!predictPackageId) {
         return recordResult("PositionIndexer", {
             action: "skip",
-            reasoning: "AGENT_POLICY_PACKAGE_ID not set — indexer inert.",
+            reasoning: "MARKET_PACKAGE_ID and AGENT_POLICY_PACKAGE_ID both unset — indexer inert.",
         });
     }
     // DUSDC_TYPE is the type parameter for the parlay events

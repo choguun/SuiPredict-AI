@@ -103,3 +103,39 @@ test("R58.H7 — String(cursor) would have produced the broken value", () => {
   // Verify the new code path uses JSON.stringify.
   assert.equal(serializeCursor(cursor), JSON.stringify(cursor));
 });
+
+// R58.H10 regression: pin the position-indexer's
+// package-id resolution order. The pre-fix code read
+// `AGENT_POLICY_PACKAGE_ID` for every event filter,
+// which silently returned zero matches on a two-package
+// deploy (AgentPolicy at one package, CLOB at another).
+// The fix prefers MARKET_PACKAGE_ID with a fallback to
+// AGENT_POLICY_PACKAGE_ID.
+
+function resolveIndexerPkg(env: Record<string, string | undefined>): string {
+  return env.MARKET_PACKAGE_ID ?? env.AGENT_POLICY_PACKAGE_ID ?? "";
+}
+
+test("R58.H10 — indexer prefers MARKET_PACKAGE_ID when both are set", () => {
+  // Two-package deploy: the CLOB lives at MARKET, the
+  // AgentPolicy at AGENT. The indexer must use MARKET
+  // for events like MarketCreatedEvent.
+  const pkg = resolveIndexerPkg({
+    MARKET_PACKAGE_ID: "0x23b78cabb",
+    AGENT_POLICY_PACKAGE_ID: "0xb1777f167c",
+  });
+  assert.equal(pkg, "0x23b78cabb");
+});
+
+test("R58.H10 — indexer falls back to AGENT_POLICY_PACKAGE_ID", () => {
+  // Single-package deploy (the common case).
+  const pkg = resolveIndexerPkg({
+    AGENT_POLICY_PACKAGE_ID: "0xb1777f167c",
+  });
+  assert.equal(pkg, "0xb1777f167c");
+});
+
+test("R58.H10 — indexer returns empty when both are unset", () => {
+  const pkg = resolveIndexerPkg({});
+  assert.equal(pkg, "");
+});
