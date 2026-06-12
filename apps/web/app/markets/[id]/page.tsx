@@ -300,7 +300,25 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // canonical lowercase id exists. The same
       // pattern is already in use for `listCoins`
       // (line 100) and `getPortfolio` (line 387).
-      m = await getMarket(normalizeObjectId(marketId));
+      //
+      // R58.H6 audit fix: only normalize if the id
+      // actually looks like a Sui object id (0x + 64
+      // hex chars). `normalizeObjectId` throws on
+      // anything that doesn't match the regex, and the
+      // throw message ("not a valid Sui object id
+      // (expected 0x + 64 hex chars)") doesn't include
+      // "404" or "not found", so the page's error
+      // classifier below was labelling it as
+      // `fetch_failed` ("agents indexer is unreachable")
+      // even though the agents service was up and
+      // serving the row. Demo seed ids like
+      // `wc26-K1v4` use a different namespace
+      // (`isValidMarketId` in the SDK is permissive on
+      // shape but strict on safety) so they pass
+      // through unchanged. Without this guard, every
+      // wc26-* page errored out at the load step.
+      const isLikelySuiId = /^0x[0-9a-fA-F]{64}$/.test(marketId);
+      m = await getMarket(isLikelySuiId ? normalizeObjectId(marketId) : marketId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // R58 audit fix: classify the error so the UI doesn't
