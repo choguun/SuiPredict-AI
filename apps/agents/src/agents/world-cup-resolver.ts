@@ -44,6 +44,9 @@ import { getMarket, listMarkets, upsertMarket } from "../markets/store.js";
 import {
   fetchMatchResult,
   fetchMatchSchedule,
+  matchWinnerDescription,
+  matchWinnerResolutionSource,
+  matchWinnerTitle,
   type WcMatch,
 } from "./world-cup-fetcher.js";
 import { extractFromUrl, type WcMatchResult } from "./llm-extractor.js";
@@ -85,6 +88,63 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
     .sort((a, b) => a.expiry_ms - b.expiry_ms);
 
   if (expired.length === 0) {
+    // R58.H11 audit fix: backfill past in-play matches
+    // that have no row yet. The wc-demo-seed inserts up
+    // to 8 in-play matches at boot, but as the system
+    // clock progresses past boot time, more matches
+    // fall into the in-play window without being
+    // inserted (the seed only runs once at boot). The
+    // pre-fix resolver skipped these — the home page
+    // would show "0 markets" for any past match that
+    // wasn't in the boot-time 8. The fix: backfill any
+    // past in-play match (kickoff + 2h ≤ now) that has
+    // no row yet, as `active` with `outcome: null` so
+    // the main loop above (the `expired` block) picks
+    // them up on the next tick and overwrites the row
+    // with the real Wikipedia result.
+    const schedule0 = await fetchMatchSchedule();
+    const now0 = Date.now();
+    const existingIds = new Set(
+      listMarkets()
+        .filter((m) => m.id.startsWith("wc26-"))
+        .map((m) => m.id),
+    );
+    let backfilled = 0;
+    for (const m of schedule0) {
+      const exp = m.kickoffMs + 2 * 60 * 60 * 1000;
+      if (exp > now0) continue; // not in-play yet
+      const id = `wc26-${m.id}`;
+      if (existingIds.has(id)) continue;
+      // R58.H11.1 audit fix: insert as 'active' (not
+      // 'resolved') so the main resolver loop below
+      // picks the row up on the next tick and
+      // overwrites the placeholder with the real
+      // Wikipedia result. The pre-fix version marked
+      // the backfill as already-resolved, which made
+      // the main loop skip it (filter is
+      // `status === "active" && expiry_ms <= now`)
+      // and the placeholder outcome stayed forever.
+      upsertMarket({
+        id,
+        title: matchWinnerTitle(m),
+        description: matchWinnerDescription(m),
+        category: "worldcup",
+        expiry_ms: exp,
+        resolution_source: matchWinnerResolutionSource(m),
+        status: "active",
+        outcome: null,
+        created_at_ms: Date.now(),
+      });
+      existingIds.add(id);
+      backfilled++;
+    }
+    if (backfilled > 0) {
+      return recordResult("WorldCupResolver", {
+        action: "monitor",
+        reasoning: `Backfilled ${backfilled} past in-play row(s) that the boot-time seed window missed.`,
+        confidence: 90,
+      });
+    }
     return recordResult("WorldCupResolver", {
       action: "monitor",
       reasoning: "No expired WC markets awaiting resolution.",
