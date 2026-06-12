@@ -4,6 +4,9 @@ import { keypairFromPrivateKey, SUI_GRPC_URL } from "@suipredict/sdk";
 import { runMarketCreator } from "./agents/market-creator.js";
 import { runMarketMaker } from "./agents/market-maker.js";
 import { runMarketResolver } from "./agents/market-resolver.js";
+import { runWorldCupCreator } from "./agents/world-cup-creator.js";
+import { runWorldCupResolver } from "./agents/world-cup-resolver.js";
+import { runWorldCupMaker } from "./agents/world-cup-maker.js";
 import { runRiskMonitor } from "./agents/risk-monitor.js";
 import { runStreakSweeper } from "./agents/streak-sweeper.js";
 import { runLeaderboardWorker } from "./agents/leaderboard-worker.js";
@@ -243,6 +246,9 @@ function buildSchedule() {
   }> = [
     { name: "MarketCreator",     cron: env("AGENT_CRON_MARKET_CREATOR",     "0 0 * * *"),  fn: runMarketCreator },
     { name: "MarketResolver",    cron: env("AGENT_CRON_MARKET_RESOLVER",    "58 23 * * *"), fn: runMarketResolver },
+    { name: "WorldCupCreator",   cron: env("AGENT_CRON_WC_CREATOR",         "*/15 * * * *"), fn: runWorldCupCreator },
+    { name: "WorldCupResolver",  cron: env("AGENT_CRON_WC_RESOLVER",        "*/5 * * * *"), fn: runWorldCupResolver },
+    { name: "WorldCupMaker",     cron: env("AGENT_CRON_WC_MAKER",           "*/2 * * * *"), fn: runWorldCupMaker },
     { name: "StreakSweeper",     cron: env("AGENT_CRON_STREAK_SWEEPER",     "2 0 * * *"),   fn: runStreakSweeper },
     { name: "LeaderboardWorker", cron: env("AGENT_CRON_LEADERBOARD",        "5 0 * * 1"),   fn: runLeaderboardWorker },
     { name: "PrizeAdmin",        cron: env("AGENT_CRON_PRIZE_ADMIN",        "10 0 * * 1"),  fn: runPrizeAdmin },
@@ -574,6 +580,22 @@ async function main() {
   // empty `package_id`).
   validateBootConfig();
   startHealthServer();
+  // Seed World Cup 2026 demo markets so the home page is alive
+  // even in API-only mode (no AGENT_PRIVATE_KEY). The seed is
+  // idempotent and a no-op when the rows already exist.
+  try {
+    const { seedWcDemoMarkets } = await import("./agents/wc-demo-seed.js");
+    const { seeded, skipped } = await seedWcDemoMarkets();
+    if (seeded > 0) {
+      console.log(
+        `[agents] Seeded ${seeded} World Cup demo markets (skipped ${skipped}).`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[agents] World Cup demo seed failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
   const ctx = loadContext();
   if (!ctx) {
     console.log("[agents] Running in API-only mode (no wallet configured)");

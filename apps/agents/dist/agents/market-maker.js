@@ -67,6 +67,8 @@ function loadBalanceManagerId() {
 function nextDemoOrderId(marketId) {
     return nextDemoOrderIdFromStore(marketId);
 }
+process.on("uncaughtException", (e) => console.error("[market-maker] CRASH:", e.message));
+process.on("unhandledRejection", (e) => console.error("[market-maker] REJECT:", e));
 export async function runMarketMaker(ctx) {
     // Boot marker — ensures this module is loaded
     if (!globalThis.__mm_booted) {

@@ -6,6 +6,7 @@ import { ConnectModal } from "@/components/ConnectModal";
 
 const links = [
   { href: "/", label: "Home" },
+  { href: "/worldcup", label: "World Cup" },
   { href: "/markets", label: "Markets" },
   { href: "/parlay", label: "Parlay" },
   { href: "/leaderboard", label: "Leaderboard" },
@@ -26,7 +27,8 @@ export function Nav() {
           {links.map((l) => {
             const active =
               pathname === l.href ||
-              (l.href === "/markets" && pathname.startsWith("/markets/"));
+              (l.href === "/markets" && pathname.startsWith("/markets/")) ||
+              (l.href === "/worldcup" && pathname.startsWith("/worldcup"));
             return (
               <Link
                 key={l.href}

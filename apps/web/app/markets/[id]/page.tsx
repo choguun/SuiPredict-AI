@@ -42,6 +42,7 @@ import { Badge, Card, Stat } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
+import { FriendPositionsWidget } from "@/components/FriendPositionsWidget";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { clampNumberString } from "@/lib/forms";
 
@@ -1338,6 +1339,19 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
               <span className="text-xs font-medium text-zinc-400">
                 Ends {formatDate(market.expiry_ms)}
               </span>
+              <a
+                href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(
+                  `I'm trading on "${market.title}" — beat me:`,
+                )}&url=${encodeURIComponent(
+                  typeof window !== "undefined" ? window.location.href : "",
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto inline-flex items-center gap-1 rounded-full bg-sky-500/20 px-3 py-1 text-xs font-semibold text-sky-300 border border-sky-500/30 hover:bg-sky-500/30"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                Share
+              </a>
             </div>
             <h1 className="max-w-4xl text-3xl font-bold tracking-tight text-white sm:text-4xl leading-tight mb-4">
               {market.title}
@@ -1597,6 +1611,16 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           )}
         </Card>
       </div>
+
+      <FriendPositionsWidget
+        marketId={marketId}
+        onCopyBet={(side, size) => {
+          setSide(side);
+          setOrderSide("buy");
+          setQty(Math.max(1, Math.round(size / 1e6)));
+          toast.success(`Copied friend's ${side.toUpperCase()} bet — adjust and place below`);
+        }}
+      />
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="DeepBook V3 Account">

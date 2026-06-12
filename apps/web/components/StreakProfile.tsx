@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { useStreakInfo } from "@/hooks/useStreakInfo";
+import { Celebration } from "@/components/Celebration";
 
 const TIER_THRESHOLDS = [3, 7, 14, 30, 100] as const;
 const TIER_LABELS = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"] as const;
@@ -40,6 +41,10 @@ export function StreakProfile() {
   const queryClient = useQueryClient();
   const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
   const streak = useStreakInfo(streakId);
+  // Fire confetti when the current streak crosses a milestone
+  // (3, 7, 14, 30, 100). The component no-ops on every other
+  // value; see Celebration.tsx for the threshold table.
+  const currentStreak = streak.info?.current_streak ?? 0;
 
   if (!account) {
     return <StreakProfileEmpty reason="Connect a wallet to start a streak." />;
@@ -130,6 +135,8 @@ export function StreakProfile() {
   const earned = badgesEarnedCount(streak.info?.claimed_tiers);
 
   return (
+    <>
+      <Celebration streak={currentStreak} />
     <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/50 transition-all hover:border-orange-500/30 hover:shadow-orange-900/20">
       <div className="absolute -right-20 -top-20 h-40 w-40 rounded-full bg-orange-500/10 blur-[50px] -z-10" />
       <div className="flex flex-col gap-5">
@@ -272,6 +279,7 @@ export function StreakProfile() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

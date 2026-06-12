@@ -6,6 +6,7 @@ import {
 } from "@suipredict/sdk";
 import { Badge } from "@/components/ui";
 import { DailyPredictionCard } from "@/components/DailyPredictionCard";
+import { DailyWcCard } from "@/components/DailyWcCard";
 import { StreakProfile } from "@/components/StreakProfile";
 import { StreakWelcomeBanner } from "@/components/StreakWelcomeBanner";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
@@ -69,6 +70,30 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-6 sm:space-y-12 pb-6 sm:pb-12">
+      {/* 0. World Cup 2026 Banner (always visible) */}
+      <Link
+        href="/worldcup"
+        className="group relative block overflow-hidden rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-900/30 via-[#0d1019] to-amber-900/20 p-5 sm:p-7 transition hover:border-emerald-500/40"
+      >
+        <div className="absolute -top-20 -right-10 h-40 w-40 rounded-full bg-emerald-500/20 blur-[80px] -z-10" />
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+              🏆 Now live · 48 teams · 104 matches
+            </div>
+            <h2 className="mt-1 text-xl sm:text-2xl font-extrabold text-white">
+              World Cup 2026 prediction markets
+            </h2>
+            <p className="mt-1 text-xs sm:text-sm text-zinc-400">
+              Trade YES/NO on every group match. Compete with friends. Win the bracket.
+            </p>
+          </div>
+          <div className="shrink-0 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-bold text-emerald-950 group-hover:bg-emerald-400">
+            Open →
+          </div>
+        </div>
+      </Link>
+
       {/* 1. Mobile Greeting (Hidden on Desktop) */}
       <div className="sm:hidden flex items-center justify-between mb-2">
         <h1 className="text-2xl font-bold text-white">GM, Trader 🔥</h1>
@@ -157,7 +182,8 @@ export default async function HomePage() {
         <div className="lg:col-span-1">
           <StreakProfile />
         </div>
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-6">
+          <DailyWcCard />
           <DailyPredictionCard />
         </div>
       </section>

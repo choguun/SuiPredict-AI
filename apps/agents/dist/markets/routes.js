@@ -1,5 +1,7 @@
 import { getMarket, getOrderBook, getPortfolio, getVaultSummaryFromEnv, listChainOrders, listMarkets, } from "./store.js";
 import { corsFor } from "../http-cors.js";
+import { fetchMatchSchedule, loadWorldCupConfig, } from "../agents/world-cup-fetcher.js";
+import { upcomingWcMarkets } from "../agents/world-cup-resolver.js";
 function json(res, status, body, sideEffecting = false) {
     // R35 audit fix: every markets response previously set "*" CORS.
     // The markets routes are read-only (list / detail / order book /
@@ -79,6 +81,37 @@ export function handleMarketsRoute(req, res, url) {
     const portfolioMatch = url.pathname.match(/^\/portfolio\/(0x[a-fA-F0-9]+)$/);
     if (portfolioMatch) {
         json(res, 200, getPortfolio(portfolioMatch[1]));
+        return true;
+    }
+    // World Cup 2026 endpoints (read-only, side-effecting=false)
+    if (url.pathname === "/wc/groups") {
+        loadWorldCupConfig()
+            .then((groups) => json(res, 200, { groups }))
+            .catch((err) => json(res, 500, {
+            error: "wc-fetcher unavailable",
+            detail: err instanceof Error ? err.message : String(err),
+            groups: [],
+        }));
+        return true;
+    }
+    if (url.pathname === "/wc/schedule") {
+        fetchMatchSchedule()
+            .then((matches) => {
+            const since = Number(url.searchParams.get("since") ?? 0);
+            const until = Number(url.searchParams.get("until") ?? Date.now() + 365 * 86_400_000);
+            const filtered = matches.filter((m) => m.kickoffMs >= since && m.kickoffMs <= until);
+            json(res, 200, { matches: filtered });
+        })
+            .catch((err) => json(res, 500, {
+            error: "wc-fetcher unavailable",
+            detail: err instanceof Error ? err.message : String(err),
+            matches: [],
+        }));
+        return true;
+    }
+    if (url.pathname === "/wc/upcoming") {
+        const window = Number(url.searchParams.get("windowMs") ?? 24 * 60 * 60 * 1000);
+        json(res, 200, { upcoming: upcomingWcMarkets(Number.isFinite(window) ? window : 86_400_000) });
         return true;
     }
     return false;

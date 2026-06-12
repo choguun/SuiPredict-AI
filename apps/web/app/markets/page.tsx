@@ -6,6 +6,17 @@ import { ProbabilityBar } from "@/components/ProbabilityBar";
 
 export const dynamic = "force-dynamic";
 
+const CATEGORIES = [
+  { value: "", label: "All" },
+  { value: "worldcup", label: "⚽ World Cup" },
+  { value: "crypto", label: "Crypto" },
+  { value: "ai", label: "AI" },
+  { value: "sports", label: "Sports" },
+  { value: "defi", label: "DeFi" },
+  { value: "politics", label: "Politics" },
+  { value: "other", label: "Other" },
+];
+
 function formatDate(ms: number) {
   return new Date(ms).toLocaleDateString(undefined, {
     month: "short",
@@ -28,7 +39,13 @@ function probabilityFromBook(
   return p;
 }
 
-export default async function MarketsPage() {
+export default async function MarketsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ category?: string }>;
+}) {
+  const sp = await searchParams;
+  const categoryFilter = sp?.category ?? "";
   // R46 audit fix: don't silently swallow `listMarkets()`
   // failures. The previous `.catch(() => [])` collapsed
   // every error (RPC outage, SDK build mismatch, network
@@ -47,13 +64,21 @@ export default async function MarketsPage() {
   } catch (err) {
     marketsError = err instanceof Error ? err.message : String(err);
   }
-  const active = markets.filter((m) => m.status === "active").length;
-  const resolved = markets.filter((m) => m.status === "resolved").length;
+  // Apply the category filter client-side (the list is small, the
+  // server already returned everything). The worldcup category is
+  // case-insensitive so a link from `/worldcup` with a bare
+  // `?category=worldcup` matches the SQLite row.
+  const visible =
+    categoryFilter === ""
+      ? markets
+      : markets.filter((m) => m.category.toLowerCase() === categoryFilter);
+  const active = visible.filter((m) => m.status === "active").length;
+  const resolved = visible.filter((m) => m.status === "resolved").length;
 
   // Fetch each active market's order book in parallel. Active markets
   // without a book yet (still bootstrapping) fall back to the 0.5
   // neutral midpoint. Resolved markets don't need a book.
-  const activeIds = markets.filter((m) => m.status === "active").map((m) => m.id);
+  const activeIds = visible.filter((m) => m.status === "active").map((m) => m.id);
   const bookResults = await Promise.allSettled(
     activeIds.map((id) => getMarketOrderBook(id)),
   );
@@ -99,6 +124,25 @@ export default async function MarketsPage() {
         </div>
       </div>
 
+      <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0 sm:flex-wrap sm:gap-2">
+        {CATEGORIES.map((c) => {
+          const isActive = c.value === categoryFilter;
+          return (
+            <Link
+              key={c.value || "all"}
+              href={c.value ? `/markets?category=${encodeURIComponent(c.value)}` : "/markets"}
+              className={`shrink-0 rounded-full px-4 py-2 text-xs font-bold transition ${
+                isActive
+                  ? "bg-emerald-500 text-emerald-950"
+                  : "border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"
+              }`}
+            >
+              {c.label}
+            </Link>
+          );
+        })}
+      </div>
+
       <div className="grid gap-3">
         {marketsError && (
           <div
@@ -113,13 +157,19 @@ export default async function MarketsPage() {
             </p>
           </div>
         )}
-        {markets.length === 0 && !marketsError && (
+        {visible.length === 0 && !marketsError && (
           <EmptyState
-            title="No Markets Available"
-            description="Start the agents service to seed demo markets or connect to the live network."
+            title={categoryFilter === "worldcup" ? "No World Cup markets yet" : "No Markets Available"}
+            description={
+              categoryFilter === "worldcup"
+                ? "The World Cup creator agent seeds markets 7 days before kickoff. The first batch lands on June 4, 2026 (one week before Matchday 1)."
+                : "Start the agents service to seed demo markets or connect to the live network."
+            }
+            actionLabel={categoryFilter === "worldcup" ? "See all markets" : undefined}
+            href={categoryFilter === "worldcup" ? "/markets" : undefined}
           />
         )}
-        {markets.map((m) => {
+        {visible.map((m) => {
           const prob = m.status === "active"
             ? probabilityFromBook(bookByMarket.get(m.id))
             : 0.5;

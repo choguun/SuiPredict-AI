@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ClaimPrizeButton } from "@/components/ClaimPrizeButton";
+import { useFriends } from "@/lib/friends";
 
 interface WeeklyRow {
   user: string;
@@ -81,7 +83,21 @@ export function LeaderboardTable({
       ? error.message
       : "Fetch failed"
     : initialError;
-  const rows = data?.rows ?? [];
+  // Friends-only filter: when the user has friends, show only
+  // rows whose user is in the friends list. (Toggling resets the
+  // refetch interval timer but the data itself is shared — no
+  // extra network round-trip.)
+  const { friends } = useFriends();
+  const [friendsOnly, setFriendsOnly] = useState(false);
+  useEffect(() => {
+    // If the user just unfollowed their last friend, drop back
+    // to the global view automatically.
+    if (friendsOnly && friends.length === 0) setFriendsOnly(false);
+  }, [friendsOnly, friends.length]);
+  const baseRows = data?.rows ?? [];
+  const rows = friendsOnly
+    ? baseRows.filter((r) => friends.includes(r.user))
+    : baseRows;
   const weekIndex = data?.week_index ?? 0;
 
   return (
@@ -92,7 +108,20 @@ export function LeaderboardTable({
             ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}`
             : "Loading…"}
         </span>
-        {isFetching && <span className="animate-pulse text-cyan-400">Refreshing…</span>}
+        <div className="flex items-center gap-3">
+          {friends.length > 0 && (
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={friendsOnly}
+                onChange={(e) => setFriendsOnly(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-white/20 bg-black/40"
+              />
+              <span className="text-zinc-300">Friends only</span>
+            </label>
+          )}
+          {isFetching && <span className="animate-pulse text-cyan-400">Refreshing…</span>}
+        </div>
       </div>
 
       {fetchError && (
@@ -104,7 +133,9 @@ export function LeaderboardTable({
       )}
       {rows.length === 0 ? (
         <p className="text-sm text-zinc-500">
-          No archived scores yet. The leaderboard rolls up every Monday 00:05 UTC.
+          {friendsOnly
+            ? "None of your friends are on this week's leaderboard yet."
+            : "No archived scores yet. The leaderboard rolls up every Monday 00:05 UTC."}
         </p>
       ) : (
         <div className="overflow-x-auto">
