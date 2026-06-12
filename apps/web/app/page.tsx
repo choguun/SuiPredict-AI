@@ -52,6 +52,12 @@ export default async function HomePage() {
   ]);
 
   const active = markets.filter((m) => m.status === "active").length;
+  // Show how many of those are World Cup markets so the
+  // home page surfaces the flagship vertical. The agents
+  // service always tags WC markets with category="worldcup".
+  const activeWc = markets.filter(
+    (m) => m.status === "active" && m.category === "worldcup",
+  ).length;
 
   // Featured markets: live order book for the top 4. A fetch failure
   // leaves the book undefined and we fall back to 0.5 in the render.
@@ -142,7 +148,14 @@ export default async function HomePage() {
             </svg>
           </div>
           <p className="text-sm font-medium text-zinc-500">Active Markets</p>
-          <p className="mt-1 text-3xl font-bold text-white">{active}</p>
+          <p className="mt-1 text-3xl font-bold text-white">
+            {active}
+            {activeWc > 0 && (
+              <span className="ml-2 text-base font-medium text-emerald-400">
+                ({activeWc} ⚽)
+              </span>
+            )}
+          </p>
         </div>
 
         <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-6 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.1)]">

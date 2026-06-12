@@ -78,6 +78,10 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   LeaderboardWorker: "Weekly rollup of daily scores to weekly archive",
   PrizeAdmin: "Funds the weekly prize pool and signs claim payloads",
   PrizeDistributor: "Auto-claims top-10 prizes for the prior week",
+  ParlayWorker: "Builds multi-leg parlays within the agent-policy budget",
+  WorldCupCreator: "Scrapes Wikipedia → drops YES/NO markets for upcoming WC fixtures",
+  WorldCupResolver: "Scrapes per-group Wikipedia pages → resolves expired WC markets",
+  WorldCupMaker: "Elo-based mid-price + time-decay spread on upcoming matches",
   // R39 audit fix: the MarketStrategist/PLPManager/RedeemKeeper
   // entries were dead — the agents service's /agents/manifest
   // only registers primary agents, so the `kind: "legacy"`

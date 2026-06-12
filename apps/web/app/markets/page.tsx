@@ -6,14 +6,18 @@ import { ProbabilityBar } from "@/components/ProbabilityBar";
 
 export const dynamic = "force-dynamic";
 
+// R57 audit fix: only show filter pills for categories that
+// the market creator actually emits. The previous list
+// included "Sports" and "Politics" which the
+// market-creator.ts FALLBACK_MARKETS table doesn't use, so
+// clicking them showed a permanently empty list and a
+// confusing "No Markets Available" hint.
 const CATEGORIES = [
   { value: "", label: "All" },
   { value: "worldcup", label: "⚽ World Cup" },
   { value: "crypto", label: "Crypto" },
   { value: "ai", label: "AI" },
-  { value: "sports", label: "Sports" },
   { value: "defi", label: "DeFi" },
-  { value: "politics", label: "Politics" },
   { value: "other", label: "Other" },
 ];
 

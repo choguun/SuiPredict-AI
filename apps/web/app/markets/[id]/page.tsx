@@ -1343,8 +1343,19 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                 href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(
                   `I'm trading on "${market.title}" — beat me:`,
                 )}&url=${encodeURIComponent(
-                  typeof window !== "undefined" ? window.location.href : "",
-                )}`}
+                  // R57 audit fix: strip query params + hash from
+                  // the shared URL. A wallet that opens a
+                  // Sui-specific deep link (e.g.
+                  // `?recipient=0x…&amount=…`) could otherwise
+                  // leak the user's session into the X.com
+                  // post. The market path is the only thing we
+                  // need to share; the recipient is implied by
+                  // the recipient's wallet when they open the
+                  // link.
+                  typeof window !== "undefined"
+                    ? `${window.location.origin}${window.location.pathname}`
+                    : "",
+                )}&via=SuiPredict`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ml-auto inline-flex items-center gap-1 rounded-full bg-sky-500/20 px-3 py-1 text-xs font-semibold text-sky-300 border border-sky-500/30 hover:bg-sky-500/30"

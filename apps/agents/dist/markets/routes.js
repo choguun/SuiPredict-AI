@@ -78,7 +78,7 @@ export function handleMarketsRoute(req, res, url) {
         json(res, 200, market);
         return true;
     }
-    const portfolioMatch = url.pathname.match(/^\/portfolio\/(0x[a-fA-F0-9]+)$/);
+    const portfolioMatch = url.pathname.match(/^\/portfolio\/(0x[a-fA-F0-9]{64})$/);
     if (portfolioMatch) {
         json(res, 200, getPortfolio(portfolioMatch[1]));
         return true;
@@ -97,8 +97,20 @@ export function handleMarketsRoute(req, res, url) {
     if (url.pathname === "/wc/schedule") {
         fetchMatchSchedule()
             .then((matches) => {
-            const since = Number(url.searchParams.get("since") ?? 0);
-            const until = Number(url.searchParams.get("until") ?? Date.now() + 365 * 86_400_000);
+            // R57 audit fix: validate the `since` / `until` query
+            // params. `Number("abc")` returns NaN and the filter
+            // comparison `m.kickoffMs >= NaN` is always false,
+            // silently producing an empty list. A missing
+            // param or a negative number should fall back to the
+            // default. Bound `until` to a sane horizon (10y) so
+            // a typo'd `until=99999999999999` doesn't scan a
+            // quadratic range on the agent.
+            const rawSince = Number(url.searchParams.get("since") ?? 0);
+            const rawUntil = Number(url.searchParams.get("until") ?? Date.now() + 365 * 86_400_000);
+            const since = Number.isFinite(rawSince) && rawSince >= 0 ? rawSince : 0;
+            const until = Number.isFinite(rawUntil) && rawUntil > since
+                ? Math.min(rawUntil, Date.now() + 10 * 365 * 86_400_000)
+                : Date.now() + 365 * 86_400_000;
             const filtered = matches.filter((m) => m.kickoffMs >= since && m.kickoffMs <= until);
             json(res, 200, { matches: filtered });
         })
@@ -110,8 +122,14 @@ export function handleMarketsRoute(req, res, url) {
         return true;
     }
     if (url.pathname === "/wc/upcoming") {
-        const window = Number(url.searchParams.get("windowMs") ?? 24 * 60 * 60 * 1000);
-        json(res, 200, { upcoming: upcomingWcMarkets(Number.isFinite(window) ? window : 86_400_000) });
+        // R57 audit fix: same NaN guard as `/wc/schedule`. Clamp
+        // the window to [1min, 30d] so a typo'd
+        // `windowMs=999999999` doesn't crash the indexer.
+        const rawWindow = Number(url.searchParams.get("windowMs") ?? 24 * 60 * 60 * 1000);
+        const window = Number.isFinite(rawWindow) && rawWindow > 0
+            ? Math.min(Math.max(rawWindow, 60_000), 30 * 86_400_000)
+            : 24 * 60 * 60 * 1000;
+        json(res, 200, { upcoming: upcomingWcMarkets(window) });
         return true;
     }
     return false;

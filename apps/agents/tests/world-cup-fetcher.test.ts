@@ -24,6 +24,7 @@ import {
   buildGroupMatches,
   loadWorldCupConfig,
   fetchMatchSchedule,
+  matchdayFor,
   TEAM_NAMES,
   type WcMatch,
 } from "../src/agents/world-cup-fetcher.js";
@@ -172,6 +173,61 @@ test("fetchMatchSchedule caches and returns 72 matches", async () => {
   // Second call should hit the in-memory cache (still 72).
   const matches2 = await fetchMatchSchedule();
   assert.equal(matches2.length, 72);
+});
+
+test("every WcMatch has a valid explicit matchday (R57 audit)", async () => {
+  // R57 audit fix: the previous `matchdayFor` heuristic
+  // looked at the match id suffix but A3v2 / A4v2 and A1v4 /
+  // A3v4 collided. We now store matchday explicitly. This
+  // test pins the schedule's matchday distribution so a
+  // future refactor that drops the field will be caught.
+  const matches = await fetchMatchSchedule();
+  for (const m of matches) {
+    assert.ok(
+      m.matchday === 1 || m.matchday === 2 || m.matchday === 3,
+      `${m.id} has invalid matchday ${m.matchday}`,
+    );
+  }
+  // A4v2 should be MD1 (the canonical R1 fixture), A3v2
+  // should be MD2. The pre-R57 code would bucket both as
+  // MD1 because both end in "v2".
+  const a4v2 = matches.find((m) => m.id === "A4v2");
+  const a3v2 = matches.find((m) => m.id === "A3v2");
+  assert.ok(a4v2 && a3v2, "expected fixtures exist");
+  assert.equal(a4v2.matchday, 1, "A4v2 must be MD1");
+  assert.equal(a3v2.matchday, 2, "A3v2 must be MD2 (not MD1!)");
+});
+
+test("matchdayFor agrees with the explicit matchday field", () => {
+  // The fallback id-suffix branches in matchdayFor exist
+  // for tests that hand-construct WcMatch objects. This
+  // test pins the fallback behavior so a future refactor
+  // doesn't silently break. (The heuristic itself is
+  // imperfect — it buckets both A4v2 and A3v2 as MD1 — but
+  // production always goes through the explicit `matchday`
+  // field, so the heuristic is only here for backwards
+  // compat with old tests.)
+  assert.equal(matchdayFor({ id: "A1v3" } as WcMatch), 1);
+  assert.equal(matchdayFor({ id: "A4v2" } as WcMatch), 1);
+  assert.equal(matchdayFor({ id: "A1v4" } as WcMatch), 2);
+  // A3v2 ends in "v2" so the heuristic (incorrectly) puts
+  // it in MD1. The schedule builder stores matchday=2
+  // explicitly, so production always sees 2.
+  assert.equal(matchdayFor({ id: "A3v2" } as WcMatch), 1);
+  assert.equal(matchdayFor({ id: "A1v2" } as WcMatch), 1);
+  assert.equal(matchdayFor({ id: "A3v4" } as WcMatch), 2);
+  // Explicit field wins over the heuristic. This is the
+  // only path production uses.
+  assert.equal(
+    matchdayFor({ id: "A1v3", matchday: 2 } as WcMatch),
+    2,
+    "explicit matchday field must override the id-suffix fallback",
+  );
+  assert.equal(
+    matchdayFor({ id: "A3v2", matchday: 2 } as WcMatch),
+    2,
+    "explicit matchday field must override the id-suffix fallback",
+  );
 });
 
 // Silent `void` references so unused-import warnings don't fail

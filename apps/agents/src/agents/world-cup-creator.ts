@@ -96,14 +96,22 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       .filter((m) => m.id.startsWith("wc26-") && m.status === "active")
       .map((m) => m.id),
   );
+  // R57 audit fix: cap the create list with Math.max(0, …).
+  // The previous `slice(0, maxActive - existing.size)` would
+  // return the *last* elements of the array when
+  // `existing.size > maxActive` (Array.prototype.slice with a
+  // negative end picks from the tail), which would let the
+  // creator create MORE markets than the cap, not fewer. The
+  // cap is the safety budget; we should never exceed it.
+  const headroom = Math.max(0, maxActive - existing.size);
   const todo: WcMatch[] = upcoming
     .filter((m) => !existing.has(dedupeKey(m.id)))
-    .slice(0, maxActive - existing.size);
+    .slice(0, headroom);
 
   if (todo.length === 0) {
     return recordResult("WorldCupCreator", {
       action: "noop",
-      reasoning: `${upcoming.length} upcoming WC matches in 7d window; ${existing.size} already listed.`,
+      reasoning: `${upcoming.length} upcoming WC matches in 7d window; ${existing.size} already listed (cap ${maxActive}).`,
       confidence: 95,
     });
   }
