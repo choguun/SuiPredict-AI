@@ -16,11 +16,18 @@ export async function seedWcDemoMarkets() {
     const matches = await fetchMatchSchedule();
     const now = Date.now();
     const oneWeekAhead = now + 7 * 24 * 60 * 60 * 1000;
-    // Demo seed surfaces only matches within the next 7 days so the
-    // home page is fresh. The full 72-match schedule is exposed via
+    // Demo seed surfaces matches that are in-play (kicked off
+    // within the last 24h) OR upcoming (within the next 7d).
+    // The previous `kickoffMs > now` filter excluded in-play
+    // matches, which meant a user looking at the home page at
+    // 16:00 UTC on Matchday 1 would see no markets for the
+    // matches that had already kicked off (e.g. A1v3
+    // Mexico vs South Korea at 17:00 UTC the day before).
+    // The full 72-match schedule is always exposed via
     // `/wc/schedule` for the dedicated dashboard.
-    const upcoming = matches
-        .filter((m) => m.kickoffMs > now && m.kickoffMs <= oneWeekAhead)
+    const matchesToShow = matches
+        .filter((m) => (m.kickoffMs > now - 24 * 60 * 60 * 1000 && m.kickoffMs < now) ||
+        (m.kickoffMs >= now && m.kickoffMs <= oneWeekAhead))
         .sort((a, b) => a.kickoffMs - b.kickoffMs)
         .slice(0, 8);
     const existing = new Set(listMarkets()
@@ -28,12 +35,18 @@ export async function seedWcDemoMarkets() {
         .map((m) => m.id));
     let seeded = 0;
     let skipped = 0;
-    for (const m of upcoming) {
+    for (const m of matchesToShow) {
         const id = `wc26-${m.id}`;
         if (existing.has(id)) {
             skipped++;
             continue;
         }
+        // For in-play matches (kickoffMs < now), the expiry is
+        // already past by definition. Mark them as "resolved"
+        // with a placeholder outcome so the user can see the
+        // historical result. For upcoming matches, leave the
+        // expiry at kickoff + 2h (regulation + extra time).
+        const isInPlay = m.kickoffMs < now;
         upsertMarket({
             id,
             title: matchWinnerTitle(m),
@@ -41,11 +54,12 @@ export async function seedWcDemoMarkets() {
             category: "worldcup",
             expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
             resolution_source: matchWinnerResolutionSource(m),
-            status: "active",
+            status: isInPlay ? "resolved" : "active",
+            outcome: isInPlay ? "yes" : null, // placeholder; the WC resolver will overwrite
             created_at_ms: Date.now(),
         });
         seeded++;
     }
-    return { seeded, skipped };
+    return { seeded, skipped, totalCandidates: matchesToShow.length };
 }
 //# sourceMappingURL=wc-demo-seed.js.map

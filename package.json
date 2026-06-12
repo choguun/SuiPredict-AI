@@ -12,7 +12,7 @@
     "contracts:test": "pnpm --filter @suipredict/contracts test",
     "test:sdk": "cd apps/agents && ./node_modules/.bin/tsx --test ../../packages/sdk/tests/*.test.ts",
     "test:agents": "cd apps/agents && ./node_modules/.bin/tsx --test tests/*.test.ts",
-    "test:all": "pnpm test:wc && pnpm test:llm && pnpm test:sdk && pnpm contracts:test"
+    "test:all": "pnpm test:wc && pnpm test:llm && pnpm test:seed && pnpm test:sdk && pnpm contracts:test"
   },
   "devDependencies": {
     "turbo": "^2.5.4",
