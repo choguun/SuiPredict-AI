@@ -499,6 +499,25 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         reasoning: `Pool already exists for YES/DUSDC. Created demo market instead: ${spec.title}.`,
       });
     }
+    // R58.H15 audit fix: also fall back to a demo
+    // market when the wallet is underfunded for gas.
+    // The pre-fix code reported the error as
+    // 'create_failed' but a fresh deploy with an
+    // empty wallet would flood the decisions log
+    // (one failure per spec per day). The wc-creator
+    // already has this fallback (R58.H12); the
+    // parent market-creator is one cron tick per
+    // day so the log noise is much smaller, but
+    // matching the fallback keeps the surface
+    // consistent and surfaces a single hint to the
+    // operator.
+    if (msg.includes("insufficient SUI balance") || msg.includes("gas selection")) {
+      return recordResult("MarketCreator", {
+        action: "demo_market",
+        reasoning: `Wallet underfunded for gas; created demo market instead: ${spec.title}. Fund the agent wallet and restart for on-chain creation.`,
+        confidence: 60,
+      });
+    }
     return recordResult("MarketCreator", {
       action: "create_failed",
       reasoning: `Market creation failed: ${msg}`,
