@@ -16,7 +16,7 @@
 //   4. espn.com / bbc.com / theathletic.com schedules
 //      (best-effort; user-configurable list)
 //
-// When `OPENAI_API_KEY` is unset the agent is a no-op
+// When `MINIMAX_API_KEY` is unset the agent is a no-op
 // (returns 'noop' after a single decision log line) and
 // the existing Wikipedia-only resolver/creator path stays
 // in charge. When the key is set, the agent fires the LLM
@@ -139,12 +139,12 @@ export async function runWebExtractor(ctx) {
     // R58 audit fix: respect an env-driven cap on the number
     // of sources per tick so a fresh deploy with
     // `WC_EXTRA_SOURCES=https://...` (potentially hundreds of
-    // URLs) doesn't burn through the OpenAI rate limit.
+    // URLs) doesn't burn through the MiniMax rate limit.
     const maxPerTick = safeInt(process.env.WC_EXTRACTOR_MAX_PER_TICK ?? "", 6, 1, 20);
-    if (!process.env.OPENAI_API_KEY) {
+    if (!process.env.MINIMAX_API_KEY) {
         return recordResult("WebExtractor", {
             action: "noop",
-            reasoning: "OPENAI_API_KEY not set; web-extractor is dormant. Set the key + AGENT_CRON_WC_EXTRACTOR to enable autonomous cross-source verification.",
+            reasoning: "MINIMAX_API_KEY not set; web-extractor is dormant. Set the key + AGENT_CRON_WC_EXTRACTOR to enable autonomous cross-source verification.",
             confidence: 95,
         });
     }

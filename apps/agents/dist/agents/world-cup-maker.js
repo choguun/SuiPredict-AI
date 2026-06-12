@@ -18,7 +18,7 @@
 // the move-side and on-chain mechanics are identical to the parent
 // `market-maker.ts`. The only difference is the *quoting model*.
 //
-// When `OPENAI_API_KEY` is unset we fall back to a pure Elo
+// When `MINIMAX_API_KEY` is unset we fall back to a pure Elo
 // function. Elo is calibrated from the November 2025 FIFA ranking
 // (the basis for the December 2025 draw seedings). Conversion
 // Elo -> win probability uses the standard logistic

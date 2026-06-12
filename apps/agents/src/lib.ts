@@ -150,35 +150,44 @@ export interface AgentResult {
 }
 
 export async function callLlm(prompt: string): Promise<string | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) return null;
+
+  const baseUrl =
+    process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io/anthropic";
+  const model = process.env.MINIMAX_MODEL ?? "MiniMax-M3";
 
   try {
     // R58.H1 audit fix: bound the fetch with a
     // 30s timeout. The previous `await fetch(...)` had
-    // no `signal`; a hung OpenAI connection (TLS
+    // no `signal`; a hung LLM connection (TLS
     // handshake stalls, dead proxy) would hang the
     // worker tick indefinitely, blocking the next
     // `await callLlm(prompt)` call on the same event
     // loop and silently backing up the cron. 30s is
-    // above p99 for gpt-4o-mini (typically < 8s) but
+    // above p99 for MiniMax-M3 (typically < 8s) but
     // well below the cron loop period (~60s).
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    //
+    // MiniMax M3 is Anthropic-compatible: it uses the
+    // Messages API shape (`/v1/messages`, `system` as a
+    // separate field, `content` as a list of typed
+    // blocks). The auth header is `x-api-key`, not
+    // `Authorization: Bearer`. See the reference
+    // `llm-provider-minimax.ts` for the upstream
+    // helper.
+    const res = await fetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        "x-api-key": apiKey,
         "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an autonomous trading agent on DeepBook Predict. Respond ONLY with valid JSON.",
-          },
-          { role: "user", content: prompt },
-        ],
+        model,
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+        system:
+          "You are an autonomous trading agent on DeepBook Predict. Respond ONLY with valid JSON. No prose, no markdown fences.",
         temperature: 0.2,
       }),
       signal: AbortSignal.timeout(30_000),
@@ -187,23 +196,28 @@ export async function callLlm(prompt: string): Promise<string | null> {
       // R56 audit fix: log the HTTP status (without the key, body,
       // or URL) so the operator can distinguish a 401 (revoked
       // key — one-time fix) from a 429 (rate limit — wait for
-      // cooldown) from a 5xx (OpenAI outage — no action). The
-      // previous bare `return null` hid every failure mode behind
-      // the same decision-log reason (`LLM call returned null`).
+      // cooldown) from a 5xx (MiniMax outage — no action).
       console.warn(
-        `[lib.callLlm] OpenAI returned HTTP ${res.status} ${res.statusText}`,
+        `[lib.callLlm] MiniMax returned HTTP ${res.status} ${res.statusText}`,
       );
       return null;
     }
     const data = (await res.json()) as {
-      choices: { message: { content: string } }[];
+      content?: Array<{ type: string; text?: string }>;
     };
-    return data.choices[0]?.message.content ?? null;
+    // MiniMax M3 returns Anthropic Messages shape:
+    //   { content: [{ type: "text", text: "..." }, { type: "thinking", ... }] }
+    // Concatenate all text blocks (skipping thinking).
+    const text = (data.content ?? [])
+      .filter((c) => c.type === "text" && typeof c.text === "string")
+      .map((c) => c.text!)
+      .join("");
+    return text || null;
   } catch (err) {
     // R56 audit fix: log the underlying error class (TypeError
     // from `fetch` failing on a DNS/network error, SyntaxError
     // from malformed JSON, etc.) so the operator can tell
-    // "OPENAI is down" from "the model returned garbage" from
+    // "MiniMax is down" from "the model returned garbage" from
     // "the network is partitioned". The key is never included
     // in the log (the catch only sees the throw, which doesn't
     // include the request body).

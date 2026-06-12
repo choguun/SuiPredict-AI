@@ -58,8 +58,8 @@ const FALLBACK_MARKETS = [
 ];
 
 // R56 audit fix: process-lifetime guard for the
-// "OPENAI_API_KEY missing" warning. The decision log
-// surfaces `[FALLBACK: OPENAI_API_KEY not set]` on every
+// "MINIMAX_API_KEY missing" warning. The decision log
+// surfaces `[FALLBACK: MINIMAX_API_KEY not set]` on every
 // tick, which the operator can read, but there's no
 // single boot-time "this is missing" line. Warn once at
 // the first detection, then stay quiet for the
@@ -89,20 +89,20 @@ Respond ONLY with JSON: {"title":"...","description":"...","category":"crypto|po
   //
   // R56 audit fix: warn once at process startup rather than
   // silently using FALLBACK_MARKETS on every tick. The
-  // decision log already shows `[FALLBACK: OPENAI_API_KEY
+  // decision log already shows `[FALLBACK: MINIMAX_API_KEY
   // not set]` for every cron cycle, but the operator has
   // no way to grep a one-line "the API key is missing, will
   // use FALLBACK_MARKETS until you set it" message at boot.
   // The `let warned = false` guard prevents log spam.
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.MINIMAX_API_KEY) {
     if (!missingKeyWarned) {
       console.warn(
-        "[market-creator] OPENAI_API_KEY is not set; proposeMarket " +
+        "[market-creator] MINIMAX_API_KEY is not set; proposeMarket " +
           "will use FALLBACK_MARKETS every tick until it is configured.",
       );
       missingKeyWarned = true;
     }
-    return pickFallback("OPENAI_API_KEY not set");
+    return pickFallback("MINIMAX_API_KEY not set");
   }
   const raw = await callLlm(prompt);
   if (!raw) {

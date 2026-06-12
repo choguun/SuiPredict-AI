@@ -1,18 +1,18 @@
 // LLM-powered web extractor.
 //
 // Fetches any URL, truncates the HTML to a token-budget-safe
-// slice, then asks OpenAI's gpt-4o-mini to extract structured
+// slice, then asks MiniMax's MiniMax-M3 to extract structured
 // JSON that matches a caller-supplied schema. Used as the
 // "smart" fallback when the regex-based world-cup-fetcher
 // can't parse a page (Wikipedia template changes, alternate
 // sources, etc.).
 //
-// Cost: gpt-4o-mini is $0.15/1M input tokens. A typical
+// Cost: MiniMax-M3 is $0.15/1M input tokens. A typical
 // extraction (10k HTML chars + 500-token prompt) costs
 // ~$0.002. The extractor is intentionally cheap; use
 // sparingly in cron paths.
 //
-// Fallback: when OPENAI_API_KEY is unset or the call fails,
+// Fallback: when MINIMAX_API_KEY is unset or the call fails,
 // every public function in this module returns null and the
 // caller is expected to fall back to its existing regex or
 // data-source-of-truth path. The WC fetcher's hardcoded
@@ -26,12 +26,12 @@
 //   if (result) { ... use result.data ... }
 //
 // All public functions are pure and side-effect free except
-// for the cached HTML read (in-memory) and the OpenAI call.
+// for the cached HTML read (in-memory) and the MiniMax call.
 import { callLlm } from "../lib.js";
 // 12k chars is ~3k tokens. Enough for a WC group page or
 // match report, cheap enough that even a busy cron can
 // fire 100+ extractions per hour without breaking the
-// OpenAI rate limit.
+// MiniMax rate limit.
 const MAX_HTML_CHARS = 12_000;
 // 5s fetch timeout. Wikipedia + ESPN + BBC all serve
 // sub-second; the timeout is a network safety net.
@@ -147,7 +147,7 @@ const SYSTEM_PROMPT = `You are an autonomous data extraction agent. You read raw
  * response. Returns null if anything fails.
  */
 export async function extractFromUrl(url, schema, opts = {}) {
-    if (!process.env.OPENAI_API_KEY) {
+    if (!process.env.MINIMAX_API_KEY) {
         return null;
     }
     if (!opts.bypassCache) {
