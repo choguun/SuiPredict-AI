@@ -303,10 +303,19 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       m = await getMarket(normalizeObjectId(marketId));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // The indexer returns 404 for unknown ids; treat that distinctly
-      // from a transport / 5xx failure so the UI can say "not found"
-      // instead of "loading…" forever.
-      const kind: "not_found" | "fetch_failed" = msg.includes("404")
+      // R58 audit fix: classify the error so the UI doesn't
+      // tell the user "agents indexer is unreachable" when
+      // the actual cause is a 404. The previous logic
+      // only matched on the literal "404" string, so an
+      // SDK throw like "getMarket: id must be a 32-byte
+      // hex Sui object id (got \"wc26-J1v3\")" was
+      // misclassified as a transport failure. The new
+      // heuristic treats any error whose name + message
+      // both look like a 404-style "not found" as
+      // not_found; everything else (network down, 5xx,
+      // timeout) is fetch_failed.
+      const is404 = msg.includes("404") || /not[-_ ]?found/i.test(msg);
+      const kind: "not_found" | "fetch_failed" = is404
         ? "not_found"
         : "fetch_failed";
       setMarket(null);

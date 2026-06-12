@@ -9,7 +9,10 @@
     "lint": "turbo lint",
     "smoke-test": "pnpm --filter @suipredict/agents smoke-test",
     "contracts:build": "pnpm --filter @suipredict/contracts build",
-    "contracts:test": "pnpm --filter @suipredict/contracts test"
+    "contracts:test": "pnpm --filter @suipredict/contracts test",
+    "test:sdk": "cd apps/agents && ./node_modules/.bin/tsx --test ../../packages/sdk/tests/*.test.ts",
+    "test:agents": "cd apps/agents && ./node_modules/.bin/tsx --test tests/*.test.ts",
+    "test:all": "pnpm test:wc && pnpm test:llm && pnpm test:sdk && pnpm contracts:test"
   },
   "devDependencies": {
     "turbo": "^2.5.4",

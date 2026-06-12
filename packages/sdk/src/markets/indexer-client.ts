@@ -101,6 +101,45 @@ export async function listMarkets(): Promise<MarketInfo[]> {
   return all;
 }
 
+/**
+ * Validate a market id is safe to interpolate into a URL path.
+ *
+ * Accepts:
+ *   - Sui object ids:  0x<64 hex> (upper or lower case)
+ *   - Demo seed ids:   wc26-<match-id>  (e.g. "wc26-A1v3")
+ *   - Legacy ids:      demo-<...>      (e.g. "demo-1234")
+ *
+ * Rejects:
+ *   - Empty / non-string
+ *   - Path-traversal characters: `/`, `\`, `..`, `?`, `#`
+ *   - Leading/trailing whitespace
+ *   - Length > 128 chars (defense against absurd inputs)
+ *
+ * R58 audit fix: the previous check `/^0x[0-9a-fA-F]{64}$/`
+ * was a strict Sui object id check. That broke the demo seed
+ * path (a real production user navigates to
+ * /markets/wc26-J1v3 which is a non-on-chain demo row in
+ * the indexer). The new check is permissive on shape but
+ * strict on safety: no path-traversal characters allowed,
+ * because fetch + URL normalization in Node 20+ can
+ * collapse `..%2F` segments and re-target an arbitrary
+ * indexer path.
+ */
+function isValidMarketId(id: string): boolean {
+  if (!id || typeof id !== "string") return false;
+  if (id.length > 128) return false;
+  if (id !== id.trim()) return false;
+  // Reject anything that could escape the path segment.
+  // The list of dangerous chars is conservative on purpose:
+  // any URL-meaningful character (slash, dot-sequence,
+  // query, hash, percent, whitespace) is rejected.
+  if (/[\/\\\s?#%]/.test(id)) return false;
+  if (id.includes("..")) return false;
+  // A market id must be at least one printable non-empty
+  // character after the prefix checks.
+  return id.length > 0;
+}
+
 export async function getMarket(id: string): Promise<MarketInfo> {
   // R55 audit fix: validate `id` is a non-empty string before
   // building the path. The previous code silently hit
@@ -109,23 +148,18 @@ export async function getMarket(id: string): Promise<MarketInfo> {
   // would also concatenate as the string `"undefined"`. Throw
   // at the build boundary with a readable message.
   //
-  // R57.5 audit fix: also enforce the 32-byte hex Sui object id
-  // shape. A caller passing `id = "../../admin/secrets"` (a stale
-  // URL param or a fuzzer) interpolates into `/markets/…/…` and
-  // `fetch` follows the path-traversal after URL normalization.
-  // Mirror `normalizeObjectId`'s regex; the indexer handler
-  // accepts both upper and lower case.
-  if (!id || typeof id !== "string") {
+  // R57.5 audit fix: the previous `/^0x[0-9a-fA-F]{64}$/`
+  // check was too strict — it broke demo seed ids
+  // ("wc26-…") that the indexer correctly accepts. The new
+  // `isValidMarketId` check is permissive on shape but
+  // strict on safety (no path-traversal chars, no whitespace,
+  // no `..`). See its docstring for the full rationale.
+  if (!isValidMarketId(id)) {
     throw new Error(
-      `getMarket: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+      `getMarket: id must be a non-empty path-safe string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
     );
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
-    throw new Error(
-      `getMarket: id must be a 32-byte hex Sui object id (got ${JSON.stringify(id)})`,
-    );
-  }
-  return fetchJson(`/markets/${id}`);
+  return fetchJson(`/markets/${encodeURIComponent(id)}`);
 }
 
 export async function getMarketOrderBook(id: string): Promise<OrderBookSnapshot> {
@@ -134,18 +168,14 @@ export async function getMarketOrderBook(id: string): Promise<OrderBookSnapshot>
   // Next.js catch-all route that resolves to `undefined`
   // would silently 500 with a path like `/markets/undefined/book`.
   //
-  // R57.5 audit fix: 32-byte hex shape (see `getMarket`).
-  if (!id || typeof id !== "string") {
+  // R58 audit fix: relaxed the strict Sui id check; see
+  // `isValidMarketId` for the full rationale.
+  if (!isValidMarketId(id)) {
     throw new Error(
-      `getMarketOrderBook: id must be a non-empty string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+      `getMarketOrderBook: id must be a non-empty path-safe string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
     );
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
-    throw new Error(
-      `getMarketOrderBook: id must be a 32-byte hex Sui object id (got ${JSON.stringify(id)})`,
-    );
-  }
-  return fetchJson(`/markets/${id}/book`);
+  return fetchJson(`/markets/${encodeURIComponent(id)}/book`);
 }
 
 /**
