@@ -48,6 +48,7 @@ import { runMarketResolver } from "./agents/market-resolver.js";
 import { runWorldCupCreator } from "./agents/world-cup-creator.js";
 import { runWorldCupResolver } from "./agents/world-cup-resolver.js";
 import { runWorldCupMaker } from "./agents/world-cup-maker.js";
+import { runWebExtractor } from "./agents/web-extractor.js";
 import { runRiskMonitor } from "./agents/risk-monitor.js";
 import { runStreakSweeper } from "./agents/streak-sweeper.js";
 import { runLeaderboardWorker } from "./agents/leaderboard-worker.js";
@@ -379,6 +380,7 @@ function buildSchedule() {
         { name: "WorldCupCreator", cron: env("AGENT_CRON_WC_CREATOR", "*/15 * * * *"), fn: runWorldCupCreator },
         { name: "WorldCupResolver", cron: env("AGENT_CRON_WC_RESOLVER", "*/5 * * * *"), fn: runWorldCupResolver },
         { name: "WorldCupMaker", cron: env("AGENT_CRON_WC_MAKER", "*/2 * * * *"), fn: runWorldCupMaker },
+        { name: "WebExtractor", cron: env("AGENT_CRON_WC_EXTRACTOR", "*/30 * * * *"), fn: runWebExtractor },
         { name: "StreakSweeper", cron: env("AGENT_CRON_STREAK_SWEEPER", "2 0 * * *"), fn: runStreakSweeper },
         { name: "LeaderboardWorker", cron: env("AGENT_CRON_LEADERBOARD", "5 0 * * 1"), fn: runLeaderboardWorker },
         { name: "PrizeAdmin", cron: env("AGENT_CRON_PRIZE_ADMIN", "10 0 * * 1"), fn: runPrizeAdmin },

@@ -9,6 +9,8 @@
     "build": "tsc",
     "smoke-test": "tsx scripts/smoke-test.ts",
     "test:wc": "node --import tsx --test tests/world-cup-fetcher.test.ts",
+    "test:llm": "node --import tsx --test tests/llm-extractor.test.ts",
+    "test": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/llm-extractor.test.ts",
     "bootstrap": "tsx scripts/bootstrap-gamification.ts",
     "bootstrap-parlay": "tsx scripts/bootstrap-parlay.ts",
     "resume-bootstrap": "tsx scripts/resume-bootstrap.ts",

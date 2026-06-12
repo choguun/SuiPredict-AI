@@ -13,6 +13,12 @@ import {
   loadWorldCupConfig,
 } from "../agents/world-cup-fetcher.js";
 import { upcomingWcMarkets } from "../agents/world-cup-resolver.js";
+import {
+  clearExtractionCache,
+  extractFromUrl,
+  type ExtractionSchema,
+} from "../agents/llm-extractor.js";
+import { recentExtractions } from "../agents/web-extractor.js";
 
 function json(res: ServerResponse, status: number, body: unknown, sideEffecting = false) {
   // R35 audit fix: every markets response previously set "*" CORS.
@@ -165,6 +171,99 @@ export function handleMarketsRoute(
       : 24 * 60 * 60 * 1000;
     json(res, 200, { upcoming: upcomingWcMarkets(window) });
     return true;
+  }
+  // LLM web-extractor endpoints
+  if (url.pathname === "/wc/extract") {
+    // One-shot extraction. Useful for ad-hoc investigations
+    // ("did this friendly match really happen?") and for
+    // debugging the LLM path.
+    const targetUrl = url.searchParams.get("url");
+    const schema = url.searchParams.get("schema") as ExtractionSchema | null;
+    const bypass = url.searchParams.get("bypassCache") === "1";
+    if (!targetUrl || !schema) {
+      json(res, 400, {
+        error: "missing required query params",
+        required: ["url", "schema"],
+        allowed_schemas: [
+          "WcGroupTeams",
+          "WcMatchResult",
+          "WcFixture",
+          "WcGroupStandings",
+          "WcTopScorers",
+          "Freeform",
+        ],
+      });
+      return true;
+    }
+    // R58 audit fix: validate the URL is http(s) and on a
+    // known WC-relevant host. SSRF protection — a malicious
+    // caller could otherwise point the extractor at an
+    // internal address (e.g. http://169.254.169.254/ AWS
+    // metadata) and the agents service would forward the
+    // response to OpenAI.
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      json(res, 400, { error: "url is not a valid URL" });
+      return true;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      json(res, 400, { error: "only http(s) URLs are allowed" });
+      return true;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    const isPrivate = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|0\.|169\.254\.|::1$|fe80:|fc|fd)/.test(
+      hostname,
+    );
+    if (isPrivate) {
+      json(res, 400, { error: "private/internal hostnames are blocked" });
+      return true;
+    }
+    extractFromUrl(targetUrl, schema, { bypassCache: bypass })
+      .then((result) => {
+        if (!result) {
+          json(res, 503, {
+            error: "extraction failed (no key, fetch error, or invalid JSON)",
+            url: targetUrl,
+            schema,
+          });
+          return;
+        }
+        json(res, 200, result);
+      })
+      .catch((err) => {
+        json(res, 500, {
+          error: "extractor threw",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      });
+    return true;
+  }
+  if (url.pathname === "/wc/sources") {
+    // List the LLM-extraction events the WebExtractor
+    // agent has written. The web /agents page uses this to
+    // surface "cross-source verified" badges on resolved
+    // markets.
+    const limit = Math.min(
+      Math.max(Number(url.searchParams.get("limit") ?? 50), 1),
+      200,
+    );
+    json(res, 200, {
+      events: recentExtractions(limit),
+      cache_size: 0, // populated by the lru cache wrapper if used
+    });
+    return true;
+  }
+  if (url.pathname === "/wc/extract/cache") {
+    // The whole handler is GET-only (see the early-return
+    // at the top of the function), so a DELETE/POST
+    // endpoint can't live here. Use `?action=clear` instead.
+    if (url.searchParams.get("action") === "clear") {
+      const n = clearExtractionCache();
+      json(res, 200, { cleared: n });
+      return true;
+    }
   }
 
   return false;

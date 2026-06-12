@@ -82,6 +82,7 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   WorldCupCreator: "Scrapes Wikipedia → drops YES/NO markets for upcoming WC fixtures",
   WorldCupResolver: "Scrapes per-group Wikipedia pages → resolves expired WC markets",
   WorldCupMaker: "Elo-based mid-price + time-decay spread on upcoming matches",
+  WebExtractor: "LLM-powered web scraper → cross-source verification (Wikipedia, ESPN, BBC, …)",
   // R39 audit fix: the MarketStrategist/PLPManager/RedeemKeeper
   // entries were dead — the agents service's /agents/manifest
   // only registers primary agents, so the `kind: "legacy"`
