@@ -27,13 +27,37 @@ export function Celebration({
   streak: number;
 }) {
   const MILESTONES = [3, 7, 14, 30, 60, 100, 365];
-  const lastMilestoneRef = useRef<number>(0);
+  // R57 audit fix: track the highest *streak value* we've ever
+  // celebrated (not just the milestone index), so a refresh
+  // mid-session that lands the user at streak=7 (e.g. via a
+  // refetchInterval or a manual record_participation) still
+  // plays the animation. The previous code only watched the
+  // *next* milestone after the last one celebrated — once
+  // `lastMilestoneRef.current = 7` was set, a future `streak=7`
+  // re-fetch silently no-op'd because `find()` returned the
+  // same milestone. Track the actual streak value and only
+  // celebrate on a *strict* upward transition.
+  const lastSeenStreakRef = useRef<number>(0);
+  const lastCelebratedMilestoneRef = useRef<number>(0);
   const [active, setActive] = useState(false);
 
   useEffect(() => {
-    const next = MILESTONES.find((m) => m > lastMilestoneRef.current && m <= streak);
+    // Strictly upward — a refetch that returns the same streak
+    // value should not re-fire the animation.
+    if (streak <= lastSeenStreakRef.current) {
+      // Still update the ref so a future higher value triggers.
+      lastSeenStreakRef.current = Math.max(lastSeenStreakRef.current, streak);
+      return;
+    }
+    const next = MILESTONES.find(
+      (m) =>
+        m > lastCelebratedMilestoneRef.current && m <= streak,
+    );
+    lastSeenStreakRef.current = streak;
     if (next === undefined) return;
-    lastMilestoneRef.current = next;
+    lastCelebratedMilestoneRef.current = next;
+    if (next === undefined) return;
+    lastCelebratedMilestoneRef.current = next;
     setActive(true);
     // Best-effort haptic feedback. The API is undefined on
     // Safari iOS, so guard with optional chaining.

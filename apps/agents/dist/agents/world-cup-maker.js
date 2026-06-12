@@ -136,9 +136,34 @@ export async function runWorldCupMaker(ctx) {
         const yes = predictYesProbability(match);
         const spread = spreadBpsForKickoff(match.kickoffMs);
         const halfSpreadBps = spread / 2;
-        const bidBps = Math.round((yes - halfSpreadBps / 10_000) * 1_000_000);
-        const askBps = Math.round((yes + halfSpreadBps / 10_000) * 1_000_000);
-        // Demo path: just record the orders in SQLite, no on-chain tx.
+        // Defensive bounds: DeepBook enforces `price > 0` and
+        // `price < 1_000_000_000` (1.0 USDC) on the YES/USDC pool.
+        // A pathological Elo (or a future model update that pushes
+        // `yes` past 0.95) would otherwise produce a bid below
+        // 1_000 (= 0.001 USDC) that no DeepBook pool accepts, or
+        // an ask above 999_999_999 that overflows u64. Clamp to a
+        // tight 1¢–99¢ band so the worst-case quote is still a
+        // real market price, just a silly one.
+        const yesClamped = Math.min(0.99, Math.max(0.01, yes));
+        const TICK = 1_000_000; // 0.001 USDC — matches prediction_market tick_size
+        let bidBps = Math.max(TICK, // 0.001 USDC = 1 tick (DeepBook min price)
+        Math.round((yesClamped - halfSpreadBps / 10_000) * 1_000_000));
+        let askBps = Math.min(1_000_000_000 - TICK, // just under 1.0 USDC to avoid a u64 boundary
+        Math.round((yesClamped + halfSpreadBps / 10_000) * 1_000_000));
+        // Force a 1-tick minimum spread so both orders land on the
+        // book. (Without this, a tight Elo-derived spread < 0.001
+        // would collapse to a single price level.)
+        if (askBps - bidBps < TICK) {
+            const mid = Math.round((bidBps + askBps) / 2);
+            bidBps = Math.max(TICK, mid - TICK / 2);
+            askBps = Math.min(1_000_000_000 - TICK, mid + TICK / 2);
+            if (askBps - bidBps < TICK) {
+                // Last-resort: bid at TICK, ask at 2*TICK
+                bidBps = TICK;
+                askBps = 2 * TICK;
+            }
+        }
+        // Demo path: just record the orders in SQLite, no no-chain tx.
         // The demo market ids start with "demo-" and don't have a pool;
         // since the WC creator writes the row in demo mode without a
         // pool, the maker has nothing to actually place. We still log

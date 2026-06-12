@@ -295,7 +295,7 @@ export default function WorldCupPage() {
         <div className="space-y-2">
           {(scheduleQ.data?.matches ?? [])
             .filter((m) => m.kickoffMs < Date.UTC(2026, 5, 14))
-            .slice(0, 12)
+            .slice(0, 24)
             .map((m) => (
               <Link
                 key={m.id}

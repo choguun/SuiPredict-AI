@@ -96,6 +96,38 @@ export default function GroupPage() {
     .filter((m) => m.group === letter)
     .sort((a, b) => a.kickoffMs - b.kickoffMs);
 
+  // R53 audit fix: validate the URL letter against the allowed
+  // set BEFORE rendering. A typo'd /worldcup/group/Z would
+  // otherwise render a "Group Z" page with no teams, no
+  // matches, and a confusing "Loading…" forever. The 12 valid
+  // group letters are A–L (per the December 5, 2025 draw with
+  // the expanded 48-team format).
+  const VALID_GROUP_LETTERS = ["A","B","C","D","E","F","G","H","I","J","K","L"];
+  if (!VALID_GROUP_LETTERS.includes(letter)) {
+    return (
+      <div className="space-y-4">
+        <Link href="/worldcup" className="text-xs text-zinc-500 hover:text-emerald-300">
+          ← Back to dashboard
+        </Link>
+        <Card>
+          <div className="space-y-2 py-4 text-center">
+            <h2 className="text-lg font-semibold text-white">Group not found</h2>
+            <p className="text-sm text-zinc-400">
+              The 2026 World Cup has groups A through L (12 groups, 48 teams).
+              &quot;{letter}&quot; is not a valid group.
+            </p>
+            <Link
+              href="/worldcup"
+              className="mt-2 inline-block rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+            >
+              See all groups
+            </Link>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   // Group matches by matchday
   const byMD = new Map<number, WcMatch[]>();
   for (const m of matches) {

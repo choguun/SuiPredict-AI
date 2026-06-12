@@ -237,6 +237,7 @@ export function buildGroupMatches(groups) {
             homeName: t1.name, awayName: t3.name,
             homeFlag: t1.flag, awayFlag: t3.flag,
             kickoffMs: day1,
+            matchday: 1,
             stadium: "",
             stage: "group",
         });
@@ -248,6 +249,7 @@ export function buildGroupMatches(groups) {
             homeName: t4.name, awayName: t2.name,
             homeFlag: t4.flag, awayFlag: t2.flag,
             kickoffMs: day1 + 3 * 60 * 60 * 1000,
+            matchday: 1,
             stadium: "",
             stage: "group",
         });
@@ -260,6 +262,7 @@ export function buildGroupMatches(groups) {
             homeName: t1.name, awayName: t4.name,
             homeFlag: t1.flag, awayFlag: t4.flag,
             kickoffMs: day2,
+            matchday: 2,
             stadium: "",
             stage: "group",
         });
@@ -271,6 +274,7 @@ export function buildGroupMatches(groups) {
             homeName: t3.name, awayName: t2.name,
             homeFlag: t3.flag, awayFlag: t2.flag,
             kickoffMs: day2 + 3 * 60 * 60 * 1000,
+            matchday: 2,
             stadium: "",
             stage: "group",
         });
@@ -283,6 +287,7 @@ export function buildGroupMatches(groups) {
             homeName: t1.name, awayName: t2.name,
             homeFlag: t1.flag, awayFlag: t2.flag,
             kickoffMs: day3,
+            matchday: 3,
             stadium: "",
             stage: "group",
         });
@@ -294,6 +299,7 @@ export function buildGroupMatches(groups) {
             homeName: t3.name, awayName: t4.name,
             homeFlag: t3.flag, awayFlag: t4.flag,
             kickoffMs: day3 + 3 * 60 * 60 * 1000,
+            matchday: 3,
             stadium: "",
             stage: "group",
         });
@@ -395,10 +401,19 @@ export function matchWinnerResolutionSource(m) {
     return `Wikipedia Group ${m.group} page; corroborated by FIFA.com match report`;
 }
 export function matchdayFor(m) {
-    // R1 matches: 1v3, 4v2  (we just look at id prefix structure)
+    // R57 audit fix: the previous heuristic looked at the match
+    // id suffix ("v3" / "v2" / "v4") but the suffix collides
+    // (A3v2 and A4v2 both end in "v2"; A3v4 and A1v4 both end
+    // in "v4"). The schedule builder now stores the matchday
+    // explicitly on the WcMatch struct, so this is a cheap
+    // pass-through. The old id-suffix branches are kept as a
+    // fallback for fixtures constructed outside the schedule
+    // builder (e.g. in tests).
+    if (m.matchday)
+        return m.matchday;
     if (m.id.endsWith("v3") || m.id.endsWith("v2"))
         return 1;
-    if (m.id.endsWith("v4") || m.id.endsWith("2"))
+    if (m.id.endsWith("v4"))
         return 2;
     return 3;
 }

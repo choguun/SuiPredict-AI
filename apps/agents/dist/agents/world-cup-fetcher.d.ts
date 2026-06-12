@@ -33,6 +33,8 @@ export interface WcMatch {
     awayFlag: string;
     /** UTC kickoff, ms since epoch */
     kickoffMs: number;
+    /** Matchday 1, 2, or 3 (per group, not tournament-wide) */
+    matchday: 1 | 2 | 3;
     /** Stadium name (best-effort) */
     stadium: string;
     stage: "group";

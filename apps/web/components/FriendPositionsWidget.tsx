@@ -136,7 +136,17 @@ export function FriendPositionsWidget({
           </p>
         ) : (
           <ul className="space-y-2">
-            {withPositions.map((addr) => {
+            {/* Sort by biggest position first so the most
+                committed friend is at the top of the list. */}
+            {[...withPositions]
+              .sort((a, b) => {
+                const aPos = positions[a]!;
+                const bPos = positions[b]!;
+                const aSize = Math.max(aPos.yes, aPos.no);
+                const bSize = Math.max(bPos.yes, bPos.no);
+                return bSize - aSize;
+              })
+              .map((addr) => {
               const p = positions[addr]!;
               const side: "yes" | "no" = p.yes >= p.no ? "yes" : "no";
               const size = side === "yes" ? p.yes : p.no;

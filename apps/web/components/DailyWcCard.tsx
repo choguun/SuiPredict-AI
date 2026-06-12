@@ -94,6 +94,21 @@ export function DailyWcCard() {
           </div>
         )}
 
+        {wcQuery.isError && (
+          <div
+            role="alert"
+            className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
+          >
+            <p className="font-semibold">Couldn&apos;t load World Cup markets</p>
+            <p className="mt-1 text-rose-300/80">
+              {wcQuery.error instanceof Error
+                ? wcQuery.error.message
+                : "Unknown error"}. Start the agents service with{" "}
+              <code className="text-xs">pnpm dev:agents</code>.
+            </p>
+          </div>
+        )}
+
         {wcQuery.data && wcQuery.data.length === 0 && (
           <p className="rounded-xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-zinc-400">
             No World Cup matches in the next 48h. The agents will seed
