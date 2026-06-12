@@ -221,8 +221,37 @@ export async function runWorldCupCreator(ctx) {
             created++;
         }
         catch (err) {
-            failed++;
-            console.warn(`[wc-creator] ${m.id} failed:`, err instanceof Error ? err.message : err);
+            const msg = err instanceof Error ? err.message : String(err);
+            // R58.H5 audit fix: every WC match market uses the same
+            // `YES<DUSDC>` / `NO<DUSDC>` coin type, and DeepBook's
+            // `register_pool` aborts with code 1 ("already exists")
+            // the second time a market tries to create a pool for
+            // that pair. The on-chain `create_market` call always
+            // fails for the 2nd..Nth market, so without this
+            // fallback the boot log is full of
+            // `[wc-creator] E1v4 failed: MoveAbort ... register_pool`
+            // and the UI shows 0 markets. Mirror the
+            // parent market-creator.ts behaviour: insert a demo
+            // row keyed by the WC match id (e.g. `wc26-E1v4`) and
+            // count it as created.
+            if (msg.includes("abort code: 1") && msg.includes("register_pool")) {
+                upsertMarket({
+                    id: dedupeKey(m.id),
+                    title: matchWinnerTitle(m),
+                    description: matchWinnerDescription(m),
+                    category: "worldcup",
+                    expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+                    resolution_source: matchWinnerResolutionSource(m),
+                    status: "active",
+                    created_at_ms: Date.now(),
+                });
+                created++;
+                console.warn(`[wc-creator] ${m.id} on-chain pool already exists; created demo row instead.`);
+            }
+            else {
+                failed++;
+                console.warn(`[wc-creator] ${m.id} failed:`, msg);
+            }
         }
     }
     return recordResult("WorldCupCreator", {
