@@ -1,3 +1,4 @@
+import "./preload.js";
 import { config as loadEnv } from "dotenv";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -11,13 +12,20 @@ import { existsSync } from "node:fs";
 // the agents service ran in accidental demo mode even
 // though the user had configured an `AGENT_PRIVATE_KEY`.
 //
-// Walk up the directory tree from `process.cwd()` until
-// we find a `.env`. The repo-root `.env` is the one we
-// want; a per-package `.env` would shadow it. This
-// matches the `bootstrap-gamification.ts` pattern but
-// starts from CWD (which is what turbo gives us) rather
-// than `import.meta.url` (which is unreliable under tsx
-// watch).
+// R58.H4 audit fix: the env must be loaded BEFORE any SDK
+// import because the SDK's constants like
+// `export const DEEPBOOK_REGISTRY_ID = process.env.DEEPBOOK_REGISTRY_ID ?? ""`
+// are evaluated at module load time. In ES modules, all
+// `import` statements are hoisted to the top of the file
+// and evaluated before the first non-import line, so
+// placing `loadEnv({ path })` after the SDK import is too
+// late — the constants would freeze at "". The fix: do the
+// env load in `./preload.js` which is imported as the very
+// first thing in this file. See the comment there.
+//
+// The `loadEnv` call below is now redundant (preload
+// already did it) but kept as a safety net for tests that
+// import this file in isolation.
 function findRepoDotenv(start) {
     let cur = resolve(start);
     for (let i = 0; i < 8; i++) {

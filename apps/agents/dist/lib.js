@@ -55,6 +55,15 @@ export function resetSharedJsonRpcClient() {
 export function safeInt(v, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
     if (v === undefined || v === null)
         return fallback;
+    // R58.H2 audit fix: treat an empty string as 'unset'
+    // (use the fallback), not as the literal 0. The previous
+    // `Number("")` returns 0, which the clamp below then
+    // pushed to `min` — so an unset `WC_MM_QUOTE_SIZE=` ended
+    // up as 1 share, not the code default of 5_000_000. Same
+    // issue applied to every WC agent knob. Use the
+    // canonical "string is whitespace" check.
+    if (typeof v === "string" && v.trim() === "")
+        return fallback;
     const n = Number(v);
     if (!Number.isFinite(n)) {
         console.warn(`[lib.safeInt] env value "${v}" is not a finite number; using fallback ${fallback}.`);
@@ -69,6 +78,9 @@ export function safeInt(v, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
 }
 export function safeFloat(v, fallback, min = 0, max = Number.MAX_VALUE) {
     if (v === undefined || v === null)
+        return fallback;
+    // R58.H2 audit fix: same empty-string handling as safeInt.
+    if (typeof v === "string" && v.trim() === "")
         return fallback;
     const n = Number(v);
     if (!Number.isFinite(n)) {

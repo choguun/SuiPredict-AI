@@ -47,6 +47,22 @@ import {
 } from "./world-cup-fetcher.js";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { recordResult, safeInt } from "../lib.js";
+// R58.H3 audit fix: top-level imports instead of the
+// broken `require("better-sqlite3")` (which is undefined
+// in ESM context and crashed the WebExtractor at boot with
+// `ReferenceError: require is not defined`).
+import Database from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const DB_PATH = resolve(__dirname, "../../data/markets.db");
+function openAgentsDb(): Database.Database {
+  mkdirSync(dirname(DB_PATH), { recursive: true });
+  return new Database(DB_PATH);
+}
 
 // Curated source list. Extend via WC_EXTRA_SOURCES env
 // var (comma-separated URLs).
@@ -97,15 +113,10 @@ interface ExtractionEventRow {
 function ensureExtractionTable(): void {
   // The agents service uses an existing SQLite handle
   // (markets.db) for everything else; we add a small table
-  // here. Lazy import so a sqlite import cycle doesn't
-  // break module init.
-  const Database = require("better-sqlite3");
-  const path = require("node:path");
-  const { mkdirSync } = require("node:fs");
-  const dir = path.resolve(__dirname, "../../data");
-  mkdirSync(dir, { recursive: true });
-  const dbPath = path.join(dir, "markets.db");
-  const db = new Database(dbPath);
+  // here. R58.H3: use the top-level `openAgentsDb()` helper
+  // (replaces the broken `require("better-sqlite3")` which
+  // threw `ReferenceError: require is not defined` in ESM).
+  const db = openAgentsDb();
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS wc_extraction_events (
@@ -130,10 +141,7 @@ function ensureExtractionTable(): void {
 
 function writeExtractionEvent(row: ExtractionEventRow): void {
   try {
-    const Database = require("better-sqlite3");
-    const path = require("node:path");
-    const dbPath = path.resolve(__dirname, "../../data/markets.db");
-    const db = new Database(dbPath);
+    const db = openAgentsDb();
     try {
       db.prepare(
         `INSERT OR REPLACE INTO wc_extraction_events
@@ -164,10 +172,7 @@ function writeExtractionEvent(row: ExtractionEventRow): void {
 
 export function recentExtractions(limit = 50): ExtractionEventRow[] {
   try {
-    const Database = require("better-sqlite3");
-    const path = require("node:path");
-    const dbPath = path.resolve(__dirname, "../../data/markets.db");
-    const db = new Database(dbPath);
+    const db = openAgentsDb();
     try {
       return db
         .prepare(
