@@ -64,20 +64,20 @@ export async function runWorldCupResolver(ctx) {
         m.expiry_ms <= now)
         .sort((a, b) => a.expiry_ms - b.expiry_ms);
     if (expired.length === 0) {
-        // R58.H11 audit fix: also surface past in-play
-        // matches that have no row yet. The wc-demo-seed
-        // inserts up to 8 in-play matches at boot, but as
-        // the system clock progresses past boot time, more
-        // matches fall into the in-play window without
-        // being inserted (the seed only runs once at boot).
-        // The pre-fix resolver skipped these — the home
-        // page would show "0 markets" for any past match
-        // that wasn't in the boot-time 8. The fix: backfill
-        // any past in-play match (kickoff + 2h ≤ now) that
-        // has no row yet, marked as `resolved` with a
-        // placeholder outcome. The wc-resolver will
-        // overwrite the placeholder on the next tick with
-        // the real Wikipedia result.
+        // R58.H11 audit fix: backfill past in-play matches
+        // that have no row yet. The wc-demo-seed inserts up
+        // to 8 in-play matches at boot, but as the system
+        // clock progresses past boot time, more matches
+        // fall into the in-play window without being
+        // inserted (the seed only runs once at boot). The
+        // pre-fix resolver skipped these — the home page
+        // would show "0 markets" for any past match that
+        // wasn't in the boot-time 8. The fix: backfill any
+        // past in-play match (kickoff + 2h ≤ now) that has
+        // no row yet, as `active` with `outcome: null` so
+        // the main loop above (the `expired` block) picks
+        // them up on the next tick and overwrites the row
+        // with the real Wikipedia result.
         const schedule0 = await fetchMatchSchedule();
         const now0 = Date.now();
         const existingIds = new Set(listMarkets()
@@ -91,6 +91,15 @@ export async function runWorldCupResolver(ctx) {
             const id = `wc26-${m.id}`;
             if (existingIds.has(id))
                 continue;
+            // R58.H11.1 audit fix: insert as 'active' (not
+            // 'resolved') so the main resolver loop below
+            // picks the row up on the next tick and
+            // overwrites the placeholder with the real
+            // Wikipedia result. The pre-fix version marked
+            // the backfill as already-resolved, which made
+            // the main loop skip it (filter is
+            // `status === "active" && expiry_ms <= now`)
+            // and the placeholder outcome stayed forever.
             upsertMarket({
                 id,
                 title: matchWinnerTitle(m),
@@ -98,8 +107,8 @@ export async function runWorldCupResolver(ctx) {
                 category: "worldcup",
                 expiry_ms: exp,
                 resolution_source: matchWinnerResolutionSource(m),
-                status: "resolved",
-                outcome: "yes", // placeholder; wc-resolver next tick will overwrite
+                status: "active",
+                outcome: null,
                 created_at_ms: Date.now(),
             });
             existingIds.add(id);

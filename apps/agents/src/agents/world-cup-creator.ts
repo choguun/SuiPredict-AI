@@ -295,6 +295,21 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // parent market-creator.ts behaviour: insert a demo
       // row keyed by the WC match id (e.g. `wc26-E1v4`) and
       // count it as created.
+      //
+      // R58.H12 audit fix: also fall back to a demo
+      // row when the wallet has insufficient SUI for
+      // gas. The previous code only handled the
+      // DeepBook `register_pool` abort and the missing
+      // DEEP-coin case, but the
+      // 'insufficient SUI balance' error fires at
+      // gas-selection time (before the PTB is even
+      // built) and produces a 20-line stack-trace
+      // warning every 15 minutes. The on-chain tx is
+      // never going to succeed until the wallet is
+      // funded, so silently fall back to the demo
+      // path on every retry and surface a single
+      // hint to the operator about the wallet
+      // balance.
       if (msg.includes("abort code: 1") && msg.includes("register_pool")) {
         upsertMarket({
           id: dedupeKey(m.id),
@@ -309,6 +324,28 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
         created++;
         console.warn(
           `[wc-creator] ${m.id} on-chain pool already exists; created demo row instead.`,
+        );
+      } else if (
+        msg.includes("insufficient SUI balance") ||
+        msg.includes("gas selection")
+      ) {
+        // Wallet is underfunded. Insert a demo row
+        // so the home page stays populated, but
+        // surface a single line so the operator can
+        // fund the wallet and restart.
+        upsertMarket({
+          id: dedupeKey(m.id),
+          title: matchWinnerTitle(m),
+          description: matchWinnerDescription(m),
+          category: "worldcup",
+          expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+          resolution_source: matchWinnerResolutionSource(m),
+          status: "active",
+          created_at_ms: Date.now(),
+        });
+        created++;
+        console.warn(
+          `[wc-creator] ${m.id} insufficient SUI for gas; created demo row. Fund ${agentAddr} and restart to enable on-chain creation.`,
         );
       } else {
         failed++;
