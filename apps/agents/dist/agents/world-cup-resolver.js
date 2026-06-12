@@ -13,9 +13,18 @@
 //     web UI reflects it.
 //
 // Multi-source verification:
-//   - Primary: Wikipedia per-group page (90% confidence).
+//   - Primary: Wikipedia per-group page (90% confidence). The
+//     Wikipedia per-group page is updated by humans (with FIFA
+//     press releases as their source) within 5-15 minutes of the
+//     final whistle, so a successful parse + score read is enough
+//     to commit a resolution.
 //   - Secondary: Wikipedia main 2026 FIFA World Cup article, parsed
-//     for the same fixture in the results section (boosts to 95%).
+//     for the same fixture in the results section. This is the
+//     same dataset the per-group page uses, so the two agree by
+//     construction; the secondary check just catches a stale
+//     per-group page that hasn't been updated yet. Boosts to 95%
+//     confidence when both agree (we don't gate on this — see the
+//     R57 audit note in `matchWinnerResolutionSource`).
 //   - Tertiary: agent's own LLM (callLlm) on the LLM-gated branch
 //     at parent market-resolver.ts; we don't LLM-gate here because
 //     the data is binary and the Wikipedia table is the source of

@@ -398,7 +398,16 @@ export function matchWinnerDescription(m) {
     return `Resolves YES if ${m.homeName} wins regulation or extra time against ${m.awayName} in 2026 FIFA World Cup Group ${m.group}, Matchday ${matchdayFor(m)}. Kickoff: ${new Date(m.kickoffMs).toISOString()}.`;
 }
 export function matchWinnerResolutionSource(m) {
-    return `Wikipedia Group ${m.group} page; corroborated by FIFA.com match report`;
+    // R57 audit fix: the previous string claimed
+    // "corroborated by FIFA.com match report" but the
+    // `fetchMatchResult` path is Wikipedia-only — FIFA.com
+    // is behind aggressive bot walls. The contract lets a
+    // user dispute any resolution in a 1-hour window; an
+    // honest resolution source that names the actual
+    // authoritative feed (Wikipedia's per-group page,
+    // mirrored from FIFA's official PDF) avoids disputes
+    // over a false claim.
+    return `Wikipedia Group ${m.group} page (sourced from FIFA's official match schedule PDF)`;
 }
 export function matchdayFor(m) {
     // R57 audit fix: the previous heuristic looked at the match
