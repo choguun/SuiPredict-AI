@@ -14,7 +14,8 @@
     "resume-bootstrap": "tsx scripts/resume-bootstrap.ts",
     "verify-config": "tsx scripts/verify-config.ts",
     "rotate-prize-pubkey": "tsx scripts/rotate-prize-pubkey.ts",
-    "rotate-prize-admin-address": "tsx scripts/rotate-prize-admin-address.ts"
+    "rotate-prize-admin-address": "tsx scripts/rotate-prize-admin-address.ts",
+    "postinstall": "node -e \"try { require('better-sqlite3'); } catch (e) { console.warn('[agents] better-sqlite3 native binding missing; run \\`pnpm rebuild better-sqlite3\\` to build it. This is required for the SQLite mirror and the WC demo seed.'); }\""
   },
   "dependencies": {
     "@mysten/sui": "^2.17.0",

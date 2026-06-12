@@ -170,11 +170,31 @@ function validateBootConfig() {
         }
     }
     const hardFails = missing.filter((c) => c.required);
-    if (hardFails.length > 0) {
+    // R57 audit fix: only treat a missing required env var as a
+    // *hard* boot failure when we're actually going on-chain.
+    // Demo mode (no AGENT_PRIVATE_KEY) shouldn't require a
+    // published package id or a fee vault — the WC demo seed
+    // already populates SQLite with stub markets so the UI is
+    // alive. The previous `process.exit(1)` here killed the
+    // process before the seed could run, leaving a fresh
+    // `pnpm dev:agents` user staring at a 30s of "Boot config
+    // refusing to boot" with no live data.
+    const hasPrivateKey = Boolean(process.env.AGENT_PRIVATE_KEY);
+    if (hardFails.length > 0 && hasPrivateKey) {
         console.error(`[agents] Refusing to boot: ${hardFails.length} required env var(s) missing. ` +
             "Run `pnpm --filter @suipredict/agents tsx scripts/bootstrap-gamification.ts` " +
             "to populate them, or set them in your .env.");
         process.exit(1);
+    }
+    else if (hardFails.length > 0 && !hasPrivateKey) {
+        // Downgrade the FAIL rows to warn-level so demo mode can
+        // boot. The WC demo seed, the demo /markets, the friend
+        // system, the gamification routes, and the leaderboard
+        // worker all work without any on-chain state.
+        console.log(`  [demo  ] (no AGENT_PRIVATE_KEY) the ${hardFails.length} ` +
+            "missing required var(s) are tolerated in demo mode. " +
+            "Set AGENT_PRIVATE_KEY + run `pnpm --filter @suipredict/agents bootstrap` " +
+            "to enable on-chain market creation / resolution / market-making.");
     }
     if (missing.length > 0) {
         console.warn(`[agents] ${missing.length} optional var(s) missing — the matching agents will be inert. ` +
