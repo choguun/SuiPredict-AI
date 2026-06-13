@@ -190,16 +190,37 @@ export async function runWorldCupResolver(ctx) {
             // drift doesn't silently drop the match and
             // leave the boot log full of "0 resolved, 5
             // skipped".
-            const altId = (() => {
+            // R58.H20 audit fix: the LLM extractor uses
+            // multiple inconsistent match-id formats
+            // across prompt revisions (A1vA3, A1vE2,
+            // B1vB3, etc.) while the schedule uses the
+            // shorter A1v3. Build a set of normalised
+            // candidate ids and try all of them. The
+            // pre-R58.H20 code only tried the canonical
+            // id and the "vA"-prefixed form, which
+            // missed the "vE"/"vB" etc. shapes and
+            // silently dropped every match.
+            const altIds = (() => {
+                const candidates = new Set();
+                candidates.add(match.id);
                 if (!match.id.includes("v"))
-                    return match.id;
+                    return [...candidates];
                 const [prefix = "", rest = ""] = match.id.split("v", 2);
                 if (!prefix || !rest)
-                    return match.id;
-                // Schedule: A1v3 → LLM: A1vA3
-                return `${prefix}vA${rest}`;
+                    return [match.id];
+                // Strip any leading group letter from the
+                // away position. The schedule is
+                // "A1v3"; the LLM might return "A1vA3",
+                // "A1vE2" (a different prompt), or even
+                // bare "1v3" (the group letter dropped).
+                const groupLetter = prefix[0] ?? "";
+                const stripped = rest.startsWith(groupLetter)
+                    ? rest.slice(1)
+                    : rest;
+                candidates.add(`${prefix}v${stripped}`);
+                return [...candidates];
             })();
-            const llmMatch = llmMatches.find((m) => m.match_id === match.id || m.match_id === altId);
+            const llmMatch = llmMatches.find((m) => altIds.includes(m.match_id ?? ""));
             if (llmMatch && llmMatch.status === "completed") {
                 const syntheticWinner = llmMatch.home_goals > llmMatch.away_goals
                     ? "home"
