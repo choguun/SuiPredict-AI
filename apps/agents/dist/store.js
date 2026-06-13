@@ -53,6 +53,13 @@ export function getDb() {
         // feed); losing 8k historical rows is bounded and
         // recoverable (they regenerate on the next agent
         // tick).
+        //
+        // The integrity_check is skipped on a fresh DB
+        // (the table doesn't exist yet). SQLite throws
+        // "no such table" for the integrity_check pragma
+        // on a missing table; that's the expected path
+        // for a fresh DB and we fall through to the
+        // CREATE TABLE below.
         try {
             const integ = db.prepare(`PRAGMA integrity_check(decisions)`).all();
             const ok = integ.length === 1 && integ[0]?.integrity_check === "ok";
@@ -62,11 +69,17 @@ export function getDb() {
             }
         }
         catch (err) {
-            console.warn(`[agents] decisions integrity_check threw (${err instanceof Error ? err.message : String(err)}). Rebuilding.`);
-            try {
-                db.exec(`DROP TABLE IF EXISTS decisions`);
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!/no such table/i.test(msg)) {
+                console.warn(`[agents] decisions integrity_check threw (${msg}). Rebuilding.`);
+                try {
+                    db.exec(`DROP TABLE IF EXISTS decisions`);
+                }
+                catch { /* best-effort */ }
             }
-            catch { /* best-effort */ }
+            // "no such table" is the expected path for a
+            // fresh DB; the CREATE TABLE below will
+            // initialise the schema.
         }
         // R49 audit fix: cap the `reasoning` length at 4 KiB. The
         // column is a free-text field that the agent loop fills

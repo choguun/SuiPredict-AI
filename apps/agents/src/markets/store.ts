@@ -392,9 +392,15 @@ function recoverIndexerStateCorruption(): void {
       .prepare(`PRAGMA integrity_check(indexer_state)`)
       .all() as Array<{ integrity_check: string }>;
   } catch (err) {
-    // The pragma itself threw. Treat as corruption
-    // and fall through to the drop+rebuild path.
-    integrity = [{ integrity_check: `throw: ${err instanceof Error ? err.message : String(err)}` }];
+    // The pragma itself threw. On a fresh DB the
+    // table doesn't exist yet and SQLite throws
+    // "no such table: indexer_state" — that's the
+    // expected path; fall through to the CREATE
+    // TABLE in initSchema. Treat any other throw
+    // as corruption and drop+rebuild.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(msg)) return;
+    integrity = [{ integrity_check: `throw: ${msg}` }];
   }
   const ok = integrity && integrity.length === 1 && integrity[0]?.integrity_check === "ok";
   if (ok) return;

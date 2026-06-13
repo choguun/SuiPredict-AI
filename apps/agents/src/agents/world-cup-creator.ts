@@ -91,9 +91,22 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
     .filter((m) => m.kickoffMs >= horizonStart && m.kickoffMs <= horizonEnd)
     .sort((a, b) => a.kickoffMs - b.kickoffMs);
 
+  // R58.H18 audit fix: the `existing` set should only
+  // count markets in the upcoming window the creator
+  // is about to iterate, not every active wc26-* row.
+  // The pre-fix code counted every active row, which
+  // meant a backlog of past-in-play rows awaiting
+  // resolution (R58.H11 backfill) would push the cap
+  // count past 20 and the creator would refuse to
+  // create any new upcoming markets. The cap of 20 is
+  // a per-window safety budget for `create_market`
+  // (each costs ~500 DEEP for the DeepBook pool fee),
+  // not a total-active-rows limit. Filter to the
+  // matches whose kickoff is in the next 7d window.
+  const upcomingKeys = new Set(upcoming.map((m) => dedupeKey(m.id)));
   const existing = new Set(
     listMarkets()
-      .filter((m) => m.id.startsWith("wc26-") && m.status === "active")
+      .filter((m) => m.id.startsWith("wc26-") && m.status === "active" && upcomingKeys.has(m.id))
       .map((m) => m.id),
   );
   // R57 audit fix: cap the create list with Math.max(0, …).
