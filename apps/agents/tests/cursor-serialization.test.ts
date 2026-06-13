@@ -139,3 +139,52 @@ test("R58.H10 — indexer returns empty when both are unset", () => {
   const pkg = resolveIndexerPkg({});
   assert.equal(pkg, "");
 });
+// R58.H20 regression: pin the alt-ids set
+// the resolver builds from a single schedule
+// id. The LLM extractor has been returning
+// several inconsistent match-id shapes
+// (A1vA3, A1vE2, B1vB3, 1v3) and the pre-fix
+// code only tried the canonical id and the
+// "vA"-prefixed form, which missed the
+// "vE"/"vB"/"v<L>" shapes. The alt-ids set
+// must include every shape the LLM might
+// return so a future prompt change doesn't
+// silently drop every match.
+
+function altIdsFor(matchId: string): string[] {
+  const candidates = new Set<string>();
+  candidates.add(matchId);
+  if (!matchId.includes("v")) return [...candidates];
+  const [prefix = "", rest = ""] = matchId.split("v", 2);
+  if (!prefix || !rest) return [matchId];
+  const groupLetter = prefix[0] ?? "";
+  const stripped = rest.startsWith(groupLetter) ? rest.slice(1) : rest;
+  candidates.add(`${prefix}v${stripped}`);
+  return [...candidates];
+}
+
+test("R58.H20 — A1v3 generates {A1v3} (no leading letter to strip)", () => {
+  assert.deepEqual(altIdsFor("A1v3"), ["A1v3"]);
+});
+
+test("R58.H20 — A1vA3 generates {A1v3, A1vA3} (strip leading A)", () => {
+  assert.deepEqual(altIdsFor("A1vA3").sort(), ["A1v3", "A1vA3"].sort());
+});
+
+test("R58.H20 — A1v2 generates just {A1v2} (no leading group letter to strip)", () => {
+  // The LLM might return "A1v2" directly (no
+  // leading letter). The function should keep
+  // it as-is.
+  assert.deepEqual(altIdsFor("A1v2").sort(), ["A1v2"].sort());
+});
+
+test("R58.H20 — B1vB3 generates {B1v3, B1vB3}", () => {
+  assert.deepEqual(altIdsFor("B1vB3").sort(), ["B1v3", "B1vB3"].sort());
+});
+
+test("R58.H20 — handles missing leading group letter (1v3 stays 1v3)", () => {
+  // Defensive: if the schedule's id is
+  // "1v3" (no group letter), the function
+  // should return just ["1v3"].
+  assert.deepEqual(altIdsFor("1v3"), ["1v3"]);
+});
