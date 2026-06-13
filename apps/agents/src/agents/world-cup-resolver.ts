@@ -263,6 +263,32 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
         (m) => altIds.includes(m.match_id ?? ""),
       );
       if (llmMatch && llmMatch.status === "completed") {
+          // R58.H21 audit fix: reject LLM
+          // hallucinations where the model reports
+          // a future match as "completed". The LLM
+          // is forced to fill in a result for every
+          // match in the group, even when the data
+          // is pre-tournament; the wc-fetcher's regex
+          // already returns null for these, so a
+          // future match claiming "completed 4-1"
+          // is almost certainly a hallucination. The
+          // user (mid-WC tournament, system clock
+          // past MD1) observed the LLM reporting
+          // MD3 matches (10+ days in the future) as
+          // "completed 4-1" and committing them. A
+          // completed match whose kickoff is in the
+          // future is a strong signal of LLM
+          // fabrication; require the kickoff to be
+          // in the past by at least 30 minutes
+          // (regulation+ET buffer) before trusting
+          // the LLM's completion flag.
+          if (match.kickoffMs > now + 30 * 60 * 1000) {
+            console.warn(
+              `[wc-resolver] ignoring LLM 'completed' for ${match.id} — kickoff is ${((match.kickoffMs - now) / 60000).toFixed(0)}min in the future`,
+            );
+            skipped++;
+            continue;
+          }
           const syntheticWinner: "home" | "away" | "draw" =
             llmMatch.home_goals > llmMatch.away_goals
               ? "home"
