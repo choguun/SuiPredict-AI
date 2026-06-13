@@ -203,6 +203,12 @@ export function getDb(): Database.Database {
     `);
     migrateMarketColumns();
     migrateIndexerStateColumns();
+    // R58.H16: recover from an indexer_state btree
+    // corruption (e.g. caused by a hot-patch that
+    // swapped the cursor format while a write was
+    // in flight). Runs AFTER the column migration
+    // so the rebuild uses the latest schema.
+    recoverIndexerStateCorruption();
     // R46 audit fix: only seed demo markets in dev / test
     // environments. The previous code ran on every fresh DB
     // regardless of `NODE_ENV`, which meant a production
@@ -353,6 +359,71 @@ function migrateIndexerStateColumns() {
       getDb().exec(`ALTER TABLE indexer_state ADD COLUMN ${name} ${type}`);
     }
   }
+}
+
+/**
+ * R58.H16 audit fix: detect a corrupt `indexer_state`
+ * table and rebuild it. The pre-fix code crashed with
+ * `database disk image is malformed` on every indexer
+ * tick when the btree was corrupted (common after a
+ * hot-patch that swapped the R58.H7 cursor format from
+ * the stringified `[object Object]` to a JSON object
+ * while a write was in flight). The indexer would
+ * silently fail forever, never re-indexing a single
+ * on-chain event, and the boot log would fill with
+ *   [position-indexer] MarketCreated poll failed:
+ *     database disk image is malformed
+ *   [position-indexer] VaultCreated poll failed: ...
+ *   [position-indexer] PolicyCreated poll failed: ...
+ * The fix: at boot, after the migrations, run
+ * `PRAGMA integrity_check` on the indexer_state table.
+ * If it reports corruption (or the integrity check
+ * itself throws), drop the table and let the indexer
+ * re-bootstrap from the genesis cursor on the next
+ * tick. The cursor loss is bounded (we re-index the
+ * handful of historical events on the next poll) and
+ * the alternative is permanent indexer outage.
+ */
+function recoverIndexerStateCorruption(): void {
+  const db = getDb();
+  let integrity: Array<{ integrity_check: string }> | undefined;
+  try {
+    integrity = db
+      .prepare(`PRAGMA integrity_check(indexer_state)`)
+      .all() as Array<{ integrity_check: string }>;
+  } catch (err) {
+    // The pragma itself threw. Treat as corruption
+    // and fall through to the drop+rebuild path.
+    integrity = [{ integrity_check: `throw: ${err instanceof Error ? err.message : String(err)}` }];
+  }
+  const ok = integrity && integrity.length === 1 && integrity[0]?.integrity_check === "ok";
+  if (ok) return;
+  console.warn(
+    `[agents] indexer_state table is corrupt (integrity_check: ${integrity
+      ?.map((r) => r.integrity_check)
+      .join(", ") ?? "unknown"}). Rebuilding.`,
+  );
+  try {
+    db.exec(`DROP TABLE IF EXISTS indexer_state`);
+  } catch (dropErr) {
+    console.error(
+      `[agents] DROP TABLE indexer_state failed: ${dropErr instanceof Error ? dropErr.message : String(dropErr)}`,
+    );
+    return;
+  }
+  // Recreate the table with the same schema as the
+  // CREATE TABLE in `initSchema` so the indexer can
+  // start fresh.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS indexer_state (
+      key TEXT PRIMARY KEY,
+      cursor TEXT,
+      network TEXT NOT NULL DEFAULT '',
+      package_id TEXT NOT NULL DEFAULT '',
+      updated_at_ms INTEGER NOT NULL
+    );
+  `);
+  console.warn(`[agents] indexer_state rebuilt; indexer will re-bootstrap from genesis.`);
 }
 
 /** Idempotent insert of a RegistryCreated event. */

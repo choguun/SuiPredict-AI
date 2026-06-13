@@ -40,6 +40,38 @@ export function getDb(): Database.Database {
     db.pragma("journal_mode = WAL");
     db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
+    // R58.H17 audit fix: detect a corrupt `decisions`
+    // table at open time and rebuild it. The pre-fix
+    // code crashed with `database disk image is
+    // malformed` on every `INSERT INTO decisions` when
+    // the btree was corrupted (common after a hot-patch
+    // that swapped the cursor format while a write was
+    // in flight, or after a disk-full event). Every
+    // agent that calls `recordResult` would crash, so
+    // the wc-resolver, wc-creator, wc-maker,
+    // market-maker etc. all died with backoff. The fix:
+    // at DB open time, run `PRAGMA integrity_check`
+    // and if the decisions table is corrupt, drop and
+    // rebuild it. The decisions are nice-to-have
+    // (they power the admin page's recent-activity
+    // feed); losing 8k historical rows is bounded and
+    // recoverable (they regenerate on the next agent
+    // tick).
+    try {
+      const integ = db.prepare(`PRAGMA integrity_check(decisions)`).all() as Array<{ integrity_check: string }>;
+      const ok = integ.length === 1 && integ[0]?.integrity_check === "ok";
+      if (!ok) {
+        console.warn(
+          `[agents] decisions table is corrupt (integrity_check: ${integ.map((r) => r.integrity_check).join(", ")}). Rebuilding.`,
+        );
+        db.exec(`DROP TABLE IF EXISTS decisions`);
+      }
+    } catch (err) {
+      console.warn(
+        `[agents] decisions integrity_check threw (${err instanceof Error ? err.message : String(err)}). Rebuilding.`,
+      );
+      try { db.exec(`DROP TABLE IF EXISTS decisions`); } catch { /* best-effort */ }
+    }
     // R49 audit fix: cap the `reasoning` length at 4 KiB. The
     // column is a free-text field that the agent loop fills
     // with LLM-style output. A misbehaving prompt (or a
