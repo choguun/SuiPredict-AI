@@ -197,6 +197,20 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       }>(
         `https://en.wikipedia.org/wiki/2026_FIFA_World_Cup_Group_${match.group}`,
         "WcMatchResult",
+        // R58.H19 audit fix: bypass the LLM
+        // cache on every resolver call. The cache
+        // TTL is 24h (R49) but Wikipedia updates
+        // match results within minutes of the
+        // final whistle. Bypassing the cache
+        // costs one MiniMax call per expired
+        // market per tick (5 per tick × 1 call =
+        // ~5s extra latency, ~5k tokens) but
+        // makes the resolver pick up fresh data
+        // as soon as Wikipedia publishes it.
+        // Without bypassCache the resolver would
+        // re-process the same stale LLM data for
+        // 24h after a Wikipedia update.
+        { bypassCache: true },
       );
       // Normalize the response shape. The
       // canonical contract is `{ matches: [...] }`,
