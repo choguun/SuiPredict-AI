@@ -92,3 +92,41 @@ input[type="search"]::-ms-clear {
   -webkit-appearance: none;
   appearance: none;
 }
+
+/* R30 sweep fix: global keyboard focus ring. Tailwind's
+   `focus:ring-*` utilities are applied per-element and several
+   interactive leaves (icon-only buttons in cards, nav links)
+   shipped without one — a keyboard user tabbing through the
+   home page saw the focus indicator vanish on the social /
+   explorer links. A single `:focus-visible` rule with a high
+   contrast ring catches everything that doesn't override it.
+   Mouse clicks don't trigger `:focus-visible` so the ring
+   stays out of the user's way on click interactions. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #67e8f9;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* R30 sweep fix: honour `prefers-reduced-motion`. The home
+   page hero, hover scale transitions, and the back-to-top
+   button all use Tailwind's `transition-*` and `animate-*`.
+   Users with the OS-level "reduce motion" preference get a
+   calmer experience — no scale-on-hover, no infinite pulses.
+   Critical: the rule must come AFTER Tailwind's utilities
+   so it wins the cascade for users who opted in. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

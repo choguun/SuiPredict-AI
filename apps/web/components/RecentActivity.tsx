@@ -183,7 +183,7 @@ export function RecentActivity() {
           <p className="mt-0.5 text-xs text-zinc-500">
             What the autonomous fleet is doing right now.
             {updatedAt > 0 && (
-              <span className="ml-2 font-mono text-[10px] text-zinc-600">
+              <span className="ml-2 font-mono text-[10px] text-zinc-500">
                 · updated {timeAgo(updatedAt)}
               </span>
             )}

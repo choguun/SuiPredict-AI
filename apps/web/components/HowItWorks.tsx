@@ -16,9 +16,21 @@
  * state and no onboarding hint. The HowItWorks
  * card is the unconditional onboarding surface —
  * always visible, regardless of wallet state.
+ *
+ * R30 sweep fix: the home page only rendered this
+ * card when `markets.length === 0`, so any deploy
+ * with seeded demo markets hid the onboarding
+ * entirely. The new `HowItWorksDismissable` wrapper
+ * shows the card once for first-time visitors
+ * (gated by localStorage), dismissable forever
+ * via the X button. The plain `HowItWorks` is
+ * still exported for the empty-markets fallback.
  */
 
+"use client";
+
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui";
 
 const STEPS: Array<{
@@ -112,5 +124,52 @@ export function HowItWorks({
       </div>
       {stepsEl}
     </Card>
+  );
+}
+
+const HOW_IT_WORKS_DISMISSED_KEY = "suipredict.howItWorks.dismissed";
+
+/**
+ * Dismissable wrapper. Renders the HowItWorks card once
+ * per browser (localStorage-gated). A returning user
+ * who dismissed it never sees it again. The mounted-ref
+ * pattern avoids an SSR/CSR flash — the card only
+ * appears after the client-side mount reads localStorage.
+ */
+export function HowItWorksDismissable() {
+  const [mounted, setMounted] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    try {
+      if (window.localStorage.getItem(HOW_IT_WORKS_DISMISSED_KEY) === "1") {
+        setDismissed(true);
+      }
+    } catch {
+      // private mode / quota — default to showing the card
+    }
+  }, []);
+  if (!mounted || dismissed) return null;
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          try {
+            window.localStorage.setItem(HOW_IT_WORKS_DISMISSED_KEY, "1");
+          } catch {
+            // private mode — dismissal only lasts this session
+          }
+          setDismissed(true);
+        }}
+        aria-label="Dismiss how-it-works card"
+        className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-zinc-500 hover:bg-white/10 hover:text-white transition"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+        </svg>
+      </button>
+      <HowItWorks />
+    </div>
   );
 }

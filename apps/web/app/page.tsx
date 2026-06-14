@@ -7,7 +7,7 @@ import {
 import { Badge } from "@/components/ui";
 import { DailyPredictionCard } from "@/components/DailyPredictionCard";
 import { DailyWcCard } from "@/components/DailyWcCard";
-import { HowItWorks } from "@/components/HowItWorks";
+import { HowItWorks, HowItWorksDismissable } from "@/components/HowItWorks";
 import { RecentActivity } from "@/components/RecentActivity";
 import { StreakProfile } from "@/components/StreakProfile";
 import { StreakWelcomeBanner } from "@/components/StreakWelcomeBanner";
@@ -128,6 +128,42 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-6 sm:space-y-12 pb-6 sm:pb-12">
+      {/* R30 sweep fix: JSON-LD structured data so
+         search engines can render rich results for
+         the product. The WebApplication schema is
+         the most appropriate top-level type — it
+         surfaces the app name, description, and
+         category ("Finance" / "Prediction Market")
+         in SERP features. The same data is mirrored
+         by the meta tags but JSON-LD is what Google's
+         crawler actually parses for structured
+         features. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "WebApplication",
+            name: "SuiPredict AI",
+            description:
+              "Autonomous AI prediction market on Sui. Trade YES/NO on every FIFA World Cup 2026 match, powered by DeepBook V3.",
+            applicationCategory: "FinanceApplication",
+            operatingSystem: "Web",
+            offers: {
+              "@type": "Offer",
+              price: "0",
+              priceCurrency: "USDC",
+            },
+            featureList: [
+              "Trade YES/NO shares on World Cup 2026 matches",
+              "DeepBook V3 CLOB order routing",
+              "15 autonomous AI agents for market making and resolution",
+              "Parlay builder with multiplied payouts",
+              "Streak rewards and weekly leaderboard prizes",
+            ],
+          }),
+        }}
+      />
       {/* 0. World Cup 2026 Banner (always visible) */}
       {/* R30 sweep fix: bigger, more prominent
           banner with a stronger CTA. The pre-R30
@@ -332,6 +368,15 @@ export default async function HomePage() {
           was applied). The `markets.length`
           is more honest. */}
       {markets.length === 0 && <HowItWorks />}
+      {/* R30 sweep fix: dismissable onboarding for
+          first-time visitors who DO see markets. The
+          previous build only showed HowItWorks when
+          there were zero markets; a deploy with
+          seeded demo markets hid the onboarding
+          entirely. The dismissable variant is gated
+          by localStorage so a returning user never
+          sees it twice. */}
+      {markets.length > 0 && <HowItWorksDismissable />}
       <section className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-1">
           <StreakProfile />

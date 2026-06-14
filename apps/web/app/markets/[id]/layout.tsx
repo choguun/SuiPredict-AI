@@ -59,10 +59,68 @@ export async function generateMetadata({
   };
 }
 
-export default function MarketDetailLayout({
+/**
+ * R30 sweep fix: emit a JSON-LD `BetDetail` block (a subtype of
+ * `Thing` that mirrors the structured-data pattern Polymarket
+ * uses) so search engines can render the market question + status
+ * as a rich result. The block is hidden from the visible DOM
+ * (rendered into a <script type="application/ld+json">) and
+ * becomes the canonical machine-readable description of the
+ * market — useful for share previews on Slack / X / Discord
+ * that respect the structured data.
+ */
+async function marketJsonLd(marketId: string) {
+  try {
+    const m = await getMarket(marketId);
+    if (!m?.title) return null;
+    return {
+      "@context": "https://schema.org",
+      "@type": "Question",
+      name: m.title,
+      text: m.description ?? m.title,
+      category: m.category,
+      expectedAnswer: {
+        "@type": "Answer",
+        text:
+          m.status === "resolved" && m.outcome
+            ? `Resolved ${m.outcome.toUpperCase()}`
+            : "Open for trading",
+      },
+      suggestedAnswer: [
+        { "@type": "Answer", text: "YES" },
+        { "@type": "Answer", text: "NO" },
+      ],
+      url: `${process.env.NEXT_PUBLIC_SITE_URL ?? "https://suipredict.ai"}/markets/${encodeURIComponent(marketId)}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export default async function MarketDetailLayout({
   children,
+  params,
 }: {
   children: React.ReactNode;
+  params: Promise<{ id: string }>;
 }) {
-  return children;
+  const { id } = await params;
+  let marketId = id;
+  try {
+    marketId = decodeURIComponent(id);
+  } catch {
+    // malformed; skip JSON-LD
+  }
+  const jsonLd = await marketJsonLd(marketId);
+  return (
+    <>
+      {jsonLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      )}
+      {children}
+    </>
+  );
 }

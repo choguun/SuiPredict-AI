@@ -75,8 +75,14 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased pb-16 md:pb-0`}
       >
         <Providers>
+          <a
+            href="#main-content"
+            className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[200] focus:rounded-lg focus:border focus:border-cyan-500/50 focus:bg-[#11141d] focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-cyan-200 focus:shadow-lg"
+          >
+            Skip to content
+          </a>
           <Nav />
-          <main className="mx-auto max-w-6xl px-4 py-5 sm:py-8">{children}</main>
+          <main id="main-content" className="mx-auto max-w-6xl px-4 py-5 sm:py-8">{children}</main>
           <BottomNav />
           {/* R30 sweep fix: floating back-to-top
               button. Rendered once at the layout
