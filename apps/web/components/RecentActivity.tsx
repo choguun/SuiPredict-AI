@@ -92,6 +92,7 @@ export function RecentActivity() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number>(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,49 +104,71 @@ export function RecentActivity() {
     // server-side, but the SDK's indexer table
     // doesn't have a noise-filter column; the
     // filter happens client-side.
-    fetch(`${AGENTS_URL}/decisions?limit=50`, {
-      cache: "no-store",
-    })
-      .then(async (r) => {
-        if (cancelled) return;
-        if (!r.ok) {
-          setError(`Agents responded ${r.status}`);
-          return;
-        }
-        const data = (await r.json()) as Decision[];
-        // Drop entries whose action is the
-        // everyday churn (noop / skip / monitor
-        // / indexer poll). Keep the first 5
-        // *meaningful* decisions; if every
-        // decision is noise (rare), fall
-        // back to the most recent 5
-        // regardless.
-        const NOISE = new Set([
-          "noop",
-          "skip",
-          "monitor",
-          "indexer_poll",
-        ]);
-        const meaningful = data.filter(
-          (d) => !NOISE.has(d.action),
-        );
-        const slice = (meaningful.length > 0 ? meaningful : data).slice(
-          0,
-          DEFAULT_LIMIT,
-        );
-        setDecisions(slice);
+    const load = () => {
+      fetch(`${AGENTS_URL}/decisions?limit=50`, {
+        cache: "no-store",
       })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(
-          err instanceof Error ? err.message : "Fetch failed",
-        );
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
+        .then(async (r) => {
+          if (cancelled) return;
+          if (!r.ok) {
+            setError(`Agents responded ${r.status}`);
+            return;
+          }
+          const data = (await r.json()) as Decision[];
+          // Drop entries whose action is the
+          // everyday churn (noop / skip / monitor
+          // / indexer poll). Keep the first 5
+          // *meaningful* decisions; if every
+          // decision is noise (rare), fall
+          // back to the most recent 5
+          // regardless.
+          const NOISE = new Set([
+            "noop",
+            "skip",
+            "monitor",
+            "indexer_poll",
+          ]);
+          const meaningful = data.filter(
+            (d) => !NOISE.has(d.action),
+          );
+          const slice = (meaningful.length > 0 ? meaningful : data).slice(
+            0,
+            DEFAULT_LIMIT,
+          );
+          setDecisions(slice);
+          setUpdatedAt(Date.now());
+          setError(null);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setError(
+            err instanceof Error ? err.message : "Fetch failed",
+          );
+        })
+        .finally(() => {
+          if (!cancelled) setLoaded(true);
+        });
+    };
+    load();
+    // R30 sweep fix: visibility-aware 30s polling. A
+    // landing user sees the "Live agent activity"
+    // header but the underlying data was previously
+    // fetched once on mount and went stale within a
+    // minute. The 30s cadence matches the
+    // LeaderboardTable pattern (R43 audit) and pauses
+    // when the tab is hidden so a backgrounded tab
+    // doesn't fire 120 calls/hr at the agents
+    // service. The interval is guarded against
+    // server-side render (no `document`).
+    const POLL_MS = 30_000;
+    const t = setInterval(() => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState !== "visible") return;
+      load();
+    }, POLL_MS);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, []);
 
@@ -159,6 +182,11 @@ export function RecentActivity() {
           </h2>
           <p className="mt-0.5 text-xs text-zinc-500">
             What the autonomous fleet is doing right now.
+            {updatedAt > 0 && (
+              <span className="ml-2 font-mono text-[10px] text-zinc-600">
+                · updated {timeAgo(updatedAt)}
+              </span>
+            )}
           </p>
         </div>
         <Link

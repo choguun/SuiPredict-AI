@@ -221,7 +221,7 @@ export default function DisputeMarketPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="mx-auto max-w-2xl space-y-6 pb-12">
       {/* R30 sweep fix: back link to the
          originating market page so a user
          who navigated into the dispute

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Nav } from "@/components/nav";
 import { BottomNav } from "@/components/BottomNav";
 import { BackToTop } from "@/components/BackToTop";
+import { OfflineBanner } from "@/components/OfflineBanner";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import "./globals.css";
@@ -83,6 +84,7 @@ export default function RootLayout({
               (markets list with 50+ cards, /agents
               full decision feed, etc.). */}
           <BackToTop />
+          <OfflineBanner />
         </Providers>
         <Toaster 
           theme="dark" 

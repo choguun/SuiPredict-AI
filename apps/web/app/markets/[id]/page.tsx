@@ -2306,7 +2306,10 @@ function MarketDetailBody({
               busy === "placeOrder" ||
               !account ||
               (!useDeepBookRoute && market.id.startsWith("demo-")) ||
-              market.status !== "active"
+              market.status !== "active" ||
+              qty <= 0 ||
+              displayedPrice <= 0 ||
+              displayedPrice >= 1
             }
             onClick={placeOrder}
             className={`min-h-12 w-full rounded-lg text-sm font-semibold text-white shadow-lg transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:scale-100 ${

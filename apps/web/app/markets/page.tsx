@@ -816,7 +816,8 @@ export default async function MarketsPage({
               )}
               aria-disabled={safePage <= 1}
               tabIndex={safePage <= 1 ? -1 : 0}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+              aria-label="Previous page"
+              className={`inline-flex min-h-11 items-center rounded-lg border px-4 py-2 text-xs font-bold transition ${
                 safePage <= 1
                   ? "pointer-events-none border-white/5 bg-white/[0.02] text-zinc-600"
                   : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"
@@ -824,7 +825,10 @@ export default async function MarketsPage({
             >
               ← Previous
             </Link>
-            <span className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-mono text-zinc-300">
+            <span
+              className="inline-flex min-h-11 items-center rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-mono text-zinc-300"
+              aria-current="page"
+            >
               Page {safePage} / {totalPages}
             </span>
             <Link
@@ -834,7 +838,8 @@ export default async function MarketsPage({
               )}
               aria-disabled={safePage >= totalPages}
               tabIndex={safePage >= totalPages ? -1 : 0}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition ${
+              aria-label="Next page"
+              className={`inline-flex min-h-11 items-center rounded-lg border px-4 py-2 text-xs font-bold transition ${
                 safePage >= totalPages
                   ? "pointer-events-none border-white/5 bg-white/[0.02] text-zinc-600"
                   : "border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"

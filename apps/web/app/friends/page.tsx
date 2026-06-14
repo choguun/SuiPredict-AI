@@ -197,11 +197,21 @@ export default function FriendsPage() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="0x…"
-              className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+              aria-invalid={draft.length > 0 && !isValidAddress(draft.trim())}
+              className={`mt-1 w-full rounded-lg border bg-black/40 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none transition-colors ${
+                draft.length > 0 && !isValidAddress(draft.trim())
+                  ? "border-rose-500/50 focus:border-rose-500/70"
+                  : "border-white/10 focus:border-emerald-500/50"
+              }`}
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
             />
+            {draft.length > 0 && !isValidAddress(draft.trim()) && (
+              <p className="mt-1 text-[10px] text-rose-300">
+                Must be 0x + 64 hex characters.
+              </p>
+            )}
           </div>
           <button
             type="submit"

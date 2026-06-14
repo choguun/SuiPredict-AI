@@ -487,12 +487,14 @@ export default function VaultPage() {
 
       {/* Action Section */}
       <Card title="Manage Position" className="max-w-2xl border-white/10">
-        <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 mt-2">Amount (DUSDC)</label>
+        <label htmlFor="vault-amount" className="block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-2 mt-2">Amount (DUSDC)</label>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
           <input
+            id="vault-amount"
             type="number"
             min="1"
             value={amount}
+            aria-invalid={amount <= 0}
             // R39 audit fix: route through clampNumberString so a
             // paste of "abc", "1.2.3", "1e10", or "-5" can't land
             // `amount` in NaN. The `deposit` handler immediately
@@ -504,27 +506,36 @@ export default function VaultPage() {
             // `legacy/predict/vault` page but missed the new
             // top-level vault page.
             onChange={(e) => setAmount(clampNumberString(e.target.value, 1, 1, 1_000_000))}
-            className="w-full sm:w-64 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/50 transition-all"
+            className={`w-full sm:w-64 rounded-xl border bg-black/20 px-4 py-3 text-sm text-white focus:outline-none focus:ring-1 transition-all ${
+              amount <= 0
+                ? "border-rose-500/50 focus:border-rose-500/70 focus:ring-rose-500/40"
+                : "border-white/10 focus:border-cyan-500/50 focus:ring-cyan-500/50"
+            }`}
           />
           <div className="flex w-full sm:w-auto gap-3">
             <button
               type="button"
-              disabled={loading || !account || !VAULT_ID}
+              disabled={loading || !account || !VAULT_ID || amount <= 0}
               onClick={deposit}
-              className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition-all hover:scale-[1.02] hover:shadow-emerald-900/50 disabled:opacity-50 disabled:scale-100"
+              className="flex-1 sm:flex-none rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 px-8 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/30 transition-all hover:scale-[1.02] hover:shadow-emerald-900/50 disabled:opacity-50 disabled:scale-100 disabled:cursor-not-allowed"
             >
               Deposit
             </button>
             <button
               type="button"
-              disabled={loading || !account || !vlpCoinId || !VAULT_ID}
+              disabled={loading || !account || !vlpCoinId || !VAULT_ID || amount <= 0}
               onClick={withdraw}
-              className="flex-1 sm:flex-none rounded-xl border border-white/10 bg-white/5 px-8 py-3 text-sm font-bold text-white backdrop-blur-md transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
+              className="flex-1 sm:flex-none rounded-xl border border-white/10 bg-white/5 px-8 py-3 text-sm font-bold text-white backdrop-blur-md transition-all hover:bg-white/10 hover:border-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Withdraw
             </button>
           </div>
         </div>
+        {amount <= 0 && (
+          <p className="-mt-4 mb-4 text-xs text-rose-300">
+            Enter an amount greater than 0 DUSDC.
+          </p>
+        )}
         {!VAULT_ID && (
           <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4">
             <p className="text-sm font-medium text-amber-400/90 flex items-center gap-2">
