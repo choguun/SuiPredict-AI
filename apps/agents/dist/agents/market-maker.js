@@ -1,4 +1,4 @@
-import { executeTransaction, DUSDC_TYPE, yesCoinType, resolveDeepbookPackageId, buildAuthorizeSpendTx, listAllCoins, } from "@suipredict/sdk";
+import { executeTransaction, DUSDC_TYPE, DUSDC_TREASURY_CAP_ID, yesCoinType, resolveDeepbookPackageId, buildAuthorizeSpendTx, listAllCoins, } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
 import { listMarkets, upsertOrder, nextDemoOrderId as nextDemoOrderIdFromStore } from "../markets/store.js";
@@ -145,12 +145,28 @@ export async function runMarketMaker(ctx) {
         const dusdcCoins = await listAllCoins(client, agentAddr, quoteType);
         let dusdcId = dusdcCoins.find((c) => BigInt(c.balance) >= 1000000n)?.objectId;
         if (!dusdcId) {
+            // R60 audit fix: the previous code hardcoded
+            // `0x6754966565db058de1358d6db773510c5d2991937215d8e42d7c968acb3e8012`
+            // for the TreasuryCap. The TreasuryCap is a
+            // deployment-specific one-time-published object
+            // (a TreasuryCap migration would publish a new
+            // object under a new id), and the SDK already
+            // exports `DUSDC_TREASURY_CAP_ID` resolved from
+            // `DUSDC_TREASURY_CAP_ID` / `NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID`
+            // env vars with a testnet fallback. Use the SDK
+            // constant so a mainnet deploy that rotates the
+            // cap (or a self-hosted dUSDC package) honours
+            // the env without a code change.
+            const treasuryCapId = DUSDC_TREASURY_CAP_ID;
+            if (!treasuryCapId) {
+                throw new Error("DUSDC_TREASURY_CAP_ID is unset; cannot mint DUSDC.");
+            }
             // Mint DUSDC via TreasuryCap
             const mintTx = new Transaction();
             mintTx.moveCall({
                 target: "0x2::coin::mint_and_transfer",
                 typeArguments: [quoteType],
-                arguments: [mintTx.object("0x6754966565db058de1358d6db773510c5d2991937215d8e42d7c968acb3e8012"), mintTx.pure.u64(1000000000000n), mintTx.pure.address(agentAddr)],
+                arguments: [mintTx.object(treasuryCapId), mintTx.pure.u64(1000000000000n), mintTx.pure.address(agentAddr)],
             });
             await executeTransaction(client, mintTx, ctx.signer);
             const freshCoins = await listAllCoins(client, agentAddr, quoteType);
@@ -180,8 +196,19 @@ export async function runMarketMaker(ctx) {
             await executeTransaction(client, authTx, ctx.signer);
         }
         // 3. Place bid (price must be multiple of tick_size=1_000_000)
-        const bidPrice = BigInt(Math.round(5000 / 10000 * 1_000_000 * 1_000_000)); // 500_000_000 = 0.5
-        const askPrice = BigInt(Math.round(5000 / 10000 * 1_000_000 * 1_000_000)); // same for demo
+        // R60 audit fix: the previous prices were `5000 / 10000 * 1_000_000 * 1_000_000`
+        // = 500_000_000 (mid: 0.5) for BOTH bid and ask. That
+        // meant the on-chain order was placed at the mid, not
+        // at the calculated bid/ask spread (4800 / 5200 bps).
+        // The SQLite mirror recorded `bidBps` / `askBps` (the
+        // off-book display) but the actual on-chain order was
+        // always at mid — producing a crossed book every tick
+        // and double-charging the maker for inventory that
+        // never traded. Use the actual `bidBps` / `askBps`
+        // values (in the same unit as the SQLite mirror) so
+        // the on-chain book matches the off-book display.
+        const bidPrice = BigInt(Math.round((bidBps / 10_000) * 1_000_000 * 1_000_000));
+        const askPrice = BigInt(Math.round((askBps / 10_000) * 1_000_000 * 1_000_000));
         const bidTx = new Transaction();
         const bProof = bidTx.moveCall({
             target: `${DB}::balance_manager::generate_proof_as_owner`,

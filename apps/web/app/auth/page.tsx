@@ -76,7 +76,28 @@ export default function AuthCallbackPage() {
           </div>
         ) : (
           <div className="flex flex-col items-center gap-4">
-            <div className="h-10 w-10 animate-spin rounded-full border-4 border-violet-500 border-t-transparent" />
+            {/* R62 audit fix: add `role="status"`
+               and `aria-live="polite"` to the
+               spinner so screen-reader users
+               get the same "Authenticating…"
+               announcement. The pre-R62
+               spinner was a pure visual
+               element with no role
+               announcement — a screen-reader
+               user landing on `/auth` heard
+               nothing until the success /
+               error view rendered. The
+               `aria-live="polite"` attribute
+               also picks up the eventual
+               success / failure
+               announcement when the JS
+               swaps the children. */}
+            <div
+              role="status"
+              aria-live="polite"
+              className="h-10 w-10 animate-spin rounded-full border-4 border-violet-500 border-t-transparent"
+              aria-label="Authenticating"
+            />
             <h2 className="text-xl font-bold text-white">Authenticating...</h2>
             <p className="text-sm text-zinc-400">Creating your secure zkLogin session.</p>
           </div>

@@ -1,4 +1,4 @@
-import { getMarket, getOrderBook, getPortfolio, getVaultSummaryFromEnv, listChainOrders, listMarkets, } from "./store.js";
+import { getMarket, getOrderBook, getPortfolio, getTrades, getVaultSummaryFromEnv, listChainOrders, listMarkets, } from "./store.js";
 import { corsFor } from "../http-cors.js";
 import { fetchMatchSchedule, loadWorldCupConfig, } from "../agents/world-cup-fetcher.js";
 import { upcomingWcMarkets } from "../agents/world-cup-resolver.js";
@@ -52,7 +52,7 @@ export function handleMarketsRoute(req, res, url) {
         json(res, 200, getVaultSummaryFromEnv());
         return true;
     }
-    const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/orders)?$/);
+    const marketMatch = url.pathname.match(/^\/markets\/([^/]+)(\/book|\/orders|\/trades)?$/);
     if (marketMatch) {
         const [, id, sub] = marketMatch;
         const market = getMarket(id);
@@ -75,6 +75,31 @@ export function handleMarketsRoute(req, res, url) {
                 ? Math.min(raw, 500)
                 : 50;
             json(res, 200, { orders: listChainOrders(id, limit) });
+            return true;
+        }
+        if (sub === "/trades") {
+            // R32 sweep fix: surface a JSON array of
+            // recent trades for the market. The
+            // SQLite `trades` table was being
+            // populated by the resolver (and the
+            // position-indexer) but the route
+            // regex didn't recognize `/trades`,
+            // so `/markets/<id>/trades` returned
+            // a 404 with an empty body. The
+            // market detail page didn't call
+            // this endpoint (no UI), but
+            // `docs/architecture.md` advertised
+            // it as a public read endpoint, and
+            // third-party tooling (e.g. the
+            // audit bots in
+            // `apps/agents/scripts/`) was
+            // hitting it. Cap the limit at 200
+            // (matches the order-book default).
+            const raw = Number(url.searchParams.get("limit") ?? 50);
+            const limit = Number.isFinite(raw) && raw > 0
+                ? Math.min(raw, 200)
+                : 50;
+            json(res, 200, { trades: getTrades(id, limit) });
             return true;
         }
         json(res, 200, market);

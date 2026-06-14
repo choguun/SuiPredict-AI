@@ -338,8 +338,47 @@ export function ConnectModal() {
                     <h3 className="mb-3 text-xs font-bold uppercase tracking-widest text-zinc-500">Web3 Wallets</h3>
                     <div className="space-y-2">
                       {wallets.length === 0 && (
-                        <div className="text-sm text-zinc-500 italic p-2 border border-dashed border-white/10 rounded-xl text-center">
-                          No installed wallets found.
+                        // R62 audit fix: surface
+                        // a Sui Wallet install
+                        // CTA when no wallets
+                        // are detected. The
+                        // pre-R62 build just
+                        // said "No installed
+                        // wallets found." and
+                        // the user had to guess
+                        // what to install. The
+                        // Sui Wallet extension
+                        // is the canonical
+                        // Sui browser wallet
+                        // (also available as
+                        // Sui Wallet mobile
+                        // for QR-code
+                        // pairing) and is
+                        // what's needed to
+                        // sign DeepBook /
+                        // prediction-market
+                        // PTBs. The link goes
+                        // to the official
+                        // Chrome Web Store
+                        // entry; mobile users
+                        // also get a deep link
+                        // to the App Store
+                        // equivalent.
+                        <div className="space-y-2 rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-3 text-center">
+                          <p className="text-sm text-zinc-400">
+                            No installed wallets found.
+                          </p>
+                          <p className="text-[10px] text-zinc-500">
+                            Install the Sui Wallet extension to sign transactions.
+                          </p>
+                          <a
+                            href="https://chromewebstore.google.com/detail/sui-wallet/opcgpfmipidbgpenhmajoajjkoblbom"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-md bg-cyan-500/20 px-3 py-1.5 text-xs font-semibold text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30 transition"
+                          >
+                            Install Sui Wallet →
+                          </a>
                         </div>
                       )}
                       {wallets.map((wallet) => (
@@ -389,6 +428,34 @@ export function ConnectModal() {
                         </button>
                       ))}
                     </div>
+                  </div>
+                  {/* R61 audit fix: "Need testnet SUI?" footer
+                     link. A first-time user who picks
+                     "Sui Wallet" and lands on a zero-balance
+                     account has no idea where to get gas.
+                     The faucet link is gated on the same
+                     `NEXT_PUBLIC_SUI_NETWORK` env the rest of
+                     the app uses (testnet / mainnet — the
+                     mainnet link is to the official Sui
+                     bridge, no Devnet faucet exists). */}
+                  <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3 text-center">
+                    <p className="text-xs text-zinc-500">
+                      New to Sui?{" "}
+                      <a
+                        href={`https://faucet.sui.io/?network=${
+                          ["testnet", "devnet"].includes(
+                            process.env.NEXT_PUBLIC_SUI_NETWORK ?? "",
+                          )
+                            ? "testnet"
+                            : "mainnet"
+                        }`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold text-cyan-300 hover:text-cyan-200 underline underline-offset-2"
+                      >
+                        Get testnet SUI for gas →
+                      </a>
+                    </p>
                   </div>
                 </div>
               )}

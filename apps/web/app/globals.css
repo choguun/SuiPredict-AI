@@ -69,3 +69,26 @@ button, input, textarea {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* R62 audit fix: hide the native
+   WebKit "X" clear button on
+   `type="search"` inputs so the
+   custom clear-button next to the
+   search field isn't doubled
+   (Safari renders a tiny grey X
+   inside the input on top of our
+   own custom X). The same rule
+   applies to IE10+'s pseudo and to
+   Edge (Chromium has a similar but
+   smaller pseudo). `appearance:
+   none` on the input itself would
+   also work, but it strips other
+   useful UA styling (the up/down
+   spinner etc) so we target just
+   the clear pseudo. */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-ms-clear {
+  -webkit-appearance: none;
+  appearance: none;
+}

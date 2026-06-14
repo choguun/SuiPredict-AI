@@ -23,6 +23,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Card } from "./ui";
 
 const AGENTS_BASE =
@@ -119,8 +120,12 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
   // second round of fetches with the orphaned map.
   // Abort + clear the map on unmount.
   useEffect(() => {
+    // Capture the ref value at effect-registration time so the
+    // cleanup sees the same Map instance, not a ref to whatever the
+    // ref points to at unmount time (which could be a different
+    // Map if React re-rendered between the effect and its cleanup).
+    const ctls = detailCtlsRef.current;
     return () => {
-      const ctls = detailCtlsRef.current;
       for (const ctl of ctls.values()) ctl.abort();
       ctls.clear();
     };
@@ -200,9 +205,35 @@ export function ParlayHistory({ userAddress, includeFinalized = true }: Props) {
     );
   }
   if (rows.length === 0) {
+    // R33 sweep fix: friendlier empty
+    // state. The previous build rendered
+    // a single line "No parlays yet."
+    // — a first-time user landing on
+    // /parlay had no signal of what a
+    // parlay is or how to build one.
+    // The new state surfaces a
+    // tutorial-style explainer ("a
+    // parlay combines 2-5 markets into
+    // one bet for a 5x payout cap") and
+    // a CTA back to the markets list.
     return (
       <Card title="Your parlay history" className="border-white/10">
-        <p className="text-sm text-zinc-500">No parlays yet.</p>
+        <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
+          <div className="mb-2 text-2xl">🎯</div>
+          <p className="text-sm text-zinc-300">
+            You haven&apos;t placed a parlay yet.
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">
+            A parlay combines 2-5 markets into a single bet for a 5x
+            payout cap. Build one above to start tracking here.
+          </p>
+          <Link
+            href="/markets"
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition"
+          >
+            Browse markets →
+          </Link>
+        </div>
       </Card>
     );
   }

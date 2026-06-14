@@ -1,16 +1,21 @@
 {
-  "name": "SuiPredict AI",
+  "name": "SuiPredict-AI",
   "short_name": "SuiPredict",
-  "description": "Daily Prediction Markets powered by AI on Sui Network",
+  "description": "Autonomous AI agents power a DeepBook V3 CLOB for World Cup 2026 prediction markets on Sui.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#050508",
-  "theme_color": "#050508",
+  "theme_color": "#10b981",
+  "orientation": "portrait-primary",
+  "scope": "/",
   "icons": [
     {
-      "src": "/favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
-  ]
+  ],
+  "categories": ["finance", "entertainment", "sports"],
+  "lang": "en"
 }

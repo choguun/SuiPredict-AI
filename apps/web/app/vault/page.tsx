@@ -23,6 +23,93 @@ import { toast } from "sonner";
 
 const VAULT_ID = process.env.NEXT_PUBLIC_VAULT_OBJECT_ID ?? "";
 
+// R62 audit fix: per-page "How the vault
+// works" callout. Page-scoped localStorage
+// (no per-market id). Mounted-ref guard
+// avoids a flash of the callout for users
+// who already dismissed it on a previous
+// visit.
+const VAULT_HOW_IT_WORKS_KEY = "suipredict.vault.howItWorks.dismissed";
+function readVaultHowItWorksDismissed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(VAULT_HOW_IT_WORKS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function dismissVaultHowItWorks(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(VAULT_HOW_IT_WORKS_KEY, "1");
+  } catch {
+    /* private mode etc. */
+  }
+}
+function HowItWorksCallout() {
+  const [mounted, setMounted] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    setDismissed(readVaultHowItWorksDismissed());
+  }, []);
+  if (!mounted || dismissed) return null;
+  return (
+    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-cyan-200">How the vault works</h3>
+          <p className="mt-1 text-xs text-cyan-300/80">
+            Deposit DUSDC, earn a share of the agents&apos; market-making yield. Withdraw any time.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            dismissVaultHowItWorks();
+            setDismissed(true);
+          }}
+          aria-label="Dismiss how-it-works hint"
+          className="shrink-0 rounded-md p-1 text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200 transition"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+          </svg>
+        </button>
+      </div>
+      <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
+            Deposit
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Mint VLP shares 1-for-1 with DUSDC. VLP is a transferable receipt of your vault stake.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
+            Earn
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Agents quote bid/ask spreads on the CLOB. The spread profit flows back to the vault pro-rata.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
+            Withdraw
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Burn VLP to receive your proportional DUSDC. No lock-up, no penalty for withdrawing.
+          </p>
+        </li>
+      </ol>
+    </div>
+  );
+}
+
 export default function VaultPage() {
   const account = useCurrentAccount();
   const client = useCurrentClient();
@@ -314,10 +401,20 @@ export default function VaultPage() {
 
   if (!account) {
     return (
-      <EmptyState
-        title="Wallet Disconnected"
-        description="Connect your Sui wallet to view and manage your vault allocations."
-      />
+      <div className="space-y-6 sm:space-y-8">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-5xl mb-2">
+            Liquidity Vault
+          </h1>
+          <p className="text-zinc-400">
+            Deposit DUSDC to earn yield from autonomous market-making agents.
+          </p>
+        </div>
+        <EmptyState
+          title="Wallet Disconnected"
+          description="Connect your Sui wallet to view and manage your vault allocations."
+        />
+      </div>
     );
   }
 
@@ -327,7 +424,7 @@ export default function VaultPage() {
       <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
-        
+
         <div className="relative z-10">
           <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-5xl mb-4">
             Liquidity Vault
@@ -338,6 +435,24 @@ export default function VaultPage() {
           </p>
         </div>
       </div>
+
+      {/* R62 audit fix: dismissible "How the
+         vault works" callout for first-time
+         users. The previous build dropped the
+         user straight into the deposit form
+         with no context for what VLP is or
+         where the yield comes from. The
+         callout explains (a) deposit DUSDC
+         mints VLP at the current share price,
+         (b) agents market-make and earn fees
+         that flow back to VLP holders, (c)
+         withdraw burns VLP for the
+         proportional DUSDC. Dismissed-once
+         via localStorage (mounted-ref guard
+         to avoid SSR/CSR flash; same R61
+         pattern the markets/[id] page
+         uses). */}
+      <HowItWorksCallout />
 
       {/* Stats Section */}
       <div className="grid gap-4 sm:grid-cols-3">

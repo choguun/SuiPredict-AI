@@ -16,6 +16,22 @@ export interface WcGroup {
     letter: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L";
     teams: WcTeam[];
 }
+/**
+ * R61 audit fix: the post-kickoff resolution
+ * window. The on-chain `prediction_market::create_market`
+ * `expiry_ms` is set to `kickoff + WC_POST_KICKOFF_RESOLUTION_WINDOW_MS`
+ * (regulation 90min + extra time 30min + the resolver's
+ * 2-hour post-match window for fetching the score from
+ * Wikipedia). Previously this constant was repeated in
+ * the wc-creator (`m.kickoffMs + 2 * 60 * 60 * 1000`) and
+ * the wc-resolver backfill (`m.kickoffMs + 2 * 60 * 60 * 1000`).
+ * A future tweak to 2.5h or 3h would have required two
+ * separate edits, and a missing edit would leave the
+ * SQLite mirror's `expiry_ms` out of sync with the on-chain
+ * value (the resolver's `expired` filter would then
+ * surface the wrong markets, or miss them entirely).
+ */
+export declare const WC_POST_KICKOFF_RESOLUTION_WINDOW_MS: number;
 export interface WcMatch {
     /** Stable id, e.g. "A1vA2" */
     id: string;

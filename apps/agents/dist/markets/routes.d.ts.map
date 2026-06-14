@@ -1,1 +1,1 @@
-{"version":3,"file":"routes.d.ts","sourceRoot":"","sources":["../../src/markets/routes.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,eAAe,EAAE,cAAc,EAAE,MAAM,WAAW,CAAC;AAqCjE,wBAAgB,kBAAkB,CAChC,GAAG,EAAE,eAAe,EACpB,GAAG,EAAE,cAAc,EACnB,GAAG,EAAE,GAAG,GACP,OAAO,CAoPT"}
+{"version":3,"file":"routes.d.ts","sourceRoot":"","sources":["../../src/markets/routes.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,eAAe,EAAE,cAAc,EAAE,MAAM,WAAW,CAAC;AAsCjE,wBAAgB,kBAAkB,CAChC,GAAG,EAAE,eAAe,EACpB,GAAG,EAAE,cAAc,EACnB,GAAG,EAAE,GAAG,GACP,OAAO,CA6QT"}

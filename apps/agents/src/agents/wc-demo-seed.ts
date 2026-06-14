@@ -60,11 +60,23 @@ export async function seedWcDemoMarkets(): Promise<{
       continue;
     }
     // For in-play matches (kickoffMs < now), the expiry is
-    // already past by definition. Mark them as "resolved"
-    // with a placeholder outcome so the user can see the
-    // historical result. For upcoming matches, leave the
-    // expiry at kickoff + 2h (regulation + extra time).
-    const isInPlay = m.kickoffMs < now;
+    // already past by definition. Insert them as `active`
+    // with `outcome: null` so the wc-resolver's main loop
+    // (`status === "active" && expiry_ms <= now`) picks
+    // them up on the next tick and overwrites the row with
+    // the real Wikipedia result.
+    //
+    // R60 audit fix: the previous version marked
+    // in-play matches as `"resolved"` with the
+    // placeholder outcome `"yes"`. That made the
+    // resolver's main loop skip the row (filter is
+    // `status === "active" && expiry_ms <= now`) so
+    // the placeholder stayed forever and the user saw
+    // a fabricated `yes` resolution for every
+    // in-play match. The resolver's R58.H11.1
+    // backfill branch was the workaround, but a
+    // correct seed should never insert a fabricated
+    // outcome in the first place.
     upsertMarket({
       id,
       title: matchWinnerTitle(m),
@@ -72,8 +84,15 @@ export async function seedWcDemoMarkets(): Promise<{
       category: "worldcup",
       expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
       resolution_source: matchWinnerResolutionSource(m),
-      status: isInPlay ? "resolved" : "active",
-      outcome: isInPlay ? "yes" : null, // placeholder; the WC resolver will overwrite
+      // In-play matches: keep `status = "active"` so
+      // the resolver processes them; the actual
+      // outcome will be written by the resolver once
+      // the Wikipedia scrape returns a score. Upcoming
+      // matches: same `active` status, with
+      // `outcome = null` and the standard
+      // `expiry_ms = kickoff + 2h`.
+      status: "active",
+      outcome: null,
       created_at_ms: Date.now(),
     });
     seeded++;

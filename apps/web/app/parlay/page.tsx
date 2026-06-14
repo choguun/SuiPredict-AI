@@ -6,6 +6,7 @@ import {
   useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   buildCreateParlayTx,
@@ -33,6 +34,102 @@ const COLLATERAL_ATOMS = BigInt(1_000_000);
 
 const PARLAY_POOL_ID = process.env.NEXT_PUBLIC_PARLAY_POOL_ID ?? "";
 
+// R62 audit fix: per-page "how it works"
+// callout for the Parlay page. Mirrors the
+// markets/[id] page's dismiss-per-market
+// localStorage pattern, but uses a single
+// page-scoped key (no market id) since the
+// Parlay flow is the same across every
+// visit. The hydration-mismatch guard
+// (mounted ref) is the same R61 fix from
+// markets/[id] — render `null` until the
+// effect runs so SSR + first paint don't
+// show a flash of the callout for returning
+// users who already dismissed it.
+const PARLAY_HOW_IT_WORKS_KEY = "suipredict.parlay.howItWorks.dismissed";
+function readParlayHowItWorksDismissed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(PARLAY_HOW_IT_WORKS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function dismissParlayHowItWorks(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PARLAY_HOW_IT_WORKS_KEY, "1");
+  } catch {
+    /* private mode etc. */
+  }
+}
+function HowItWorksCallout() {
+  const [mounted, setMounted] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    setDismissed(readParlayHowItWorksDismissed());
+  }, []);
+  if (!mounted || dismissed) return null;
+  return (
+    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-cyan-200">How a parlay works</h3>
+          <p className="mt-1 text-xs text-cyan-300/80">
+            A parlay bundles multiple YES/NO picks into one trade. You only win if every leg wins.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            dismissParlayHowItWorks();
+            setDismissed(true);
+          }}
+          aria-label="Dismiss how-it-works hint"
+          className="shrink-0 rounded-md p-1 text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200 transition"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+          </svg>
+        </button>
+      </div>
+      <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
+            Lock
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Lock 1 DUSDC as collateral. The agents worker starts
+            tracking every leg you chose.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
+            Wait
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Each leg resolves independently as its market settles.
+            Any single loss = the whole parlay loses the collateral.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
+            Payout
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            All-win: claim <code>collateral × multiplier</code>.
+            Any-loss: collateral is retained in the pool.
+          </p>
+        </li>
+      </ol>
+    </div>
+  );
+}
+
 type Leg = { marketId: string; prediction: 1 | 2 }; // 1=YES, 2=NO
 
 interface CreatedParlay {
@@ -42,6 +139,15 @@ interface CreatedParlay {
   owner: string;
   legsRecorded: bigint;
   legsLost: bigint;
+  // R62 audit fix: store the original
+  // leg count so the "Legs recorded:
+  // X/Y" rollup survives the
+  // `setLegs([])` reset on the
+  // success path. Without this the
+  // rollup rendered "0/?" because
+  // `legs` is empty by the time the
+  // success card mounts.
+  legCount: number;
 }
 
 export default function ParlayPage() {
@@ -53,6 +159,19 @@ export default function ParlayPage() {
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [loadingMarkets, setLoadingMarkets] = useState(true);
   const [legs, setLegs] = useState<Leg[]>([]);
+  // R62 audit fix: search/filter for the
+  // "Available markets" list. The previous
+  // build had no search affordance — a user
+  // building a 5-leg parlay from 60+ active
+  // markets had to scroll to find a
+  // specific match. The search runs
+  // case-insensitive against title,
+  // description, and category, mirroring
+  // the /markets list. A category filter
+  // pill row keeps the "World Cup only" or
+  // "Crypto only" use case one tap away.
+  const [parlaySearch, setParlaySearch] = useState("");
+  const [parlayCategory, setParlayCategory] = useState("");
   const [multiplier, setMultiplier] = useState(3); // e.g. 3x
   // Pool's on-chain max_payout_bps. Fetched once on mount; the
   // slider's `max` is clamped to this value (in bps / 10_000) so the
@@ -179,7 +298,7 @@ export default function ParlayPage() {
           readParlayLegsLost(client, created.parlayId),
         ]);
         if (cancelled) return;
-        setCreated({ parlayId: created.parlayId, collateral, payoutBps: payout, owner, legsRecorded: recorded, legsLost: lost });
+        setCreated({ parlayId: created.parlayId, collateral, payoutBps: payout, owner, legsRecorded: recorded, legsLost: lost, legCount: created.legCount });
       } catch {
         // ignore — next tick will retry
       }
@@ -412,6 +531,12 @@ export default function ParlayPage() {
         owner: account.address,
         legsRecorded: BigInt(0),
         legsLost: BigInt(0),
+        // R62 audit fix: capture the leg count at
+        // submit time so the "X/Y" rollup in
+        // the success card doesn't degrade to
+        // "0/?" after `setLegs([])` runs
+        // immediately below.
+        legCount: legs.length,
       });
       setLegs([]);
       // The agents indexer (task #17) will start polling ParlayCreated
@@ -493,10 +618,22 @@ export default function ParlayPage() {
           Parlay Builder
         </h1>
         <Card>
-          <p className="text-amber-300">
-            NEXT_PUBLIC_PARLAY_POOL_ID is not set. Run the parlay
-            bootstrap (task #19) to publish the pool, then set the env.
-          </p>
+          <div className="space-y-3 py-2">
+            <p className="text-sm font-semibold text-amber-200">
+              Parlays are coming soon
+            </p>
+            <p className="text-sm text-zinc-400">
+              We&apos;re finishing the on-chain parlay pool. In the
+              meantime, build single-leg positions on the markets page —
+              same YES/NO mechanics, same DeepBook liquidity.
+            </p>
+            <Link
+              href="/markets"
+              className="inline-block rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+            >
+              Browse markets →
+            </Link>
+          </div>
         </Card>
       </div>
     );
@@ -516,7 +653,51 @@ export default function ParlayPage() {
         </p>
       </div>
 
-      <Card title={`Legs (${legs.length}/${MAX_LEGS})`} className="border-white/10">
+      {/* R62 audit fix: dismissible "How a parlay
+         works" callout for first-time users. The
+         Parlay page is the most complex user
+         flow in the app (lock 1 DUSDC, wait
+         for all legs to resolve, claim
+         multiplier×payout) and a first-time
+         user had no inline guidance for what
+         "legs" or "multiplier" mean or what
+         happens on a partial win. The callout
+         follows the markets/[id] page's
+         per-market localStorage pattern —
+         dismissed once, never re-surfaces
+         unless the user clears the key. */}
+      <HowItWorksCallout />
+
+      {/* R62 audit fix: "Clear all" affordance
+         for the legs list. The pre-R62 build
+         only had per-leg "Remove" buttons, so
+         a user who had selected 5 markets and
+         wanted to start over had to click
+         "Remove" 5 times in a row. The
+         clear-all button is positioned in the
+         card header (which now lives in the
+         body, not the `Card` `title` prop,
+         because the Card primitive doesn't
+         support trailing actions yet — see
+         the R62 audit note on the shared
+         `Card` component for the upgrade
+         plan). Disabled when there are no
+         legs. */}
+      <Card className="border-white/10">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+            Legs ({legs.length}/{MAX_LEGS})
+          </h2>
+          {legs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setLegs([])}
+              className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-300 hover:bg-rose-500/10 hover:text-rose-300 transition"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
         {legs.length === 0 ? (
           <p className="text-sm text-zinc-500">
             No legs yet. Add markets from the list below.
@@ -641,32 +822,124 @@ export default function ParlayPage() {
         ) : markets.length === 0 ? (
           <p className="text-sm text-zinc-500">No active markets right now.</p>
         ) : (
-          <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            {markets.map((m) => {
-              const added = legs.some((l) => l.marketId === m.id);
-              const disabled = added || legs.length >= MAX_LEGS;
-              return (
-                <li
-                  key={m.id}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/20 p-3"
+          <>
+            {/* R62 audit fix: search + category
+                filter for the available-markets
+                list. With 60+ active markets the
+                flat list was unwieldy — a user
+                building a 5-leg parlay had to
+                scroll to find a specific match.
+                The search is plain HTML form
+                state (no client JS) and the
+                filter pills are plain <button>s
+                that update state. Mirrors the
+                /markets list UX so the two
+                pages feel consistent. */}
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative flex-1">
+                <span
+                  className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-zinc-500"
+                  aria-hidden="true"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-white">{m.title}</p>
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">
-                      {m.category} · {m.status}
-                    </p>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path strokeLinecap="round" d="m21 21-4.3-4.3" />
+                  </svg>
+                </span>
+                <input
+                  type="search"
+                  value={parlaySearch}
+                  onChange={(e) => setParlaySearch(e.target.value)}
+                  placeholder="Filter markets by name or category…"
+                  aria-label="Filter available markets"
+                  className="w-full rounded-lg border border-white/10 bg-[#0d1019] py-2 pl-9 pr-3 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+                />
+              </div>
+            </div>
+            {(() => {
+              const q = parlaySearch.trim().toLowerCase();
+              const filtered = markets.filter((m) => {
+                if (parlayCategory && m.category !== parlayCategory) return false;
+                if (!q) return true;
+                return (
+                  m.title.toLowerCase().includes(q) ||
+                  m.category.toLowerCase().includes(q) ||
+                  (m.description ?? "").toLowerCase().includes(q)
+                );
+              });
+              // Derive the available categories from
+              // the active market list (no "Sports" /
+              // "Politics" pills that produce empty
+              // results, like the R57 fix on /markets).
+              const cats = Array.from(
+                new Set(markets.map((m) => m.category)),
+              ).sort();
+              if (filtered.length === 0) {
+                return (
+                  <p className="text-sm text-zinc-500">
+                    No markets match your filter. Try clearing the search.
+                  </p>
+                );
+              }
+              return (
+                <>
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setParlayCategory("")}
+                      className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider transition ${
+                        parlayCategory === ""
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                          : "border border-white/10 bg-white/5 text-zinc-400 hover:bg-white/10"
+                      }`}
+                    >
+                      All
+                    </button>
+                    {cats.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setParlayCategory(c)}
+                        className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider transition ${
+                          parlayCategory === c
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            : "border border-white/10 bg-white/5 text-zinc-400 hover:bg-white/10"
+                        }`}
+                      >
+                        {c}
+                      </button>
+                    ))}
                   </div>
-                  <button
-                    onClick={() => handleAddLeg(m.id)}
-                    disabled={disabled}
-                    className="rounded-md bg-cyan-500/20 border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/30 disabled:opacity-40"
-                  >
-                    {added ? "Added" : "Add"}
-                  </button>
-                </li>
+                  <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {filtered.map((m) => {
+                      const added = legs.some((l) => l.marketId === m.id);
+                      const disabled = added || legs.length >= MAX_LEGS;
+                      return (
+                        <li
+                          key={m.id}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/20 p-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm text-white">{m.title}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">
+                              {m.category} · {m.status}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleAddLeg(m.id)}
+                            disabled={disabled}
+                            className="rounded-md bg-cyan-500/20 border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/30 disabled:opacity-40"
+                          >
+                            {added ? "Added" : "Add"}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
               );
-            })}
-          </ul>
+            })()}
+          </>
         )}
       </Card>
 
@@ -689,7 +962,7 @@ export default function ParlayPage() {
               {" · "}
               Payout: <span className="text-white">{(Number(created.payoutBps) / 10_000).toFixed(2)}x</span>
               {" · "}
-              Legs recorded: <span className="text-white">{created.legsRecorded.toString()}/{legs.length || "?"}</span>
+              Legs recorded: <span className="text-white">{created.legsRecorded.toString()}/{created.legCount}</span>
               {" · "}
               Lost: <span className={created.legsLost > BigInt(0) ? "text-rose-300" : "text-emerald-300"}>{created.legsLost.toString()}</span>
             </p>

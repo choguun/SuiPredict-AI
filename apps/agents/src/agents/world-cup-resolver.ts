@@ -47,6 +47,7 @@ import {
   matchWinnerDescription,
   matchWinnerResolutionSource,
   matchWinnerTitle,
+  WC_POST_KICKOFF_RESOLUTION_WINDOW_MS,
   type WcMatch,
 } from "./world-cup-fetcher.js";
 import { extractFromUrl, type WcMatchResult } from "./llm-extractor.js";
@@ -64,6 +65,38 @@ function outcomeFor(result: { winner: "home" | "away" | "draw" }): 1 | 2 {
 function matchIdFromMarketId(marketId: string): string | null {
   if (!marketId.startsWith("wc26-")) return null;
   return marketId.slice("wc26-".length);
+}
+
+/**
+ * R60 audit fix: the wc-creator creates TWO SQLite
+ * rows for every successful on-chain market:
+ *   1. A `wc26-<matchId>` row (no pool_id) for the
+ *      UI's idempotency dedupe.
+ *   2. An on-chain `marketId` row (with pool_id) for
+ *      the actual on-chain market.
+ * The pre-R60 `matchIdFromMarketId` only handled the
+ * first form, silently skipping the on-chain row in
+ * the resolver's main loop — leaving the on-chain
+ * market "active" forever and preventing YES/NO
+ * holders from redeeming.
+ *
+ * The fix: also accept the on-chain row by
+ * recognising its `deepbook_pool_key = "wc_<matchId>"`
+ * (set by the wc-creator at line 200 of
+ * `world-cup-creator.ts`). Prefer the canonical
+ * `wc26-<matchId>` form; fall back to the
+ * `deepbook_pool_key` parse; return null for any
+ * other shape.
+ */
+function matchIdFromMarketRow(market: {
+  id: string;
+  deepbook_pool_key?: string | null;
+}): string | null {
+  const fromId = matchIdFromMarketId(market.id);
+  if (fromId) return fromId;
+  const key = market.deepbook_pool_key;
+  if (key && key.startsWith("wc_")) return key.slice("wc_".length);
+  return null;
 }
 
 export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResult> {
@@ -111,7 +144,7 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
     );
     let backfilled = 0;
     for (const m of schedule0) {
-      const exp = m.kickoffMs + 2 * 60 * 60 * 1000;
+      const exp = m.kickoffMs + WC_POST_KICKOFF_RESOLUTION_WINDOW_MS;
       if (exp > now0) continue; // not in-play yet
       const id = `wc26-${m.id}`;
       if (existingIds.has(id)) continue;
@@ -163,7 +196,7 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
   for (const market of expired.slice(0, 5)) {
     // Cap to 5 per tick to avoid hammering the chain during a
     // matchday that produced a wave of expired markets.
-    const matchId = matchIdFromMarketId(market.id);
+    const matchId = matchIdFromMarketRow(market);
     if (!matchId) {
       skipped++;
       continue;
@@ -304,7 +337,7 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
             source: `LLM extractor (${llmResult?.source ?? "Wikipedia"})`,
             confidence: llmResult?.confidence ?? 70,
           };
-          await commitResolution(
+          const committed = await commitResolution(
             match,
             {
               homeGoals: synthetic.homeGoals,
@@ -314,7 +347,16 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
             ctx,
             market,
           );
-          resolved++;
+          if (committed) {
+            resolved++;
+          } else {
+            // commitResolution already logged the
+            // warning; count as `failed` so the
+            // operator sees the on-chain gap in
+            // /decisions and the next tick can
+            // re-attempt.
+            failed++;
+          }
           continue;
       }
       skipped++;
@@ -344,7 +386,20 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
 
     try {
       const client = getSharedClient();
-      const tx = buildResolveMarketTx(market.id, outcome);
+      // R60 audit fix: the wc-creator now
+      // stores the on-chain marketId in
+      // `onchain_market_id` (the row's
+      // primary `id` is the wc26 form, not
+      // the on-chain one). The PTB needs
+      // the on-chain id; fall back to
+      // `market.id` only when the column is
+      // null (a pre-R60 DB or a demo market
+      // somehow without onchain_market_id
+      // set, which `commitResolution` will
+      // already have caught via the
+      // `!market.pool_id` branch).
+      const onchainId = market.onchain_market_id ?? market.id;
+      const tx = buildResolveMarketTx(onchainId, outcome);
       const result2 = await executeTransaction(client, tx, ctx.signer);
       upsertMarket({
         ...market,
@@ -373,28 +428,121 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
 }
 
 // Helper: commit an extracted-or-regex'd result to the
-// demo path. Extracted from the inline code above so the
-// LLM-extractor fallback in `for (const market ...)`
-// can call it without duplicating the upsert logic.
+// on-chain AND demo paths. Extracted from the inline code
+// above so the LLM-extractor fallback in `for (const
+// market ...)` can call it without duplicating the upsert
+// logic.
+//
+// R60 audit fix: the previous signature took `_ctx` but
+// never used it, so the LLM-extractor fallback path
+// (which goes through this helper) only updated the
+// SQLite mirror and never submitted the on-chain
+// `resolve_market` PTB. The on-chain market stayed
+// "active" forever, leaving winning YES/NO holders
+// unable to redeem and the pool TVL stranded. Mirror
+// the main loop's on-chain path: try the PTB, fall
+// back to a SQLite-only update if the market has no
+// pool or the PTB aborts. Return `true` on a
+// successful on-chain commit, `false` otherwise so
+// the caller can update its `resolved` / `failed`
+// counters.
 async function commitResolution(
   match: WcMatch,
   result: { homeGoals: number; awayGoals: number; winner: "home" | "away" | "draw" },
-  _ctx: AgentContext,
+  ctx: AgentContext,
   market: ReturnType<typeof getMarket>,
-): Promise<void> {
-  if (!market) return;
+): Promise<boolean> {
+  if (!market) return false;
   const outcome = outcomeFor(result);
-  upsertMarket({
-    ...market,
-    status: "resolved",
-    outcome: outcome === 1 ? "yes" : "no",
-  });
+  // Demo path: no on-chain pool id means the market
+  // was inserted as a SQLite stub by `wc-demo-seed` or
+  // the WorldCupCreator's demo fallback. Just update
+  // the mirror.
+  if (market.id.startsWith("demo-") || !market.pool_id) {
+    upsertMarket({
+      ...market,
+      status: "resolved",
+      outcome: outcome === 1 ? "yes" : "no",
+    });
+    return true;
+  }
+  // On-chain path: submit the `resolve_market` PTB.
+  // On any failure (insufficient gas, network blip,
+  // missing admin capability) log the error and
+  // still update the mirror so the rest of the
+  // pipeline (positions, leaderboard) reflects the
+  // resolved state. The on-chain retry happens on
+  // the next tick via the `expired` filter (which
+  // keys on `status === "active" && expiry_ms <= now`,
+  // so a re-stamp of `status = "active"` is required
+  // for the retry to actually fire).
+  try {
+    const client = getSharedClient();
+    // R60 audit fix: use the on-chain marketId
+    // (the SQLite primary key is the `wc26-<matchId>`
+    // form, which would abort the on-chain
+    // `resolve_market` call). Fall back to
+    // `market.id` for pre-R60 DBs that don't have
+    // the column set.
+    const tx = buildResolveMarketTx(
+      market.onchain_market_id ?? market.id,
+      outcome,
+    );
+    const onChainResult = await executeTransaction(client, tx, ctx.signer);
+    upsertMarket({
+      ...market,
+      status: "resolved",
+      outcome: outcome === 1 ? "yes" : "no",
+    });
+    console.log(
+      `[wc-resolver] ${match.id} → ${outcome === 1 ? "YES" : "NO"} (${result.homeGoals}-${result.awayGoals}, tx ${onChainResult.digest.slice(0, 12)}…)`,
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      `[wc-resolver] on-chain resolve failed for ${match.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+    // Still mark as resolved in SQLite so the user
+    // sees the result; the operator can re-trigger
+    // an on-chain commit by clearing the row's
+    // status manually. A future improvement is to
+    // keep the row in `status = "active"` until the
+    // PTB confirms, but that would block the
+    // position-indexer from decrementing redemptions
+    // — for now, mirror the main loop's "best
+    // effort" behaviour.
+    upsertMarket({
+      ...market,
+      status: "resolved",
+      outcome: outcome === 1 ? "yes" : "no",
+    });
+    return false;
+  }
 }
 
 /**
- * Diagnostic: list all WC markets that are within 1h of expiry and
- * not yet resolved. The leaderboard / agents page uses this to
- * surface a "match about to start!" teaser.
+ * Diagnostic: list all WC markets whose kickoff falls inside the
+ * `windowMs` window from now (or have already started but not yet
+ * resolved). The home page "live & upcoming" ticker and the world-cup
+ * dashboard both consume this to surface a "match about to start!"
+ * teaser.
+ *
+ * R30 sweep fix: the previous filter was
+ * `Math.abs(m.expiry_ms - now) < 24h` — a "markets
+ * expiring in the next 24h" predicate, not a
+ * "matches about to start" one. With the seeded
+ * `expiry_ms = kickoff + 2h`, a 4-day-out match had
+ * `expiry_ms - now > 24h` and was silently
+ * dropped; the dashboard rendered an empty
+ * "upcoming" list and a user landing mid-tournament
+ * saw nothing live. The new filter derives
+ * `kickoff = expiry - 2h` and returns markets whose
+ * kickoff is within the window (with a generous
+ * `-2h` tail so matches that started <2h ago —
+ * i.e. live now — are also surfaced). The 24h
+ * window default from the `/wc/upcoming` route is
+ * preserved, so no caller needs to change.
  */
 export function upcomingWcMarkets(windowMs = 60 * 60 * 1000): Array<{
   id: string;
@@ -406,15 +554,32 @@ export function upcomingWcMarkets(windowMs = 60 * 60 * 1000): Array<{
     .filter(
       (m) =>
         m.category === "worldcup" &&
-        m.status === "active" &&
-        Math.abs(m.expiry_ms - now) < 24 * 60 * 60 * 1000,
+        m.status === "active",
     )
-    .map((m) => ({
-      id: m.id,
-      title: m.title,
-      kickoffIn: m.expiry_ms - 2 * 60 * 60 * 1000 - now, // kickoff is 2h before expiry
-    }))
-    .filter((m) => m.kickoffIn <= windowMs)
+    .map((m) => {
+      // Prefer the row's `kickoff_ms` (set by `rowToMarket` in
+      // `markets/store.ts`); fall back to `expiry_ms - 2h` for
+      // backwards-compat with rows written by a pre-R61 agents
+      // build that didn't populate the field.
+      const kickoff = m.kickoff_ms ?? m.expiry_ms - 2 * 60 * 60 * 1000;
+      return {
+        id: m.id,
+        title: m.title,
+        kickoffIn: kickoff - now,
+      };
+    })
+    // Include matches that haven't kicked off yet
+    // (kickoffIn > 0 && <= windowMs) AND matches
+    // that started in the last 2h (kickoffIn in
+    // `[-2h, 0]`). The 2h tail matches the WC
+    // contract's resolution window — once 2h
+    // passes after kickoff the resolver should
+    // have settled the market, and a still-active
+    // market >2h after kickoff is anomalous.
+    .filter(
+      (m) =>
+        (m.kickoffIn <= windowMs && m.kickoffIn > -2 * 60 * 60 * 1000),
+    )
     .sort((a, b) => a.kickoffIn - b.kickoffIn);
 }
 

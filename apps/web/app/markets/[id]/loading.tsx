@@ -1,8 +1,24 @@
 export default function MarketDetailLoading() {
   return (
-    <div className="space-y-5 animate-pulse">
+    // R62 audit fix: same `role="status"`
+    // + `aria-live="polite"` wrapper the
+    // global loading.tsx uses. The
+    // market detail page is the deepest
+    // page in the app (multiple
+    // refetching sources: market data,
+    // order book, friend positions) and
+    // a screen-reader user is most
+    // likely to be waiting on this
+    // page. The `sr-only` text doesn't
+    // disrupt the visual skeleton.
+    <div
+      role="status"
+      aria-live="polite"
+      className="space-y-5 animate-pulse"
+    >
+      <span className="sr-only">Loading market…</span>
       <div className="h-5 w-32 rounded-lg bg-white/5" />
-      
+
       <div className="rounded-lg border border-white/10 bg-[#11141d] p-5 sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="w-full">

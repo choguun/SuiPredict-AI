@@ -168,10 +168,22 @@ export function FriendPositionsWidget({
                         <span className="text-rose-400">{p.no} NO</span>
                       )}
                     </div>
+                    <a
+                      href={`https://${process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet"}.suivision.xyz/address/${addr}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-0.5 inline-block text-[10px] text-cyan-400/70 hover:text-cyan-300"
+                    >
+                      View on SuiVision ↗
+                    </a>
                   </div>
-                  {onCopyBet && size > 0 && (
+                  {size > 0 && (
                     <button
-                      onClick={() => onCopyBet(side, size)}
+                      onClick={() =>
+                        onCopyBet
+                          ? onCopyBet(side, size)
+                          : defaultCopyBet(addr, side)
+                      }
                       className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-500/20 hover:text-emerald-300"
                     >
                       Copy {side.toUpperCase()} →
@@ -197,4 +209,52 @@ export function sharePositionUrl(opts: {
   const text = `I just bet ${opts.side.toUpperCase()} on "${opts.marketTitle}" — ${opts.quantity} shares. Beat me:`;
   const params = new URLSearchParams({ text, url: opts.marketUrl });
   return `https://twitter.com/intent/tweet?${params.toString()}`;
+}
+
+/**
+ * R61 audit fix: the `onCopyBet` callback was
+ * declared in the props but never *received* by
+ * the markets/[id] page (a caller `onCopyBet?.(...)`
+ * was guarded against undefined, and no one
+ * supplied one). A user who tapped "Copy YES →"
+ * got no feedback at all. The friend card now
+ * ships a default onCopyBet that, when no
+ * parent-side handler is provided, navigates to
+ * the same market with `?side=...&order=buy` set
+ * so the trade panel opens pre-selected (the
+ * markets/[id] page reads those params in R61).
+ * The page-mount call site in
+ * `app/markets/[id]/page.tsx` still passes its
+ * own onCopyBet (a future enhanced copy-trade
+ * sponsor flow), so behaviour there is
+ * unchanged.
+ */
+function defaultCopyBet(
+  marketId: string,
+  side: "yes" | "no",
+  // R61 audit fix: drop the unused `_size` from
+  // the parameter list. The previous signature
+  // accepted a `size` value to match the
+  // parent's `onCopyBet` shape, but the default
+  // fallback never used it (we only nav to the
+  // market with the side pre-selected, and
+  // `qty` is set by the page on the parent
+  // handler's call site). The leading underscore
+  // suppressed the lint warning under the
+  // "argsIgnorePattern" convention, but the
+  // destructure still costs a frame per call.
+  // The parent handler in `markets/[id]/page.tsx`
+  // continues to receive `size` via its own
+  // `onCopyBet={(_, size) => setQty(...)}`
+  // closure — no behaviour change for the
+  // parent call site.
+) {
+  if (typeof window === "undefined") return;
+  const url = `/markets/${encodeURIComponent(marketId)}?side=${side}&order=buy`;
+  // Use `location.assign` so the back button still
+  // returns to the previous page (a `<Link>`
+  // click would also work, but the friend card
+  // may render inside a `<Link>` parent, and a
+  // nested link is invalid HTML).
+  window.location.assign(url);
 }

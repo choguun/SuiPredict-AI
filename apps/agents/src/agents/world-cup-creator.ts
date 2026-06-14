@@ -32,6 +32,19 @@ import {
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
+import { WC_POST_KICKOFF_RESOLUTION_WINDOW_MS } from "./world-cup-fetcher.js";
+
+/**
+ * R61 audit fix: use the shared constant from
+ * `world-cup-fetcher.ts` instead of a local
+ * `2 * 60 * 60 * 1000` literal. The wc-creator,
+ * wc-resolver backfill, and the markets store's
+ * `kickoff_ms` derivation all reference the same
+ * 2-hour post-kickoff resolution window. A future
+ * tweak now requires a single edit at the
+ * `world-cup-fetcher.ts` source.
+ */
+const POST_KICKOFF_RESOLUTION_WINDOW_MS = WC_POST_KICKOFF_RESOLUTION_WINDOW_MS;
 import { Transaction } from "@mysten/sui/transactions";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
@@ -138,7 +151,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
         title: matchWinnerTitle(m),
         description: matchWinnerDescription(m),
         category: "worldcup",
-        expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000, // 2h after kickoff (regulation + ET)
+        expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS, // 2h after kickoff (regulation + ET)
         resolution_source: matchWinnerResolutionSource(m),
         status: "active",
         created_at_ms: Date.now(),
@@ -173,7 +186,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             title: matchWinnerTitle(m),
             description: matchWinnerDescription(m),
             category: "worldcup",
-            expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+            expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
             resolution_source: matchWinnerResolutionSource(m),
             status: "active",
             created_at_ms: Date.now(),
@@ -204,7 +217,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       const createTx = buildCreateMarketTx({
         title: matchWinnerTitle(m),
         resolutionSource: matchWinnerResolutionSource(m),
-        expiryMs: BigInt(m.kickoffMs + 2 * 60 * 60 * 1000),
+        expiryMs: BigInt(m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS),
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
@@ -226,12 +239,28 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             ? (rawPoolId as { id: string }).id
             : null;
         if (poolId) {
+          // R60 audit fix: the previous code inserted
+          // a SEPARATE row keyed by the on-chain
+          // `marketId`, leaving the wc26 row without
+          // a pool_id and the on-chain row stranded
+          // (the wc-resolver's `matchIdFromMarketId`
+          // only accepted the wc26 id, so the
+          // on-chain market was never resolved).
+          // Consolidate: write the on-chain
+          // `marketId` into the wc26 row's
+          // `onchain_market_id` column, and copy
+          // the pool_id / deepbook_pool_id /
+          // referral_id onto the same row. The
+          // wc-resolver reads `onchain_market_id`
+          // for `buildResolveMarketTx`; the
+          // wc-maker reads `deepbook_pool_id` for
+          // `buildPlaceOrderTx`.
           upsertMarket({
-            id: marketId,
+            id: dedupeKey(m.id),
             title: matchWinnerTitle(m),
             description: matchWinnerDescription(m),
             category: "worldcup",
-            expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+            expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
             resolution_source: matchWinnerResolutionSource(m),
             status: "active",
             pool_id: poolId,
@@ -242,12 +271,13 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             deepbook_base_scalar: 1_000_000,
             deepbook_quote_scalar: 1_000_000,
             referral_id: null,
+            onchain_market_id: marketId,
             created_at_ms: Date.now(),
           });
           const refTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
           const refResult = await executeTransaction(client, refTx, ctx.signer);
           const refId = await extractCreatedObjectId(client, refResult.digest, "DeepBookPoolReferral");
-          if (refId) patchMarketReferralId(marketId, refId);
+          if (refId) patchMarketReferralId(dedupeKey(m.id), refId);
         }
       } catch (refErr) {
         console.warn(
@@ -329,14 +359,51 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
           title: matchWinnerTitle(m),
           description: matchWinnerDescription(m),
           category: "worldcup",
-          expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+          expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
           resolution_source: matchWinnerResolutionSource(m),
           status: "active",
           created_at_ms: Date.now(),
         });
         created++;
+        // R61 audit fix: surface the consequence of
+        // the abort clearly. The on-chain pool
+        // already exists (DeepBook's
+        // `register_pool` aborts with code 1 when
+        // the YES/QUOTE coin-type pair is
+        // already registered), so the on-chain
+        // market for this match is live but our
+        // SQLite mirror has no
+        // `onchain_market_id` to look it up by.
+        // The wc-resolver's main loop
+        // (`category = "worldcup" &&
+        // status = "active" && expiry_ms <= now`)
+        // will see this row and (via the
+        // `commitResolution` PTB) try to
+        // `buildResolveMarketTx("wc26-A1v3", ...)`,
+        // which the chain will reject because
+        // "wc26-A1v3" is not a Sui object id.
+        // The on-chain market stays "active"
+        // forever and the winning YES/NO
+        // holders can never redeem.
+        //
+        // A proper fix would index the
+        // `MarketRegistry` events to look up the
+        // on-chain market id for the (creator,
+        // matchId) tuple. Until that's built,
+        // the operator can:
+        //   (a) drop the existing pool via
+        //       `deepbook::pool::unregister_pool`
+        //       (the agent doesn't have a
+        //       wrapper for this yet), or
+        //   (b) manually patch the SQLite row
+        //       with the on-chain market id
+        //       (run `sui client object
+        //       <registry-id>` to find it, then
+        //       `UPDATE markets SET
+        //       onchain_market_id = '0x…'
+        //       WHERE id = 'wc26-<matchId>'`).
         console.warn(
-          `[wc-creator] ${m.id} on-chain pool already exists; created demo row instead.`,
+          `[wc-creator] ${m.id} on-chain pool already exists (DeepBook register_pool abort 1); demo row created but \`onchain_market_id\` is unknown — wc-resolver will not be able to call resolve_market for this match. See the R61 audit note in world-cup-creator.ts.`,
         );
       } else if (
         msg.includes("insufficient SUI balance") ||
@@ -351,7 +418,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
           title: matchWinnerTitle(m),
           description: matchWinnerDescription(m),
           category: "worldcup",
-          expiry_ms: m.kickoffMs + 2 * 60 * 60 * 1000,
+          expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
           resolution_source: matchWinnerResolutionSource(m),
           status: "active",
           created_at_ms: Date.now(),

@@ -12,8 +12,8 @@
  */
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { Card, Badge } from "@/components/ui";
+import { useEffect, useState } from "react";
+import { Card } from "@/components/ui";
 import { useFriends, shortAddr } from "@/lib/friends";
 
 interface PortfolioRow {
@@ -76,6 +76,14 @@ function FriendCard({ addr, onRemove }: { addr: string; onRemove: () => void }) 
                 ? "Unreachable"
                 : `${data.positions.length} position${data.positions.length === 1 ? "" : "s"}`}
           </div>
+          <a
+            href={`https://${process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet"}.suivision.xyz/address/${addr}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-0.5 inline-block text-[10px] text-cyan-400/70 hover:text-cyan-300"
+          >
+            View on SuiVision ↗
+          </a>
         </div>
         <button
           onClick={onRemove}
@@ -148,12 +156,34 @@ export default function FriendsPage() {
 
   return (
     <div className="space-y-6 pb-12">
-      <div>
-        <h1 className="text-2xl font-extrabold text-white sm:text-3xl">Friends</h1>
-        <p className="text-sm text-zinc-500">
-          Follow Sui addresses to see their open positions, copy their bets,
-          and compete on a private leaderboard.
-        </p>
+      {/* R30 sweep fix: gradient hero header,
+          consistent with /markets, /worldcup,
+          /parlay. The previous build was a bare
+          1-line h1 with no visual weight. The new
+          hero matches the rest of the app's
+          aesthetic, names the social-graph
+          feature explicitly, and the subtitle
+          lists the 4 things the user gets
+          (positions / copy / leaderboard / X
+          share). */}
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
+        <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
+        <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
+        <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-violet-400">
+              👥 Social Graph
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-4xl">
+              Friends
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-zinc-400 sm:text-base">
+              Follow Sui addresses to see their open positions, copy their bets,
+              and compete on a private leaderboard. No server-side social graph —
+              your follow list lives in localStorage.
+            </p>
+          </div>
+        </div>
       </div>
 
       <Card>
@@ -185,13 +215,40 @@ export default function FriendsPage() {
 
       {!hasFriends && (
         <Card>
-          <div className="space-y-2 text-center py-4">
-            <div className="text-4xl">👥</div>
+          <div className="space-y-3 text-center py-6">
+            <div className="text-5xl">👥</div>
             <h3 className="text-lg font-bold text-white">No friends yet</h3>
             <p className="text-sm text-zinc-400 max-w-sm mx-auto">
               Paste a friend&apos;s Sui wallet address above to see their open
               bets and challenge them to a head-to-head.
             </p>
+            {/* R30 sweep fix: inline try-it link
+                so a first-time visitor can see the
+                UI render with a populated friend
+                card (the demo address is a real Sui
+                address — the
+                /portfolio/:addr endpoint returns
+                `[]` for anyone without positions,
+                so the card renders the "no open
+                positions" empty state cleanly). The
+                CTA only appears when the friends
+                list is empty so a returning user
+                with 5+ follows never sees it. */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  add("0x0cdc0f4df0284828adde270ab50db083341135562866c26404ec945597d49716");
+                  setDraft("");
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-xs font-bold text-cyan-200 hover:bg-cyan-500/20 transition"
+              >
+                👀 Try with demo address
+              </button>
+              <p className="mt-2 text-[10px] text-zinc-600">
+                (Operators&apos; public wallet — read-only view, no follow costs.)
+              </p>
+            </div>
           </div>
         </Card>
       )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ClaimPrizeButton } from "@/components/ClaimPrizeButton";
 import { useFriends } from "@/lib/friends";
@@ -103,10 +104,32 @@ export function LeaderboardTable({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-xs text-zinc-500">
-        <span>
+        <span className="flex items-center gap-2">
           {dataUpdatedAt > 0
             ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}`
             : "Loading…"}
+          {/* R62 audit fix: surface the current
+             week index in the meta row. The
+             previous build only printed the
+             "Updated HH:MM:SS" string, and a
+             user landing on the page on a
+             Sunday evening (just before the
+             Monday 00:05 UTC rollup) had no
+             way to know whether they were
+             looking at this week or last
+             week's archived scores. The week
+             index is the same `week_index`
+             the backend already returns; we
+             just render it next to the
+             timestamp with a short "Week
+             #N" prefix. The same pattern
+             is also exposed via the page
+             header below the title. */}
+          {weekIndex > 0 && (
+            <span className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+              Week #{weekIndex}
+            </span>
+          )}
         </span>
         <div className="flex items-center gap-3">
           {friends.length > 0 && (
@@ -132,11 +155,39 @@ export function LeaderboardTable({
         </p>
       )}
       {rows.length === 0 ? (
-        <p className="text-sm text-zinc-500">
-          {friendsOnly
-            ? "None of your friends are on this week's leaderboard yet."
-            : "No archived scores yet. The leaderboard rolls up every Monday 00:05 UTC."}
-        </p>
+        <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
+          <div className="mb-2 text-3xl">🏆</div>
+          {/* R30 sweep fix: friendlier empty
+              state. The previous build was a
+              bare 1-line paragraph that was
+              easy to miss. The new state
+              surfaces the icon, the canonical
+              "rollup Monday 00:05 UTC" rule,
+              and (when no scores are
+              archived yet) a CTA back to the
+              markets so the user can place
+              their first prediction and start
+              building a streak. */}
+          <p className="text-sm text-zinc-300">
+            {friendsOnly
+              ? "None of your friends are on this week's leaderboard yet."
+              : "No archived scores yet."}
+          </p>
+          {!friendsOnly && (
+            <p className="mt-1 text-xs text-zinc-500">
+              The leaderboard rolls up every Monday at 00:05 UTC. Place your
+              first prediction to start building a streak.
+            </p>
+          )}
+          {!friendsOnly && (
+            <Link
+              href="/markets"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition"
+            >
+              Browse markets →
+            </Link>
+          )}
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

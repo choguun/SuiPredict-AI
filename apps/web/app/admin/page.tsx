@@ -388,7 +388,6 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
 
   useEffect(() => {
     if (!client) return;
-    let cancelled = false;
     // R58.H3 audit fix: own an AbortController at the
     // effect level. The Sui gRPC `core.getObject` API
     // doesn't accept a `signal` argument at the SDK
@@ -493,7 +492,6 @@ function useLiveState(): { state: LiveState; loading: boolean; refresh: () => vo
       }
     })();
     return () => {
-      cancelled = true;
       cancelledRef.current = true;
     };
   }, [client, nonce]);

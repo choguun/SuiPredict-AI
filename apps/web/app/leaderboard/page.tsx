@@ -1,7 +1,21 @@
+import type { Metadata } from "next";
 import { Card } from "@/components/ui";
 import { LeaderboardTable } from "@/components/LeaderboardTable";
 
 export const dynamic = "force-dynamic";
+
+// R30 sweep fix: per-page metadata for the
+// server-rendered leaderboard page so the
+// browser tab + SERP snippet match the
+// page's hero copy. The title "Leaderboard
+// · SuiPredict AI" disambiguates this tab
+// from the home / markets / portfolio tabs
+// in a multi-tab browsing session.
+export const metadata: Metadata = {
+  title: "Leaderboard",
+  description:
+    "Weekly streak rankings for the SuiPredict AI prediction market. Compete with friends, claim weekly prizes from the on-chain PrizePool.",
+};
 
 interface WeeklyRow {
   user: string;
@@ -135,6 +149,30 @@ export default async function LeaderboardPage({
         <p className="mt-2 text-zinc-400">
           Weekly streak rankings. Auto-refreshes every 30s.
         </p>
+        {/* R62 audit fix: surface the week
+           index we're rendering in the
+           header. The LeaderboardTable
+           itself shows a "Week #N" pill
+           in its meta row, but the
+           top-of-page header only had a
+           static "Weekly streak rankings"
+           subtitle. A user landing on the
+           page mid-rollup (Sunday
+           evening, just before the Monday
+           00:05 UTC archive) couldn't tell
+           from the header whether they
+           were viewing the current or the
+           previous week. The `weekIndex`
+           is computed from the initial
+           server-side data; if the agents
+           service is unreachable the
+           component returns a 500-style
+           "no data" hint below. */}
+        {initialData && initialData.week_index > 0 && (
+          <p className="mt-1 text-[10px] font-mono uppercase tracking-wider text-cyan-400/80">
+            Showing week #{initialData.week_index}
+          </p>
+        )}
       </div>
 
       <Card title="Filter" className="border-white/10">

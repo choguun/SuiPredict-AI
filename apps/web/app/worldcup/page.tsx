@@ -47,6 +47,13 @@ interface WcMatch {
 const AGENTS_URL =
   process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 
+// Per-page metadata is exported from the
+// segment-level `layout.tsx` (see
+// `app/worldcup/layout.tsx`) because this
+// file is marked `"use client"` and Next.js
+// disallows `metadata` exports from
+// client components.
+
 function useJson<T>(url: string, deps: unknown[] = []): {
   data: T | null;
   loading: boolean;
@@ -113,8 +120,23 @@ function kickoffIn(ms: number): string {
 export default function WorldCupPage() {
   const groupsQ = useJson<{ groups: WcGroup[] }>(`${AGENTS_URL}/wc/groups`);
   const scheduleQ = useJson<{ matches: WcMatch[] }>(`${AGENTS_URL}/wc/schedule`);
+  // R30 sweep fix: the home-page "Live &
+  // Upcoming" strip and the World Cup
+  // dashboard both used a 24h window. With
+  // group matches kicking off every 3-4 days
+  // and a typical user visiting the dashboard
+  // 1-2x per day, a 24h window was almost
+  // always empty pre-tournament and
+  // always-empty mid-tournament on
+  // "non-matchday" days. Bump to 7 days so
+  // the user always sees the next 6-12 group
+  // matches (with relative kickoff time), and
+  // the empty state truly is the rare
+  // exception (e.g. all 72 group matches
+  // already played). The home page ticker
+  // gets the same 7d window.
   const upcomingQ = useJson<{ upcoming: Array<{ id: string; title: string; kickoffIn: number }> }>(
-    `${AGENTS_URL}/wc/upcoming?windowMs=${24 * 60 * 60 * 1000}`,
+    `${AGENTS_URL}/wc/upcoming?windowMs=${7 * 24 * 60 * 60 * 1000}`,
   );
 
   const matchesByGroup = useMemo(() => {
@@ -137,6 +159,28 @@ export default function WorldCupPage() {
     return matches[0];
   }, [scheduleQ.data]);
 
+  // R61 audit fix: surface the in-play matches
+  // (kickoff in the past, expiry 2h ahead) at the
+  // top of the World Cup dashboard so a user
+  // landing mid-tournament sees "LIVE" content
+  // immediately, instead of a 24h empty upcoming
+  // ticker. The "live matches" pill is pure CSS
+  // (animated pulse via Tailwind) — no JS timer.
+  // The `useMemo` keeps the filter stable across
+  // re-renders; recomputing on every render would
+  // re-allocate the array and break the `key` prop
+  // stability for the upcoming ticker.
+  const liveMatches = useMemo(() => {
+    const now = Date.now();
+    return (scheduleQ.data?.matches ?? [])
+      .filter(
+        (m) =>
+          m.kickoffMs <= now &&
+          m.kickoffMs > now - 2 * 60 * 60 * 1000,
+      )
+      .sort((a, b) => b.kickoffMs - a.kickoffMs);
+  }, [scheduleQ.data]);
+
   return (
     <div className="space-y-6 pb-12">
       {/* Hero */}
@@ -145,7 +189,41 @@ export default function WorldCupPage() {
         <div className="absolute -bottom-40 -left-20 h-80 w-80 rounded-full bg-amber-500/10 blur-[100px] -z-10" />
         <div className="relative z-10 max-w-2xl">
           <Badge variant="success" className="mb-4 bg-emerald-500/10 text-emerald-300 border-emerald-500/20">
-            🏆 FIFA World Cup 2026 · 48 teams
+            {/* R62 audit fix: surface the
+               actual match count (72
+               group-stage + 32
+               knockout = 104 total
+               matches in a 48-team
+               tournament) so the user
+               can see the size of the
+               WC vertical they're
+               about to trade. The
+               pre-R62 "48 teams" badge
+               was technically correct
+               but didn't say how many
+               markets the agents would
+               seed — a 48-team
+               tournament is twice the
+               size of a 32-team one and
+               the user has no scale
+               cue. The home banner uses
+               the same "48 teams · 104
+               matches" string and the
+               "See all 72 group
+               matches" footer below
+               makes the 72/32 split
+               explicit. The R62 audit
+               also noticed the badge
+               said "104 group matches"
+               which is wrong (104 is
+               the total tournament
+               match count, not the
+               group-stage count) — the
+               corrected string is
+               "48 teams · 104 matches"
+               with the breakdown
+               explained below. */}
+            🏆 FIFA World Cup 2026 · 48 teams · 104 matches
           </Badge>
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white mb-3">
             Predict every match.<br />
@@ -172,6 +250,62 @@ export default function WorldCupPage() {
           )}
         </div>
       </section>
+
+      {/* R61 audit fix: dedicated "Live now" strip
+         above the upcoming ticker. The pre-R61
+         layout only showed the upcoming ticker; a
+         user landing mid-tournament (the live demo
+         case) saw an empty upcoming list and had no
+         signal that the WC is in play. The new strip
+         renders above the upcoming ticker with an
+         animated pulse dot, the "x matches live"
+         counter, and a deep-link to the markets
+         list filtered to "live" status. Conditional
+         render — the strip disappears when no match
+         is in play so it doesn't take up space
+         pre-tournament. */}
+      {liveMatches.length > 0 && (
+        <section className="relative overflow-hidden rounded-2xl border border-rose-500/30 bg-gradient-to-r from-rose-500/10 via-[#0d1019] to-rose-500/5 p-4 sm:p-5">
+          <div className="absolute -top-20 -right-20 h-40 w-40 rounded-full bg-rose-500/20 blur-[60px] -z-10" />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-3 w-3">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-500 opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-rose-500" />
+              </span>
+              <div>
+                <h2 className="text-base font-extrabold text-white">
+                  {liveMatches.length} match{liveMatches.length === 1 ? "" : "es"} live now
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Trading stays open until 2h after the final whistle.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {liveMatches.slice(0, 3).map((m) => (
+                <Link
+                  key={m.id}
+                  href={`/markets/${encodeURIComponent("wc26-" + m.id)}`}
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20 transition"
+                >
+                  <span>{m.homeFlag} {m.homeName}</span>
+                  <span className="text-[10px] text-rose-300/70">vs</span>
+                  <span>{m.awayName} {m.awayFlag}</span>
+                </Link>
+              ))}
+              {liveMatches.length > 3 && (
+                <Link
+                  href="/markets?category=worldcup&status=live"
+                  className="inline-flex items-center rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-500/20 transition"
+                >
+                  +{liveMatches.length - 3} more
+                </Link>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Live match ticker */}
       <section className="rounded-2xl border border-white/10 bg-[#0d1019] p-5 sm:p-6">
@@ -296,13 +430,49 @@ export default function WorldCupPage() {
           {(scheduleQ.data?.matches ?? [])
             .filter((m) => m.kickoffMs < Date.UTC(2026, 5, 14))
             .slice(0, 24)
-            .map((m) => (
+            .map((m) => {
+              // R61 audit fix: surface a "Live" badge
+              // when the match is in-play (kickoff
+              // within the regulation+ET window) so
+              // a user landing on the World Cup page
+              // can spot the in-play matches at a
+              // glance. Without this, a Matchday-1
+              // mid-tournament user saw 24 identical
+              // "vs" rows and had to drill into each
+              // to know which one was live. Pure
+              // client-side computation (now() is
+              // stable across re-renders) and the
+              // badge is purely visual — it does not
+              // change the data.
+              const isLive = m.kickoffMs <= Date.now() && m.kickoffMs > Date.now() - 2 * 60 * 60 * 1000;
+              // R62 audit fix: "starts in <1h" amber
+              // pill. Same pattern the DailyWcCard
+              // uses — a match kicking off in the
+              // next 60 minutes is high-intent
+              // browsing. The badge is purely
+              // visual and uses the same amber
+              // gradient the live-now strip uses
+              // for the wider tournament-wide
+              // in-play indicator.
+              const isStartingSoon = !isLive && m.kickoffMs > Date.now() && m.kickoffMs - Date.now() < 60 * 60 * 1000;
+              return (
               <Link
                 key={m.id}
                 href={`/markets/${encodeURIComponent("wc26-" + m.id)}`}
                 className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[#0d1019] px-4 py-3 hover:border-emerald-500/30 transition"
               >
                 <div className="flex items-center gap-2 min-w-0">
+                  {isLive && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-rose-300 border border-rose-500/30">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-400" />
+                      Live
+                    </span>
+                  )}
+                  {isStartingSoon && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300 border border-amber-500/30">
+                      Soon
+                    </span>
+                  )}
                   <span className="text-2xl">{m.homeFlag}</span>
                   <span className="text-sm font-semibold text-white truncate">
                     {m.homeName}
@@ -320,7 +490,35 @@ export default function WorldCupPage() {
                   </span>
                 </div>
               </Link>
-            ))}
+              );
+            })}
+        </div>
+        {/* R62 audit fix: a "See all 72 group
+           matches" footer link. The
+           schedule preview hard-codes
+           the first 24 matches (Matchday
+           1) — a user who wanted to
+           browse Matchday 2 or 3 had no
+           on-page affordance. The link
+           goes to `/markets?category=worldcup`
+           (the same shortcut the WC
+           group page uses) where the
+           full 72-match WC market list
+           is filtered down by the
+           kickoff_ms timestamps the
+           markets list /etc page sort
+           on. The "72" number is the
+           hard total of group-stage
+           matches in a 48-team
+           tournament (6 matches × 12
+           groups). */}
+        <div className="mt-3 text-center">
+          <Link
+            href="/markets?category=worldcup"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 transition"
+          >
+            See all 72 group matches →
+          </Link>
         </div>
       </section>
     </div>

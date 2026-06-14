@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -221,6 +222,34 @@ export default function DisputeMarketPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
+      {/* R30 sweep fix: back link to the
+         originating market page so a user
+         who navigated into the dispute
+         flow from /markets/:id can return
+         in one click. The pre-R30 build
+         had no navigation back, so a
+         user who changed their mind had
+         to manually retype the URL or
+         use the browser back button
+         (which would re-trigger the
+         preflight fetch in `useEffect`). */}
+      <Link
+        href={`/markets/${encodeURIComponent(marketId)}`}
+        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 -ml-2 text-sm font-medium text-zinc-400 transition hover:bg-white/5 hover:text-white"
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
+        </svg>
+        Back to market
+      </Link>
       <div>
         <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-rose-300 via-amber-300 to-amber-500">
           Dispute Market
@@ -234,6 +263,20 @@ export default function DisputeMarketPage() {
 
       <Card title={`Market: ${marketId.slice(0, 12)}…`} className="border-white/10">
         <div className="space-y-4">
+          {/^0x[0-9a-fA-F]{64}$/.test(marketId) && (
+            <a
+              href={`https://${process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet"}.suivision.xyz/object/${marketId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition"
+            >
+              <span>View on SuiVision</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+            </a>
+          )}
           <div className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
             <div className="flex items-center justify-between">
               <span className="text-zinc-500">Status</span>

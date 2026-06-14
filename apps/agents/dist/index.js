@@ -704,7 +704,18 @@ function startHealthServer() {
                 "Content-Type": "application/json",
                 ...corsFor(false),
             });
-            res.end(JSON.stringify(getRecentDecisions(100)));
+            // R61 audit fix: honour the `?limit=N` query
+            // param. The previous build always returned
+            // the last 100 decisions, which was fine for
+            // the operator dashboard but wasteful for the
+            // home-page activity feed (which only shows 5
+            // meaningful ones). Cap the limit at 200 so a
+            // misconfigured `?limit=1e9` doesn't OOM the
+            // server. The default of 100 is preserved for
+            // callers that don't pass `?limit`.
+            const raw = Number(url.searchParams.get("limit") ?? 100);
+            const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 200) : 100;
+            res.end(JSON.stringify(getRecentDecisions(limit)));
             return;
         }
         if (url.pathname === "/agents/manifest") {

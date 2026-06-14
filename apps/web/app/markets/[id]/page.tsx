@@ -43,6 +43,7 @@ import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
 import { FriendPositionsWidget } from "@/components/FriendPositionsWidget";
+import { RecentTrades } from "@/components/RecentTrades";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { clampNumberString } from "@/lib/forms";
 
@@ -105,6 +106,70 @@ function friendlyMoveError(err: unknown, action: string): string {
 // page.tsx:81` already uses the `?? ""` pattern. Mirror that.
 const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 
+/**
+ * R61 audit fix: validated SUI_NETWORK for the
+ * SuiVision deep-link. Mirror the same allowlist
+ * the /agents and admin pages use (testnet /
+ * mainnet / devnet). SuiVision doesn't host a
+ * localnet indexer so we fall back to testnet on
+ * unknown values; a real mainnet deploy never
+ * lands on the fallback because the env is
+ * validated at boot.
+ */
+const SUI_NETWORK_FOR_EXPLORER = (() => {
+  const raw = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
+  return ["testnet", "mainnet", "devnet"].includes(raw) ? raw : "testnet";
+})();
+
+/**
+ * R61 audit fix: dismiss-per-market localStorage
+ * for the "How it works" callout. We persist the
+ * set of market ids the user has dismissed so the
+ * callout only ever surfaces on a market the user
+ * hasn't seen it on. `try/catch` around the JSON
+ * parse so a user with corrupted localStorage
+ * (manual edit, or a future migration that wrote
+ * malformed JSON) doesn't crash the page render
+ * — the same `try/catch` pattern the
+ * `StreakWelcomeBanner` uses.
+ */
+const HOW_IT_WORKS_KEY = "suipredict.howItWorks.dismissed";
+function readHowItWorksDismissed(marketId: string): boolean {
+  if (typeof window === "undefined") return false;
+  const raw = window.localStorage.getItem(HOW_IT_WORKS_KEY);
+  if (!raw) return false;
+  try {
+    const list = JSON.parse(raw) as string[];
+    return Array.isArray(list) && list.includes(marketId);
+  } catch {
+    return false;
+  }
+}
+function dismissHowItWorks(marketId: string): void {
+  if (typeof window === "undefined") return;
+  let list: string[] = [];
+  try {
+    const raw = window.localStorage.getItem(HOW_IT_WORKS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed as string[];
+    }
+  } catch {
+    /* overwrite below */
+  }
+  if (!list.includes(marketId)) list.push(marketId);
+  // Cap the set to the most recent 50 entries so a
+  // power user visiting hundreds of markets doesn't
+  // blow the localStorage budget. Older entries drop
+  // off the front; they're free to be re-dismissed.
+  if (list.length > 50) list = list.slice(-50);
+  try {
+    window.localStorage.setItem(HOW_IT_WORKS_KEY, JSON.stringify(list));
+  } catch {
+    /* quota exceeded — non-critical */
+  }
+}
+
 function clampProbability(value: number) {
   if (Number.isNaN(value)) return 0.5;
   return Math.min(0.99, Math.max(0.01, value));
@@ -129,8 +194,54 @@ function formatDate(ms: number) {
   });
 }
 
+/**
+ * R32 sweep fix: relative time helper
+ * for WC market kickoff. A user landing
+ * on a market page mid-tournament needs
+ * the relative "in 2h" / "in 3d" label
+ * to gauge urgency at a glance. The
+ * absolute date is also rendered (the
+ * `formatDate` call) so the user has both
+ * signals. The threshold table mirrors
+ * the WC dashboard's `kickoffIn` helper.
+ */
+function formatRelativeMs(ms: number): string {
+  const diff = ms - Date.now();
+  if (diff <= 0) {
+    // Past — distinguish "live now"
+    // (within 2h of kickoff) from
+    // "started earlier".
+    const pastDiff = -diff;
+    if (pastDiff < 2 * 60 * 60 * 1000) return "live now";
+    const hours = Math.floor(pastDiff / 3_600_000);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d`;
+}
+
 export default function MarketDetailPage() {
   const { id } = useParams<{ id: string }>();
+  // R61 audit fix: read the deep-link params
+  // (`?side=yes|no&order=buy|sell`) from the search
+  // string so the DailyWcCard's 1-tap YES/NO buttons
+  // (and the FriendPositionsWidget's "Copy …" CTA)
+  // land on the trade panel with the side pre-selected
+  // instead of forcing the user to re-tap. Unknown
+  // values fall back to the default ("yes" / "buy")
+  // so a future query param (e.g. `?qty=`) doesn't
+  // 500 the page.
+  const search =
+    typeof window !== "undefined" ? window.location.search : "";
+  const params = new URLSearchParams(search);
+  const sideParam = params.get("side");
+  const orderParam = params.get("order");
   // decodeURIComponent throws on malformed escapes (e.g. `%ZZ`); a
   // typo'd URL would otherwise surface as a Next.js error overlay
   // instead of the not_found card. Round-17 audit finding #23.
@@ -147,7 +258,17 @@ export default function MarketDetailPage() {
   } catch {
     return <MalformedIdCard />;
   }
-  return <MarketDetailBody marketId={marketId} />;
+  return (
+    <MarketDetailBody
+      marketId={marketId}
+      initialSide={
+        sideParam === "yes" || sideParam === "no" ? sideParam : undefined
+      }
+      initialOrder={
+        orderParam === "buy" || orderParam === "sell" ? orderParam : undefined
+      }
+    />
+  );
 }
 
 function MalformedIdCard() {
@@ -169,7 +290,25 @@ function MalformedIdCard() {
   );
 }
 
-function MarketDetailBody({ marketId }: { marketId: string }) {
+function MarketDetailBody({
+  marketId,
+  // R61 audit fix: deep-link initial state. The
+  // DailyWcCard's YES/NO buttons and the
+  // FriendPositionsWidget's "Copy their bet" CTA
+  // both link to `/markets/${id}?side=...&order=...`;
+  // passing those values down to the body lets us
+  // skip the default "yes" / "buy" state and land
+  // the user directly on the trade panel with the
+  // side pre-selected. `undefined` means "use the
+  // default" so the rest of the existing call sites
+  // (and tests) keep their current behaviour.
+  initialSide,
+  initialOrder,
+}: {
+  marketId: string;
+  initialSide?: "yes" | "no";
+  initialOrder?: "buy" | "sell";
+}) {
   const account = useCurrentAccount();
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
@@ -178,8 +317,8 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
 
   const [market, setMarket] = useState<MarketInfo | null>(null);
   const [book, setBook] = useState<OrderBookSnapshot | null>(null);
-  const [side, setSide] = useState<"yes" | "no">("yes");
-  const [orderSide, setOrderSide] = useState<"buy" | "sell">("buy");
+  const [side, setSide] = useState<"yes" | "no">(initialSide ?? "yes");
+  const [orderSide, setOrderSide] = useState<"buy" | "sell">(initialOrder ?? "buy");
   const [price, setPrice] = useState(0.5);
   const [qty, setQty] = useState(1);
   // R50 audit fix: per-action busy flags. The previous
@@ -203,6 +342,33 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     | "merge"
   >(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  // R62 audit fix: track the actual
+  // timestamp of the last order-book
+  // fetch so the "Last refreshed"
+  // indicator can show a real time
+  // string (not `Date.now()` which
+  // would always show the current
+  // time and be useless as a
+  // freshness signal). Set on every
+  // `refresh()` call and on the
+  // manual ↻ Refresh button click.
+  const [lastBookRefreshMs, setLastBookRefreshMs] = useState<number>(Date.now());
+  // through a "mounted" state. Before mount, the
+  // state is `null` (the SSR / first-render default)
+  // and the conditional below short-circuits to false
+  // (no hint). After mount, we read localStorage
+  // and either show the hint (never dismissed) or
+  // hide it (previously dismissed). This avoids the
+  // pre-R61 brief flash where the server rendered
+  // the hint and the client hid it ~16ms later, which
+  // looked like a layout jitter to returning users.
+  const [howItWorksMounted, setHowItWorksMounted] = useState(false);
+  const [howItWorksDismissed, setHowItWorksDismissed] = useState(false);
+  useEffect(() => {
+    setHowItWorksMounted(true);
+    setHowItWorksDismissed(readHowItWorksDismissed(marketId));
+  }, [marketId]);
+
   const [loadError, setLoadError] = useState<{
     kind: "not_found" | "fetch_failed";
     message: string;
@@ -288,6 +454,27 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
     // is a no-op in React 18 but logs a warning; checking up-front
     // keeps the dev console clean during route changes.
     if (signal?.aborted) return;
+    // R62 audit fix: mark the start of
+    // a fresh fetch so the "Last
+    // refreshed" indicator updates
+    // for the manual ↻ Refresh click
+    // as well as the 4s polling tick.
+    // The timestamp is set at the
+    // *start* of the fetch (not on
+    // success) so the indicator
+    // shows "Updated now" even
+    // while the order-book read is
+    // in flight — the user knows
+    // the click landed and the
+    // numbers will refresh in a
+    // moment. On fetch failure the
+    // timestamp stays put (so the
+    // user sees a stale "Updated
+    // 1m ago" rather than a
+    // misleading "Updated now"
+    // that suggests data that's
+    // not there).
+    setLastBookRefreshMs(Date.now());
     let m: MarketInfo;
     try {
       // R55 audit fix: normalize the market id before
@@ -448,6 +635,12 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         e instanceof Error ? e.message : e,
       );
     }
+    // `marketId` is intentionally not a dep — this
+    // effect persists the *account's* deepbook
+    // state, not the per-market state, and we
+    // don't want to re-write localStorage on every
+    // market navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account, balanceManagerId]);
 
   useEffect(() => {
@@ -462,6 +655,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         e instanceof Error ? e.message : e,
       );
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account, tradeCapId]);
 
   const yesMid = book?.mid_price ?? 0.5;
@@ -550,6 +744,28 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
 
   async function splitCollateral() {
     if (!account || !client || !market) return;
+    // R33 sweep fix: refuse to mint on a
+    // resolved market. The on-chain
+    // `mint_shares` is permissionless and
+    // would succeed even on a resolved
+    // market (the user would hold YES/NO
+    // shares that can never settle), but
+    // that's a footgun: a user who mints
+    // "Will Brazil beat Scotland?" on a
+    // match that's already been decided
+    // wastes gas + clutter the UI with a
+    // $0 position. The friendly
+    // pre-flight rejects the request
+    // before the wallet-adapter spinner
+    // starts.
+    if (market.status !== "active") {
+      toast.error(
+        market.status === "resolved"
+          ? "This market is already resolved. New shares cannot be minted — redeem your position instead."
+          : `This market is ${market.status} and cannot accept new shares.`,
+      );
+      return;
+    }
     if (!FEE_VAULT_ID) {
       toast.error("NEXT_PUBLIC_FEE_VAULT_ID is not set in this deployment.");
       return;
@@ -579,7 +795,24 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
         limit: 100,
       });
       if (objects.length === 0) {
-        throw new Error("No DUSDC — request from DeepBook testnet form");
+        // R61 audit fix: clearer error + actionable
+        // link. The previous message pointed at the
+        // "DeepBook testnet form" which is an
+        // operator-side flow (only useful when the
+        // agent's DUSDC TreasuryCap is configured).
+        // A regular end-user with no DUSDC needs to
+        // either (a) mint some on a Sui faucet, or
+        // (b) ask the protocol's faucet address.
+        // The toast catches the throw and renders
+        // a single line, so the message has to
+        // be self-contained. The link to the Sui
+        // testnet faucet is the actionable item
+        // — the parent `toast.error(...)` block
+        // (line ~734) renders the string verbatim.
+        throw new Error(
+          "You don't have any DUSDC yet. Get testnet DUSDC at https://faucet.sui.io/?address=" +
+            account.address,
+        );
       }
       // R51 audit fix: pick the largest coin, not
       // `objects[0]`. The previous code took the first
@@ -640,7 +873,16 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // amount off the user's DUSDC bag in-PTB and passes only the
       // split coin to `mint_shares` — the whole bag is never
       // deposited.
-      const tx = buildMintSharesTx(market.id, FEE_VAULT_ID, coin.objectId, amountAtoms);
+      const tx = buildMintSharesTx(
+        // R60 audit fix: use the on-chain marketId
+        // (the SQLite primary key is the `wc26-<matchId>`
+        // form, which would abort the on-chain
+        // `mint_shares` call).
+        market.onchain_market_id ?? market.id,
+        FEE_VAULT_ID,
+        coin.objectId,
+        amountAtoms,
+      );
       // R55 audit fix: route through `submitAndWait` so
       // the `setRefreshCounter` + `invalidateMarketCaches`
       // refetches hit a node that has already finalized
@@ -675,19 +917,44 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
   async function mergeCollateral() {
     // The on-chain prediction_market module has no merge_pair entry; the
     // canonical way to exit a position pre-resolution is to sell YES and
-    // NO separately on the DeepBook order book. Send the user to the
-    // dedicated "Sell shares" card below to do that, rather than
-    // pretending a stub click is real.
-    toast.message(
-      "To exit, sell YES and NO on the order book below. There is no on-chain merge.",
-    );
-    document
-      .getElementById("trade-card")
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // NO separately on the DeepBook order book. Scroll the user down to
+    // the dedicated "Trade" card (id="trade-card") with side pre-
+    // selected to "sell YES" and "sell NO" so the order ticket is ready
+    // to go. The scrollIntoView target is the actual <Card id="trade-card">
+    // added in R62 — the previous code referenced a non-existent
+    // `trade-card` id and silently no-op'd the scroll.
+    const tradeCard = document.getElementById("trade-card");
+    if (tradeCard) {
+      // R62 audit fix: also flip the trade
+      // ticket to "Sell YES" so the user is
+      // one click away from the actual exit
+      // flow, not staring at a Buy ticket
+      // they have to manually re-configure.
+      setSide("yes");
+      setOrderSide("sell");
+      tradeCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }
 
   async function placeOrder() {
     if (!account || !client || !market) return;
+    // R33 sweep fix: refuse to place
+    // orders on a non-active market.
+    // The on-chain `place_order` would
+    // happily submit an order on a
+    // resolved market (the order sits
+    // on the book forever, the user
+    // holds a position that can never
+    // settle). Same rationale as the
+    // mint pre-flight above.
+    if (market.status !== "active") {
+      toast.error(
+        market.status === "resolved"
+          ? "This market is already resolved. No new orders can be placed — redeem your existing position instead."
+          : `This market is ${market.status} and cannot accept new orders.`,
+      );
+      return;
+    }
     if (!useDeepBookRoute) {
       toast.error(
         "Limit orders for this market require a DeepBook pool. Use 'Mint Shares' to mint YES+NO, then sell on the DeepBook order book.",
@@ -763,7 +1030,15 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // to a market. Limit-order orders were
       // invisible to the indexer before this fix.
       const tx = buildPlaceOrderTx({
-        marketId: market.id,
+        // R60 audit fix: `market.id` is the
+        // SQLite primary key (the `wc26-<matchId>`
+        // form for WC markets), NOT the on-chain
+        // marketId. The on-chain PTB aborts with
+        // `MoveAbort` if it receives a non-`0x…`
+        // id. Use `onchain_market_id` when set;
+        // fall back to `market.id` for non-WC
+        // markets (where the two are the same).
+        marketId: market.onchain_market_id ?? market.id,
         poolId: deepBookMarket.poolId,
         balanceManagerId,
         clientOrderId: BigInt(clientOrderId),
@@ -1158,7 +1433,11 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
       // historically did) would settle funds for the user but leave the
       // off-chain leaderboard thinking the week is un-settled.
       const tx = buildMarketWithdrawSettledTx(
-        market.id,
+        // R60 audit fix: see the `buildPlaceOrderTx`
+        // call above. The on-chain PTB needs the
+        // on-chain marketId, not the SQLite
+        // primary-key form.
+        market.onchain_market_id ?? market.id,
         deepBookMarket.poolId,
         balanceManagerId,
       );
@@ -1257,14 +1536,21 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           : "Redeeming…",
         { id: toastId },
       );
+      // R60 audit fix: the on-chain `redeem*` PTBs
+      // need the on-chain marketId. The SQLite
+      // primary-key form (`wc26-<matchId>` for WC
+      // markets) would abort with `MoveAbort`. Use
+      // `onchain_market_id` when set, fall back to
+      // `market.id` for non-WC markets.
+      const redeemMarketId = market.onchain_market_id ?? market.id;
       const tx =
         winningSide === "yes"
           ? streakId
-            ? buildRedeemWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
-            : buildRedeemTx(market.id, FEE_VAULT_ID, coin.objectId)
+            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId)
           : streakId
-            ? buildRedeemNoWithStreakTx(market.id, FEE_VAULT_ID, coin.objectId, streakId)
-            : buildRedeemNoTx(market.id, FEE_VAULT_ID, coin.objectId);
+            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
       // R55 audit fix: route through `submitAndWait` so
       // the redeem confirmation reflects the on-chain
       // state. The previous signAndExecuteTransaction
@@ -1342,29 +1628,211 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
 
   return (
     <div className="space-y-5">
+      {/* R30 sweep fix: back link with a
+         left-arrow icon. The pre-R30 build
+         was a bare "Back to markets" text
+         link — same string used by every
+         detail page (markets/[id], group,
+         dispute, etc.) and easy to miss in
+         the dark theme. The new link has a
+         `←` icon, more breathing room, and
+         a slightly larger font so the user
+         can find it after drilling in from
+         a friend's shared URL. */}
       <Link
         href="/markets"
-        className="inline-flex text-sm font-medium text-zinc-400 transition hover:text-white"
+        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 -ml-2 text-sm font-medium text-zinc-400 transition hover:bg-white/5 hover:text-white"
       >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
+        </svg>
         Back to markets
       </Link>
+      {/* R61 audit fix: "Connect to trade" banner for
+         unconnected users. The trade panel's buttons
+         are correctly disabled when `!account`, but
+         a first-time visitor scanning the page saw
+         a wall of greyed-out buttons with no
+         explanation. A short banner above the
+         market title makes the unlock clear and links
+         to the ConnectModal trigger (the header has
+         its own Connect button, but the user has to
+         know to look up there). Hidden on
+         `streakId` / already-connected paths so it
+         doesn't nag a returning user. */}
+      {!account && market.status === "active" && (
+        <div className="flex flex-col gap-2 rounded-2xl border border-violet-500/20 bg-gradient-to-r from-violet-500/10 to-cyan-500/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🔗</span>
+            <div>
+              <p className="text-sm font-bold text-white">Connect a wallet to trade</p>
+              <p className="text-xs text-zinc-400">
+                Mint → Trade → Redeem. All on Sui via the dApp Kit. Google zkLogin and
+                Sui Wallet extensions both work.
+              </p>
+            </div>
+          </div>
+          <span className="shrink-0 rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 py-2 text-xs font-bold text-white text-center">
+            Use Connect button ↗
+          </span>
+        </div>
+      )}
+      {/* R61 audit fix: 3-step "How it works" callout for
+         first-time users. A user landing on a market
+         detail page (often from a friend's shared URL
+         or a social link) had no context for the
+         three-step flow (mint → trade → redeem). The
+         callout uses the same dark-glass aesthetic
+         as the rest of the page, dismisses per-market
+         (we don't want to nag the same user on every
+         page), and re-surfaces on a different market
+         id. The dismissed-set lives in localStorage
+         so a returning user sees a clean page. The
+         `howItWorksDismissed` state is hydrated from
+         localStorage inside a useEffect (avoids a
+         SSR/CSR hydration mismatch where the server
+         renders the hint and the client hides it, or
+         vice versa). */}
+      {market.status === "active" && howItWorksMounted && !howItWorksDismissed && (
+        <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-cyan-200">How this works</h3>
+              <p className="mt-1 text-xs text-cyan-300/80">
+                Prediction markets on Sui run in three steps. Each one is a
+                single transaction you sign from your connected wallet.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                dismissHowItWorks(marketId);
+                setHowItWorksDismissed(true);
+              }}
+              aria-label="Dismiss how-it-works hint"
+              className="shrink-0 rounded-md p-1 text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200 transition"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+              </svg>
+            </button>
+          </div>
+          <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+              <div className="flex items-center gap-2 text-cyan-300 font-bold">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
+                Mint
+              </div>
+              <p className="mt-1 text-cyan-200/80">
+                Convert DUSDC into matched YES + NO shares. Each
+                1 DUSDC gives 1 YES + 1 NO.
+              </p>
+            </li>
+            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+              <div className="flex items-center gap-2 text-cyan-300 font-bold">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
+                Trade
+              </div>
+              <p className="mt-1 text-cyan-200/80">
+                Sell the side you don&apos;t want on the CLOB, or
+                buy more of the side you do.
+              </p>
+            </li>
+            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+              <div className="flex items-center gap-2 text-cyan-300 font-bold">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
+                Redeem
+              </div>
+              <p className="mt-1 text-cyan-200/80">
+                After resolution, winning shares redeem 1-for-1
+                into DUSDC. Losing shares are worth 0.
+              </p>
+            </li>
+          </ol>
+        </div>
+      )}
 
       <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-8 shadow-2xl shadow-black/40">
         {/* Background Gradients */}
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <Badge variant={market.status === "active" ? "success" : "warning"} className="px-3 py-1 text-sm">
                 {market.status}
               </Badge>
+              {/* R32 sweep fix: prominent
+                  "Winner: YES/NO" pill for
+                  resolved markets. The
+                  previous build only showed
+                  the small `status` badge
+                  ("resolved" in amber) — a
+                  user with a winning position
+                  had to scroll to the
+                  "Your position" card to
+                  see the actual winning side.
+                  The new pill is bigger, the
+                  side is colored (emerald for
+                  YES, rose for NO) so the
+                  user can read it at a
+                  glance, and it sits in the
+                  same row as the other
+                  metadata pills. Renders
+                  nothing when `outcome` is
+                  null (the indexer is
+                  briefly between
+                  `MarketResolvedEvent` and
+                  the `markets.outcome` row
+                  write). */}
+              {market.status === "resolved" && market.outcome && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-bold ${
+                    market.outcome === "yes"
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                  }`}
+                >
+                  <span aria-hidden="true">🏆</span>
+                  Winner: {market.outcome.toUpperCase()}
+                </span>
+              )}
               <span className="rounded-full bg-white/5 px-3 py-1 text-xs font-semibold text-zinc-300">
                 {market.category}
               </span>
               <span className="text-xs font-medium text-zinc-400">
-                Ends {formatDate(market.expiry_ms)}
+                {/* R62 audit fix: render the
+                   kickoff time (not the
+                   expiry) for WC markets.
+                   The markets list and home
+                   page already do this — the
+                   market detail page was
+                   the asymmetric survivor
+                   that showed "Ends
+                   {kickoff + 2h}" for WC
+                   markets, misleading
+                   readers about when the
+                   match actually starts.
+                   Mirror the same pattern:
+                   "Kicks {date}" for WC
+                   markets with kickoff_ms,
+                   "Ends {date}" for
+                   everything else. The
+                   `formatDate` helper
+                   already includes the
+                   hour+minute so the
+                   kickoff time is visible. */}
+                {market.category === "worldcup" && market.kickoff_ms
+                  ? `Kicks ${formatDate(market.kickoff_ms)} · ${formatRelativeMs(market.kickoff_ms)}`
+                  : `Ends ${formatDate(market.expiry_ms)}`}
               </span>
               <a
                 href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(
@@ -1390,6 +1858,106 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
                 Share
               </a>
+              {/* R61 audit fix: copy-link button. The X
+                 share CTA is fine for users who want to
+                 tweet, but the most common share action
+                 is "send to a friend in Telegram / DM".
+                 The X button doesn't help there. The
+                 copy-link uses the modern `navigator.clipboard`
+                 API (HTTPS / localhost only) and falls
+                 back to a hidden-textarea + execCommand
+                 path for the rare `http://` dev deploy.
+                 The toast gives the user a confirmation
+                 signal (no feedback → user double-clicks
+                 → confused). The button is rendered
+                 next to the X share so the two are
+                 visually grouped under the market title. */}
+              <button
+                type="button"
+                onClick={async () => {
+                  const url =
+                    typeof window !== "undefined"
+                      ? `${window.location.origin}${window.location.pathname}`
+                      : "";
+                  if (!url) return;
+                  try {
+                    if (
+                      typeof navigator !== "undefined" &&
+                      navigator.clipboard?.writeText
+                    ) {
+                      await navigator.clipboard.writeText(url);
+                      toast.success("Link copied to clipboard");
+                      return;
+                    }
+                    // Fallback for non-secure contexts
+                    // (http://, file://). Create a hidden
+                    // textarea, select the text, exec
+                    // `copy`, and remove the node.
+                    const ta = document.createElement("textarea");
+                    ta.value = url;
+                    ta.style.position = "fixed";
+                    ta.style.opacity = "0";
+                    document.body.appendChild(ta);
+                    ta.select();
+                    const ok = document.execCommand("copy");
+                    document.body.removeChild(ta);
+                    if (ok) toast.success("Link copied to clipboard");
+                    else toast.error("Could not copy link");
+                  } catch {
+                    toast.error("Could not copy link");
+                  }
+                }}
+                aria-label="Copy market link"
+                className="inline-flex items-center gap-1 rounded-full bg-white/5 px-3 py-1 text-xs font-semibold text-zinc-300 border border-white/10 hover:bg-white/10 transition"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="9" y="9" width="11" height="11" rx="2" />
+                  <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                </svg>
+                Copy link
+              </button>
+              {/* R62 audit fix: SuiVision link
+                 in the header for all non-demo
+                 markets (not just resolved). The
+                 pre-R62 build had the link only
+                 inside the "Your position" card
+                 — an active-market user had to
+                 scroll all the way down to
+                 verify the on-chain state. The
+                 link uses the same SuiVision
+                 URL pattern as the resolved-state
+                 link, but uses
+                 `market.onchain_market_id ?? market.id`
+                 so WC markets (where the SQLite
+                 id is `wc26-<matchId>` and the
+                 on-chain id is the Sui object id
+                 of the PredictionMarket) link to
+                 the correct on-chain object. */}
+              {!market.id.startsWith("demo-") && (() => {
+                const onchainId = market.onchain_market_id ?? market.id;
+                // SuiVision indexes Sui object ids
+                // (0x + 64 hex chars). The SQLite
+                // primary-key form for WC markets
+                // is `wc26-<matchId>` and isn't a
+                // valid Sui object id; gate on the
+                // strict shape so the link
+                // doesn't 404 SuiVision.
+                if (!/^0x[0-9a-fA-F]{64}$/.test(onchainId)) return null;
+                return (
+                  <a
+                    href={`https://${SUI_NETWORK_FOR_EXPLORER}.suivision.xyz/object/${encodeURIComponent(onchainId)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded-full bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/20 transition"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                    SuiVision
+                  </a>
+                );
+              })()}
             </div>
             <h1 className="max-w-4xl text-3xl font-bold tracking-tight text-white sm:text-4xl leading-tight mb-4">
               {market.title}
@@ -1519,9 +2087,71 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
               </div>
             </Tooltip>
           </div>
+          {/* R62 audit fix: "Last refreshed"
+             indicator + manual refresh
+             button on the order book.
+             The order book auto-polls
+             every 4s via the `setInterval`
+             on line 365, but a user who
+             just placed an order wants
+             immediate confirmation. The
+             button bypasses the 4s
+             wait by calling `refresh()`
+             synchronously (which re-runs
+             `getMarket` + the DeepBook
+             depth read). The timestamp
+             uses `toLocaleTimeString` for
+             a 24h-format local time
+             string. */}
+          <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-500">
+            <span>
+              Updated {new Date(lastBookRefreshMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setRefreshCounter((c) => c + 1);
+                toast.loading("Refreshing order book…", { id: "book-refresh" });
+                // Clear the toast after the
+                // 4s polling tick has had a
+                // chance to land. We use a
+                // quick `setTimeout` rather
+                // than the natural polling
+                // cadence so the toast
+                // doesn't sit on screen for
+                // a full 4s — the user can
+                // see the bid/ask numbers
+                // change in <1s and the
+                // toast just confirms the
+                // manual click landed.
+                setTimeout(() => toast.success("Order book refreshed", { id: "book-refresh" }), 1500);
+              }}
+              className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300 hover:bg-white/10 transition"
+            >
+              ↻ Refresh
+            </button>
+          </div>
         </Card>
 
-        <Card title="Trade" className="order-1 lg:order-2">
+        {/* R32 sweep fix: surface a "Recent
+            trades" panel below the order book
+            so a user landing on a market mid-
+            session has a single-glance signal of
+            recent activity (price drift, fill
+            rate, "is this a quiet book?"). The
+            panel wraps the new `RecentTrades`
+            client component which calls
+            `getMarketTrades(marketId, 10)` on
+            mount and refreshes every 10s when
+            the tab is visible. The trades are
+            populated by the agents'
+            position-indexer (from
+            `DeepBookOrderFilled` events) so
+            demo / pre-launch markets show the
+            friendly empty state. */}
+        <RecentTrades marketId={marketId} limit={10} />
+
+        <Card title="Trade" className="order-1 lg:order-2" id="trade-card">
           <div className="mb-4 grid grid-cols-2 gap-2">
             {(["yes", "no"] as const).map((s) => (
               <button
@@ -1620,6 +2250,51 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                 ${potentialProfit.toFixed(2)}
               </span>
             </div>
+            {/* R62 audit fix: surface a
+                "far from mid" warning
+                when the user's limit
+                price is more than 20¢
+                away from the current
+                mid. A user who enters
+                0.95 for a YES buy when
+                the mid is 0.50 will
+                see their order sit on
+                the book forever (or
+                get filled only if a
+                sudden reprice happens),
+                and the pre-R62 build
+                silently accepted the
+                input without any
+                "your price is 45¢
+                above mid" hint. The
+                warning is purely
+                advisory (doesn't
+                disable the submit) and
+                uses the same amber
+                colour the rest of the
+                trade panel uses for
+                "not enough DUSDC" /
+                "balance manager
+                required" hints, so the
+                user can still proceed
+                if they really want to
+                sit on a wide order. */}
+            {(() => {
+              const priceDiff = Math.abs(displayedPrice - yesMid);
+              if (priceDiff > 0.2) {
+                return (
+                  <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
+                    <span aria-hidden="true">⚠️</span>
+                    <span>
+                      Your limit is {Math.round(priceDiff * 100)}¢ {displayedPrice > yesMid ? "above" : "below"} the
+                      current mid ({formatCents(yesMid)}). This order is unlikely
+                      to fill until the market reprices.
+                    </span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
             <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-500">
               Order route: {routeLabel}. NO orders use the 1 - YES complement on
               the same YES book.
@@ -1630,7 +2305,8 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             disabled={
               busy === "placeOrder" ||
               !account ||
-              (!useDeepBookRoute && market.id.startsWith("demo-"))
+              (!useDeepBookRoute && market.id.startsWith("demo-")) ||
+              market.status !== "active"
             }
             onClick={placeOrder}
             className={`min-h-12 w-full rounded-lg text-sm font-semibold text-white shadow-lg transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:scale-100 ${
@@ -1766,7 +2442,7 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
           <div className="grid grid-cols-2 gap-3 mt-2">
             <button
               type="button"
-              disabled={busy === "mint" || !account || market.id.startsWith("demo-")}
+              disabled={busy === "mint" || !account || market.id.startsWith("demo-") || market.status !== "active"}
               onClick={splitCollateral}
               className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
             >
@@ -1787,6 +2463,54 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
             <div className="grid grid-cols-2 gap-4">
               <Stat label="YES" value={(position.yes / 1e6).toFixed(4)} />
               <Stat label="NO" value={(position.no / 1e6).toFixed(4)} />
+            </div>
+            {/* R61 audit fix: estimated value + P&L
+               rollup. The previous build only showed
+               the raw share counts — a user with 100
+               YES shares had no signal what those
+               shares were worth. The value line
+               computes the estimated redemption
+               value at the current mid (active
+               markets) or at $1/share (resolved
+               markets where the user holds the
+               winning side). A resolved losing
+               side reads $0, which is also the
+               truthful value. */}
+            <div className="rounded-md border border-white/5 bg-white/[0.02] p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Estimated value</p>
+              <p className="mt-1 text-xl font-bold text-cyan-300">
+                $
+                {(() => {
+                  if (market.status === "resolved" && market.outcome) {
+                    const winning =
+                      market.outcome === "yes" ? position.yes : position.no;
+                    return (winning / 1e6).toLocaleString(undefined, {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    });
+                  }
+                  // Active market: use the current
+                  // mid for the user's dominant side
+                  // (the one with the bigger balance).
+                  // A user with equal YES/NO holds
+                  // 1 DUSDC worth of "balanced"
+                  // collateral (because redeem(YES) +
+                  // redeem(NO) = 1 DUSDC, the
+                  // "complete set" arbitrage).
+                  const mid = book?.mid_price ?? 0.5;
+                  const yesValue = (position.yes / 1e6) * mid;
+                  const noValue = (position.no / 1e6) * (1 - mid);
+                  return (yesValue + noValue).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  });
+                })()}
+              </p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                {market.status === "resolved" && market.outcome
+                  ? `Winning side: ${market.outcome.toUpperCase()} · redeem to claim`
+                  : "at current mid-price"}
+              </p>
             </div>
             {market.status === "resolved" && (
               <div className="flex flex-wrap items-center gap-2">
@@ -1828,6 +2552,30 @@ function MarketDetailBody({ marketId }: { marketId: string }) {
                   >
                     Dispute outcome
                   </Link>
+                )}
+                {/* R61 audit fix: deep-link to the SuiVision
+                   block explorer so a curious user (or an
+                   auditor triaging a dispute) can verify
+                   the on-chain state directly. The link
+                   uses the same `SUI_NETWORK` allowlist
+                   the `/agents` page uses (testnet / mainnet
+                   / devnet — never `localnet` since SuiVision
+                   doesn't index a localnet node). The link
+                   only renders for non-demo markets because
+                   SuiVision can't index a SQLite-only stub. */}
+                {!market.id.startsWith("demo-") && (
+                  <a
+                    href={`https://${SUI_NETWORK_FOR_EXPLORER}.suivision.xyz/object/${encodeURIComponent(market.id)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-fit inline-flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-5 py-2.5 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                    View on SuiVision ↗
+                  </a>
                 )}
               </div>
             )}

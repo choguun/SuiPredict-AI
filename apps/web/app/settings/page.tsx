@@ -59,6 +59,93 @@ const KIND_LABELS: Record<number, string> = {
   [FORECASTER_BOT]: "Bot",
 };
 
+// R62 audit fix: per-page "How agent policy
+// works" callout. Page-scoped localStorage
+// (no per-market id). Mounted-ref guard
+// avoids a flash of the callout for users
+// who already dismissed it on a previous
+// visit.
+const SETTINGS_HOW_IT_WORKS_KEY = "suipredict.settings.howItWorks.dismissed";
+function readSettingsHowItWorksDismissed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SETTINGS_HOW_IT_WORKS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function dismissSettingsHowItWorks(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SETTINGS_HOW_IT_WORKS_KEY, "1");
+  } catch {
+    /* private mode etc. */
+  }
+}
+function HowItWorksCallout() {
+  const [mounted, setMounted] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    setDismissed(readSettingsHowItWorksDismissed());
+  }, []);
+  if (!mounted || dismissed) return null;
+  return (
+    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-cyan-200">How agent policy works</h3>
+          <p className="mt-1 text-xs text-cyan-300/80">
+            An agent policy is a shared on-chain object that controls which wallets the SuiPredict agents can spend on your behalf, and how much.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            dismissSettingsHowItWorks();
+            setDismissed(true);
+          }}
+          aria-label="Dismiss how-it-works hint"
+          className="shrink-0 rounded-md p-1 text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200 transition"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+          </svg>
+        </button>
+      </div>
+      <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
+            Authorize
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Add an agent wallet address and a daily DUSDC budget. The on-chain policy is shared across all of your positions.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
+            Pause
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Pause anytime to freeze all agent actions. Resume without losing the budget or the authorized addresses.
+          </p>
+        </li>
+        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+          <div className="flex items-center gap-2 text-cyan-300 font-bold">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
+            Revoke
+          </div>
+          <p className="mt-1 text-cyan-200/80">
+            Revoke individual agents or rotate the policy owner. Revoked agents lose access immediately.
+          </p>
+        </li>
+      </ol>
+    </div>
+  );
+}
+
 // R52 audit fix: replace the previous generic
 // "Transaction failed" toasts with abort-aware
 // messages. The settings page drives `agent_policy`
@@ -485,6 +572,24 @@ export default function SettingsPage() {
           Create and revoke on-chain agent wallets with budget caps (shared policy object)
         </p>
       </div>
+
+      {/* R62 audit fix: dismissible
+         "How agent policy works"
+         callout. The settings page
+         was a wall of toggles with
+         no context for what each
+         field means or why a user
+         would want to set one. The
+         callout explains the
+         agent-address / budget /
+         pause flow in three steps
+         and is dismissed-once via
+         localStorage (mounted-ref
+         guard to avoid SSR/CSR
+         flash; same R61 pattern
+         the markets/[id] page
+         uses). */}
+      <HowItWorksCallout />
 
       <Card title="Create Policy" className="border-white/10">
         {!account ? (

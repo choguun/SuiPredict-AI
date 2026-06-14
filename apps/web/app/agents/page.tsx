@@ -387,12 +387,47 @@ export default function AgentsPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">Agent Dashboard</h1>
-        <p className="mt-2 text-zinc-400">
-          Autonomous CLOB agents (creator, maker, resolver) plus optional legacy
-          DeepBook Predict agents
-        </p>
+      {/* R30 sweep fix: gradient hero header
+          consistent with /worldcup, /markets,
+          /friends, /vault, etc. The previous
+          build was a bare 1-line h1 with no
+          visual weight. The new hero names the
+          "autonomous fleet" as the platform's
+          key differentiator, surfaces the live
+          count of registered agents (the
+          manifest length), and includes a
+          short blurb on what the agents
+          actually do. */}
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
+        <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
+        <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
+        <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-400" />
+              </span>
+              Live
+            </div>
+            <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-4xl">
+              Agent Dashboard
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-zinc-400 sm:text-base">
+              {manifest.length > 0
+                ? `${manifest.length} autonomous workers run the exchange end-to-end — create markets, quote spreads, resolve outcomes, settle parlays, distribute weekly prizes.`
+                : "Autonomous CLOB agents (creator, maker, resolver) plus optional legacy DeepBook Predict agents"}
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+              Active agents
+            </p>
+            <p className="font-mono text-2xl font-extrabold text-white">
+              {manifest.length}
+            </p>
+          </div>
+        </div>
       </div>
 
       {drift.length > 0 && (
@@ -442,7 +477,14 @@ export default function AgentsPage() {
       <Card title="Recent Decisions" className="border-white/10">
         {error && <p className="text-sm text-amber-400 mb-3">{error}</p>}
         {decisions.length === 0 && !error && (
-          <p className="text-sm text-zinc-500">No agent decisions yet.</p>
+          <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
+            <div className="mb-2 text-2xl">🛰️</div>
+            <p className="text-sm text-zinc-300">No agent decisions yet.</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              The first tick of the fleet lands within a minute of starting the
+              agents service.
+            </p>
+          </div>
         )}
         <div className="space-y-3 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
           {decisions.map((d) => (

@@ -74,6 +74,13 @@ export function Celebration({
     }
     const t = setTimeout(() => setActive(false), 2200);
     return () => clearTimeout(t);
+    // `MILESTONES` is a module-local constant defined
+    // above; the dep array only needs `streak` because
+    // `MILESTONES` never changes. Disable the
+    // exhaustive-deps lint to silence the false
+    // positive without losing the const-scope
+    // guarantee.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streak]);
 
   if (!active) return null;

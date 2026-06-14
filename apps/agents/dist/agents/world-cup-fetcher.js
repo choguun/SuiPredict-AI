@@ -60,7 +60,6 @@ export const TEAM_NAMES = {
     ECU: { name: "Ecuador", flag: "🇪🇨" },
     IRN: { name: "Iran", flag: "🇮🇷" },
     TUN: { name: "Tunisia", flag: "🇹🇳" },
-    SAU: { name: "Saudi Arabia", flag: "🇸🇦" },
     NZL: { name: "New Zealand", flag: "🇳🇿" },
     GHA: { name: "Ghana", flag: "🇬🇭" },
     QAT: { name: "Qatar", flag: "🇶🇦" },
@@ -84,13 +83,38 @@ export const TEAM_NAMES = {
     CZE: { name: "Czechia", flag: "🇨🇿" },
     BIH: { name: "Bosnia and Herzegovina", flag: "🇧🇦" },
     CUW: { name: "Curaçao", flag: "🇨🇼" },
+    // R60 audit fix: the previous list had two
+    // duplicates (KSA and SAU both mapped to Saudi
+    // Arabia) and several teams that are NOT in the
+    // 2026 FIFA World Cup draw (CHI/Chile didn't
+    // qualify; GAB/Gabon, IDN/Indonesia, WAL/Wales,
+    // DEN/Denmark, POL/Poland all failed to qualify
+    // through the play-offs). Trim the dead entries
+    // to a clean 48-team list (one per qualified
+    // country in the December 5, 2025 draw) and drop
+    // the SAU alias. The HARDCODED_GROUPS below is
+    // the source of truth; this map just needs to
+    // provide a name+flag for any 3-letter code that
+    // the Wikipedia scrape might surface in a
+    // late-2025 re-validation.
     KSA: { name: "Saudi Arabia", flag: "🇸🇦" },
-    GAB: { name: "Gabon", flag: "🇬🇦" },
-    IDN: { name: "Indonesia", flag: "🇮🇩" },
-    WAL: { name: "Wales", flag: "🏴󠁧󠁢󠁷󠁬󠁳󠁿" },
-    DEN: { name: "Denmark", flag: "🇩🇰" },
-    POL: { name: "Poland", flag: "🇵🇱" },
 };
+/**
+ * R61 audit fix: the post-kickoff resolution
+ * window. The on-chain `prediction_market::create_market`
+ * `expiry_ms` is set to `kickoff + WC_POST_KICKOFF_RESOLUTION_WINDOW_MS`
+ * (regulation 90min + extra time 30min + the resolver's
+ * 2-hour post-match window for fetching the score from
+ * Wikipedia). Previously this constant was repeated in
+ * the wc-creator (`m.kickoffMs + 2 * 60 * 60 * 1000`) and
+ * the wc-resolver backfill (`m.kickoffMs + 2 * 60 * 60 * 1000`).
+ * A future tweak to 2.5h or 3h would have required two
+ * separate edits, and a missing edit would leave the
+ * SQLite mirror's `expiry_ms` out of sync with the on-chain
+ * value (the resolver's `expired` filter would then
+ * surface the wrong markets, or miss them entirely).
+ */
+export const WC_POST_KICKOFF_RESOLUTION_WINDOW_MS = 2 * 60 * 60 * 1000;
 // Hardcoded group draw (Dec 5, 2025, Kennedy Center, Washington DC).
 // We re-validate against Wikipedia at boot, but hardcoding here means
 // the agent works offline / during a Wikipedia outage and a one-line

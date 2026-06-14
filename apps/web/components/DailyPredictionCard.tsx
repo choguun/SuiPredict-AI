@@ -50,6 +50,21 @@ export function DailyPredictionCard() {
   const [activeMarketIds, setActiveMarketIds] = useState<string[]>([]);
   const [selections, setSelections] = useState<Record<string, Selection>>({});
   const [submitting, setSubmitting] = useState(false);
+  // R62 audit fix: explicit "browse" mode for
+  // choosing which daily markets to add. The
+  // pre-R62 flow had a single "Add Leg" button
+  // that picked the first available market in
+  // the list — a user who wanted to skip the
+  // boring one and start with the World Cup
+  // match had to add 5 legs, remove the boring
+  // one, then re-add the WC one. The browse
+  // toggle expands the empty-state to a
+  // checkbox list of all available daily
+  // markets; the user can pick and choose
+  // before locking the parlay. The state
+  // collapses back to the compact view on
+  // submit / on toggle.
+  const [browseMode, setBrowseMode] = useState(false);
 
   const dailyQuery = useQuery({
     queryKey: ["dailyMarkets"],
@@ -284,16 +299,75 @@ export function DailyPredictionCard() {
           {dailyMarkets.length === 1 ? "" : "s"} expiring in the next 36 hours.
           Add up to {DEFAULT_PARLAY_LIMIT} to start your streak.
         </p>
-        <button
-          onClick={() =>
-            setActiveMarketIds(
-              dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
-            )
-          }
-          className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02]"
-        >
-          Add top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} markets
-        </button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <button
+            onClick={() =>
+              setActiveMarketIds(
+                dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
+              )
+            }
+            className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02]"
+          >
+            Add top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} markets
+          </button>
+          <button
+            onClick={() => setBrowseMode((b) => !b)}
+            className="rounded-lg border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-white/10"
+          >
+            {browseMode ? "Hide list" : "Choose markets…"}
+          </button>
+        </div>
+        {browseMode && (
+          <div className="mt-5 w-full max-w-md text-left">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+              Pick {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} to add
+            </p>
+            <ul className="max-h-72 space-y-1 overflow-y-auto pr-1">
+              {dailyMarkets.map((m) => {
+                const checked = activeMarketIds.includes(m.id);
+                const atCap = activeMarketIds.length >= DEFAULT_PARLAY_LIMIT;
+                return (
+                  <li key={m.id}>
+                    <label
+                      className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition ${
+                        checked
+                          ? "border-emerald-500/40 bg-emerald-500/10"
+                          : atCap
+                            ? "border-white/5 bg-white/[0.02] opacity-50"
+                            : "border-white/10 bg-black/20 hover:border-cyan-500/30"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!checked && atCap}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setActiveMarketIds([...activeMarketIds, m.id]);
+                          } else {
+                            setActiveMarketIds(
+                              activeMarketIds.filter((id) => id !== m.id),
+                            );
+                            const next = { ...selections };
+                            delete next[m.id];
+                            setSelections(next);
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-white/20 bg-black/40 accent-emerald-500"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs text-white">{m.title}</p>
+                        <p className="text-[10px] uppercase tracking-wider text-zinc-500">
+                          {m.category} · {Math.round(m.yesProbability * 100)}% YES
+                        </p>
+                      </div>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </div>
     );
   }
@@ -399,6 +473,26 @@ export function DailyPredictionCard() {
       </div>
 
       <div className="mt-6 border-t border-white/5 pt-6">
+        <p className="mb-2 text-center text-[10px] uppercase tracking-wider text-zinc-500">
+          {/* R62 audit fix: surface the per-market
+             cost + total DUSDC in the submit
+             footer. The pre-R62 build had a
+             single "Lock In Predictions" CTA
+             with no preview of the cost — a user
+             about to mint shares for 3 markets
+             had to back out and add a 4th leg to
+             see the math update. The cost is
+             `amountPerMarket * legCount` in DUSDC
+             (1 DUSDC per market by default —
+             matches the `amountPerMarket` in
+             `handleSubmit`). The "Connect wallet"
+             copy stays for the no-wallet path. */}
+          {!account
+            ? "Sign in to lock in your predictions"
+            : `Total cost: ${activeMarketIds.length} DUSDC (${
+                activeMarketIds.length
+              } market${activeMarketIds.length === 1 ? "" : "s"} × 1 DUSDC)`}
+        </p>
         <button
           onClick={handleSubmit}
           disabled={
@@ -410,7 +504,9 @@ export function DailyPredictionCard() {
             ? "Minting shares…"
             : !account
               ? "Connect wallet to lock in"
-              : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
+              : !isComplete
+                ? `Pick YES/NO for all ${activeMarketIds.length} markets (${activeSelectionsCount}/${activeMarketIds.length})`
+                : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
         </button>
       </div>
     </div>

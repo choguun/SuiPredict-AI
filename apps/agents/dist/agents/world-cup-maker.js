@@ -26,7 +26,7 @@
 // probability is modeled as `0.20 + 0.10 * closeness` where
 // `closeness = 1 - 2*|p - 0.5|` is the closeness-to-50% of the
 // yes-prob.
-import { buildAuthorizeSpendTx, buildPlaceOrderTx, DUSDC_TYPE, executeTransaction, listAllCoins, } from "@suipredict/sdk";
+import { buildAuthorizeSpendTx, buildPlaceOrderTx, DUSDC_TYPE, executeTransaction, listAllCoins, resolveDeepbookPackageId, } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
 import { getMarket, listMarkets, upsertOrder } from "../markets/store.js";
@@ -35,16 +35,25 @@ import { fetchMatchSchedule, loadWorldCupConfig, } from "./world-cup-fetcher.js"
 // November 2025 (the basis for the December 5, 2025 draw). These
 // are the published FIFA points divided by a scaling factor so the
 // spread between top and bottom looks right.
+//
+// R60 audit fix: the previous list had six teams that
+// are NOT in the 2026 FIFA World Cup draw (CHI,
+// GAB, IDN, WAL, DEN, POL — all failed to qualify
+// through the play-offs). Trim to exactly the 48
+// qualified teams so the predictYesProbability
+// fallback `?? 1600` never fires for a real match
+// (a fallback would produce a 0.5/0.5 line, which
+// is wrong for every group fixture). Keep the table
+// alphabetically sorted for human review.
 const ELO = {
-    ARG: 1870, FRA: 1870, ESP: 1860, ENG: 1820, BRA: 1830, POR: 1810,
-    NED: 1800, BEL: 1795, GER: 1790, CRO: 1770, USA: 1770, MEX: 1770,
-    CAN: 1730, URU: 1750, COL: 1740, MAR: 1730, JPN: 1720, SUI: 1710,
-    SEN: 1700, IRN: 1700, KOR: 1700, ECU: 1700, TUN: 1660, AUS: 1650,
-    AUT: 1660, NOR: 1660, SWE: 1660, CZE: 1650, CIV: 1640, SCO: 1640,
-    CHI: 1640, PAR: 1640, ALG: 1640, EGY: 1640, GHA: 1630, CPV: 1600,
-    PAN: 1600, HAI: 1600, IRQ: 1600, UZB: 1600, NZL: 1580, RSA: 1580,
-    COD: 1580, QAT: 1580, BIH: 1580, JOR: 1580, CUW: 1500, KSA: 1500,
-    TUR: 1680, POL: 1680, WAL: 1670, DEN: 1670, IDN: 1580, GAB: 1580,
+    ALG: 1640, ARG: 1870, AUS: 1650, AUT: 1660, BEL: 1795, BIH: 1580,
+    BRA: 1830, CAN: 1730, CIV: 1640, COD: 1580, COL: 1740, CPV: 1600,
+    CRO: 1770, CUW: 1500, CZE: 1650, ECU: 1700, EGY: 1640, ENG: 1820,
+    ESP: 1860, FRA: 1870, GER: 1790, GHA: 1630, HAI: 1600, IRN: 1700,
+    IRQ: 1600, JOR: 1580, JPN: 1720, KOR: 1700, KSA: 1500, MAR: 1730,
+    MEX: 1770, NED: 1800, NOR: 1660, NZL: 1580, PAN: 1600, PAR: 1640,
+    POR: 1810, QAT: 1580, RSA: 1580, SCO: 1640, SEN: 1700, SUI: 1710,
+    SWE: 1660, TUN: 1660, TUR: 1680, URU: 1750, USA: 1770, UZB: 1600,
 };
 /**
  * Returns the predicted YES probability for a WC match. Uses
@@ -116,14 +125,33 @@ export async function runWorldCupMaker(ctx) {
     }
     // For each match, find the on-chain market and pool
     const allMarkets = listMarkets();
+    // R60 audit fix: the wc-creator now writes the
+    // on-chain marketId + pool_id onto the wc26
+    // row (`onchain_market_id` / `deepbook_pool_id`),
+    // so the maker can find the on-chain pool via
+    // the same wc26 id without needing a separate
+    // join to a now-defunct on-chain row. Filter
+    // for the wc26 row + a set on-chain marketId.
     const wcMarkets = allMarkets.filter((m) => m.category === "worldcup" &&
         m.status === "active" &&
-        m.deepbook_pool_id);
+        m.deepbook_pool_id &&
+        m.onchain_market_id);
     const matchToMarket = new Map();
     for (const m of wcMarkets) {
-        const wcId = m.id.startsWith("wc26-") ? m.id.slice(5) : null;
-        if (wcId)
-            matchToMarket.set(wcId, { marketId: m.id, poolId: m.deepbook_pool_id });
+        // The row's `id` is the wc26 form, the
+        // `onchain_market_id` is the on-chain
+        // digest-derived id. Both are needed:
+        //   - `m.id` (wc26 form) is the match key
+        //     for the `upcoming` schedule.
+        //   - `m.onchain_market_id` is the id the
+        //     PTB `buildPlaceOrderTx` needs.
+        if (!m.id.startsWith("wc26-"))
+            continue;
+        const wcId = m.id.slice("wc26-".length);
+        matchToMarket.set(wcId, {
+            marketId: m.onchain_market_id,
+            poolId: m.deepbook_pool_id,
+        });
     }
     let quoted = 0;
     let skipped = 0;
@@ -163,20 +191,44 @@ export async function runWorldCupMaker(ctx) {
                 askBps = 2 * TICK;
             }
         }
-        // Demo path: just record the orders in SQLite, no no-chain tx.
+        // Demo path: just record the orders in SQLite, no on-chain tx.
         // The demo market ids start with "demo-" and don't have a pool;
         // since the WC creator writes the row in demo mode without a
         // pool, the maker has nothing to actually place. We still log
         // the quote so the order-book endpoint shows it.
         const dbMarket = getMarket(found.marketId);
         if (!dbMarket?.deepbook_pool_id) {
-            // record a synthetic demo quote for the UI order book
+            // R60 audit fix: the previous `Math.round((1 - yes) * 10_000)`
+            // computed the *NO* price for a *YES* bid, which is
+            // semantically wrong and produced a bid ABOVE the ask
+            // (the crossed-book bug) on every demo tick. The bid
+            // for a YES-share order at probability `yes` is `yes`,
+            // not `1 - yes`. Use the same `bidBps` /
+            // `askBps` values the on-chain path uses, in the same
+            // bps unit the SQLite mirror records.
+            const demoBidBps = Math.max(1, Math.min(9_999, Math.round(yesClamped * 10_000)));
+            const demoAskBps = Math.max(1, Math.min(9_999, Math.round(yesClamped * 10_000)));
             upsertOrder({
                 market_id: found.marketId,
                 order_id: Date.now() * 1000 + quoted,
                 owner: "wc-maker-bot",
                 is_bid: true,
-                price_bps: Math.round((1 - yes) * 10_000),
+                price_bps: demoBidBps,
+                quantity: quoteSize,
+                timestamp_ms: Date.now(),
+            });
+            // Mirror the ask as a separate row so the order book
+            // shows the spread. The pre-R60 code only wrote a
+            // single bid row, so the UI's mid-price rendered as
+            // 0.99 whenever the resolved YES outcome was a
+            // home win (the synthetic `1 - yes` bid on the
+            // bid side of the book).
+            upsertOrder({
+                market_id: found.marketId,
+                order_id: Date.now() * 1000 + quoted + 0.5,
+                owner: "wc-maker-bot",
+                is_bid: false,
+                price_bps: demoAskBps,
                 quantity: quoteSize,
                 timestamp_ms: Date.now(),
             });
@@ -196,14 +248,43 @@ export async function runWorldCupMaker(ctx) {
                 continue;
             }
             const depTx = new Transaction();
+            // R60 audit fix: the previous code
+            // hardcoded a DeepBook package id
+            // (a different value than the SDK's
+            // `resolveDeepbookPackageId()`). The
+            // SDK resolver honors
+            // `DEEPBOOK_PACKAGE_ID` /
+            // `NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID`
+            // env vars with a bundled testnet
+            // fallback, so a self-hosted DeepBook
+            // deploy (which the system supports
+            // per the project README) wouldn't have
+            // its package picked up. Use the SDK
+            // resolver so all balance-manager /
+            // pool calls share one source of truth.
             depTx.moveCall({
-                target: `${process.env.DEEPBOOK_PACKAGE_ID ?? "0xc93ae840671495202260c7afb93c820bf11c081b884b660106399208871dec5a"}::balance_manager::deposit`,
+                target: `${resolveDeepbookPackageId()}::balance_manager::deposit`,
                 typeArguments: [DUSDC_TYPE],
                 arguments: [depTx.object(balanceManagerId), depTx.object(dusdcId)],
             });
             await executeTransaction(client, depTx, ctx.signer);
             if (agentPolicyId) {
-                const authTx = buildAuthorizeSpendTx(agentPolicyId, 5);
+                // R60 audit fix: the previous hardcoded
+                // `5` was a random guess — the actual
+                // notional per side is `price * qty`, which
+                // scales with `quoteSize` and the WC_MM_QUOTE_SIZE
+                // env var. Compute the per-tick notional
+                // from the bid/ask mid and the quote size,
+                // and clamp to the agent's max budget so a
+                // misconfigured `WC_MM_QUOTE_SIZE=1e15` doesn't
+                // either (a) blow the on-chain authorize_spend
+                // call with an out-of-budget amount, or (b)
+                // silently skip every quote because the
+                // auth amount never matches the actual
+                // spend.
+                const midNotionalDollars = Math.max(1, Math.round((quoteSize * (yesClamped + 0.05)) / 1_000_000));
+                const cycleAuthDollars = Math.min(midNotionalDollars * 2, ctx.maxBudgetUsdc);
+                const authTx = buildAuthorizeSpendTx(agentPolicyId, cycleAuthDollars);
                 await executeTransaction(client, authTx, ctx.signer);
             }
             const placeTx = buildPlaceOrderTx({
@@ -217,12 +298,27 @@ export async function runWorldCupMaker(ctx) {
             });
             await executeTransaction(client, placeTx, ctx.signer);
             // Mirror into SQLite so the agent feed shows the quote.
+            // R60 audit fix: same bid/ask bps fix as the
+            // demo-path above. Use the on-chain bid
+            // (`bidBps`) for the SQLite row so the mirror
+            // matches the on-chain book, and write both a
+            // bid and an ask row so the UI order book has
+            // a real spread to render.
             upsertOrder({
                 market_id: found.marketId,
                 order_id: Date.now() * 1000 + quoted,
                 owner: agentAddr,
                 is_bid: true,
-                price_bps: Math.round(yes * 10_000),
+                price_bps: Math.round(yesClamped * 10_000),
+                quantity: quoteSize,
+                timestamp_ms: Date.now(),
+            });
+            upsertOrder({
+                market_id: found.marketId,
+                order_id: Date.now() * 1000 + quoted + 0.5,
+                owner: agentAddr,
+                is_bid: false,
+                price_bps: Math.round(yesClamped * 10_000),
                 quantity: quoteSize,
                 timestamp_ms: Date.now(),
             });

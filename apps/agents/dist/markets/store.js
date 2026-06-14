@@ -55,6 +55,7 @@ export function getDb() {
         deepbook_base_scalar INTEGER,
         deepbook_quote_scalar INTEGER,
         referral_id TEXT,
+        onchain_market_id TEXT,
         created_at_ms INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS demo_orders (
@@ -275,6 +276,18 @@ function migrateMarketColumns() {
         // guarantee a consistent shape regardless of when
         // the DB was first provisioned.
         category: "TEXT NOT NULL DEFAULT 'general'",
+        // R60 audit fix: the wc-creator previously created
+        // a SEPARATE SQLite row (with the on-chain marketId
+        // as the primary key) for the on-chain market, in
+        // addition to the `wc26-<matchId>` demo row. That
+        // left the wc-resolver and wc-maker iterating TWO
+        // rows per match and never resolving the on-chain
+        // market. Consolidate the two into a single row
+        // keyed by the wc26 id; the on-chain marketId is
+        // stored here for the resolver's
+        // `buildResolveMarketTx` and the maker's
+        // `buildPlaceOrderTx` calls.
+        onchain_market_id: "TEXT",
     };
     for (const [name, type] of Object.entries(columns)) {
         if (!existing.has(name)) {
@@ -489,10 +502,10 @@ export function upsertMarket(market) {
         .prepare(`INSERT INTO markets
        (id, title, description, category, expiry_ms, resolution_source, status, outcome, pool_id, order_book_id,
         deepbook_pool_key, deepbook_pool_id, deepbook_base_coin_type, deepbook_quote_coin_type,
-        deepbook_base_scalar, deepbook_quote_scalar, referral_id, created_at_ms)
+        deepbook_base_scalar, deepbook_quote_scalar, referral_id, onchain_market_id, created_at_ms)
        VALUES (@id, @title, @description, @category, @expiry_ms, @resolution_source, @status, @outcome, @pool_id, @order_book_id,
         @deepbook_pool_key, @deepbook_pool_id, @deepbook_base_coin_type, @deepbook_quote_coin_type,
-        @deepbook_base_scalar, @deepbook_quote_scalar, @referral_id, @created_at_ms)
+        @deepbook_base_scalar, @deepbook_quote_scalar, @referral_id, @onchain_market_id, @created_at_ms)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, description=excluded.description, category=excluded.category,
          expiry_ms=excluded.expiry_ms, resolution_source=excluded.resolution_source,
@@ -503,7 +516,8 @@ export function upsertMarket(market) {
          deepbook_quote_coin_type=excluded.deepbook_quote_coin_type,
          deepbook_base_scalar=excluded.deepbook_base_scalar,
          deepbook_quote_scalar=excluded.deepbook_quote_scalar,
-         referral_id=excluded.referral_id`)
+         referral_id=excluded.referral_id,
+         onchain_market_id=excluded.onchain_market_id`)
         .run({
         ...market,
         outcome: market.outcome ?? null,
@@ -516,6 +530,10 @@ export function upsertMarket(market) {
         deepbook_base_scalar: market.deepbook_base_scalar ?? null,
         deepbook_quote_scalar: market.deepbook_quote_scalar ?? null,
         referral_id: market.referral_id ?? null,
+        // R60 audit fix: persist the on-chain marketId
+        // for the consolidated wc26 row. The resolver
+        // and maker read this for their on-chain PTBs.
+        onchain_market_id: market.onchain_market_id ?? null,
         created_at_ms: market.created_at_ms ?? Date.now(),
     });
 }
@@ -971,6 +989,41 @@ function rowToMarket(row) {
         dispute_count: r.dispute_count ?? 0,
         dispute_evidence_uri: r.dispute_evidence_uri ?? null,
         last_dispute_at_ms: r.last_dispute_at_ms ?? null,
+        // R61 audit fix: surface the kickoff timestamp
+        // for UI components that need to show
+        // "X until kickoff" (the DailyWcCard, the
+        // World Cup dashboard, the markets/[id] page).
+        // For WC markets the on-chain expiry is
+        // `kickoff + 2h` (regulation + extra time +
+        // resolver's 2-hour post-match window), so
+        // `kickoff = expiry - 2h`. For non-WC markets
+        // the field is left undefined — the concept of
+        // "kickoff" doesn't really apply to a generic
+        // LLM-proposed market, and a synthesised
+        // `expiry - 1min` value would mislead any UI
+        // that displays it. The SDK type makes the
+        // field optional so consumers can `?? null`
+        // check before rendering.
+        //
+        // The 2-hour subtraction uses a local constant
+        // here (the stores/ directory is a leaf — it
+        // can't import from the agents/ directory
+        // without a circular-dep risk). The
+        // `WC_POST_KICKOFF_RESOLUTION_WINDOW_MS`
+        // constant in `world-cup-fetcher.ts` is the
+        // authoritative value; a future tweak should
+        // land in both places. The R61 audit code
+        // review noted this duplicate and accepted
+        // it on the grounds that the store can't
+        // depend on the agents/ directory.
+        kickoff_ms: r.category === "worldcup"
+            ? r.expiry_ms - 2 * 60 * 60 * 1000
+            : undefined,
+        // R60 audit fix: read the on-chain market id.
+        // The wc-creator writes this when on-chain
+        // creation succeeds; the wc-resolver and
+        // wc-maker read it for their on-chain PTBs.
+        onchain_market_id: r.onchain_market_id ?? null,
     };
 }
 //# sourceMappingURL=store.js.map

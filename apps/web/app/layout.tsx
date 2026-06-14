@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Nav } from "@/components/nav";
 import { BottomNav } from "@/components/BottomNav";
+import { BackToTop } from "@/components/BackToTop";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import "./globals.css";
@@ -17,10 +18,31 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SuiPredict-AI | Autonomous DeepBook Predict",
+  // R30 sweep fix: more product-focused title
+  // and description. The previous build said
+  // "Autonomous DeepBook Predict" — a first-time
+  // user landing on `/` from a search had no
+  // signal that this is the *World Cup 2026*
+  // prediction exchange (the flagship vertical).
+  // The new title leads with the product +
+  // tournament so the SERP snippet matches the
+  // page's hero, and the description surfaces
+  // the "split / trade / resolve" mental model
+  // a trader needs to understand the UI on first
+  // load.
+  title: {
+    default: "SuiPredict AI · World Cup 2026 Prediction Markets on Sui",
+    template: "%s · SuiPredict AI",
+  },
   description:
-    "Autonomous AI agents that supply PLP liquidity, trade Predict binaries, and run settlement keepers on Sui.",
+    "Trade YES / NO on every FIFA World Cup 2026 match. Split DUSDC into shares, route orders through DeepBook V3, and earn streak rewards. Powered by 15 autonomous AI agents.",
   manifest: "/manifest.json",
+  openGraph: {
+    title: "SuiPredict AI · World Cup 2026 Prediction Markets",
+    description:
+      "Trade YES / NO on every FIFA World Cup 2026 match. Split DUSDC into shares, route orders through DeepBook V3, and earn streak rewards.",
+    type: "website",
+  },
 };
 
 export const viewport: Viewport = {
@@ -55,6 +77,12 @@ export default function RootLayout({
           <Nav />
           <main className="mx-auto max-w-6xl px-4 py-5 sm:py-8">{children}</main>
           <BottomNav />
+          {/* R30 sweep fix: floating back-to-top
+              button. Rendered once at the layout
+              level so it's available on every page
+              (markets list with 50+ cards, /agents
+              full decision feed, etc.). */}
+          <BackToTop />
         </Providers>
         <Toaster 
           theme="dark" 

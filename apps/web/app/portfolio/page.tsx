@@ -53,10 +53,20 @@ export default function PortfolioPage() {
 
   if (!account) {
     return (
-      <EmptyState
-        title="Wallet Disconnected"
-        description="Connect your Sui wallet to view your active prediction positions."
-      />
+      <div className="space-y-6 sm:space-y-8">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200 sm:text-5xl mb-2">
+            Your Portfolio
+          </h1>
+          <p className="text-zinc-400">
+            Track your YES/NO share balances across every active market and redeem winners.
+          </p>
+        </div>
+        <EmptyState
+          title="Wallet Disconnected"
+          description="Connect your Sui wallet to view your active prediction positions."
+        />
+      </div>
     );
   }
 
@@ -81,19 +91,43 @@ export default function PortfolioPage() {
       {positions.length === 0 ? (
         <EmptyState
           title="No Open Positions"
-          description="You don't have any active YES/NO positions. Start trading to build your portfolio."
+          description="You don't have any active YES/NO positions. Mint your first shares from the markets list to start building your portfolio."
           actionLabel="Browse Markets"
           onAction={() => router.push("/markets")}
         />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {positions.map((p) => (
+          {positions.map((p) => {
+            // R61 audit fix: surface a "View on
+            // SuiVision" link for non-demo market
+            // ids (the 0x... Sui object id form). The
+            // card itself is a single <Link> wrapper
+            // so we can't embed a nested <a>; the
+            // fix is an absolutely-positioned icon
+            // button in the top-right corner of the
+            // card with z-20 so it sits above the
+            // card's hit area. The button has its own
+            // onClick handler that stops propagation
+            // (so the parent <Link> doesn't fire) and
+            // the native target="_blank" preserves
+            // cmd/ctrl/middle-click "open in new
+            // tab". Demo ids (wc26-...) and SuiVision-
+            // unsupported networks (localnet) get no
+            // link — the icon simply doesn't render.
+            const explorerNet = (() => {
+              const raw = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
+              return ["testnet", "mainnet", "devnet"].includes(raw) ? raw : "testnet";
+            })();
+            const suivisionHref = /^0x[0-9a-fA-F]{64}$/.test(p.market_id)
+              ? `https://${explorerNet}.suivision.xyz/object/${p.market_id}`
+              : null;
+            return (
             <Link key={p.market_id} href={`/markets/${encodeURIComponent(p.market_id)}`} className="block">
               <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)] h-full">
                 <div className="absolute inset-0 bg-gradient-to-b from-white/[0.04] to-transparent pointer-events-none group-hover:from-cyan-500/5 transition-colors" />
                 <div className="relative z-10 flex flex-col h-full justify-between gap-4">
                   <div>
-                    <div className="mb-2 flex items-center justify-between">
+                    <div className="mb-2 flex items-center justify-between pr-8">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border ${p.status === 'active' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/20 bg-amber-500/10 text-amber-300'}`}>
                         {p.status}
                       </span>
@@ -107,6 +141,20 @@ export default function PortfolioPage() {
                       {p.title}
                     </h2>
                   </div>
+                  {suivisionHref && (
+                    <a
+                      href={suivisionHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="View on SuiVision"
+                      className="absolute right-3 top-3 z-20 inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-black/40 text-cyan-400 opacity-0 transition-all hover:bg-cyan-500/20 hover:text-cyan-200 hover:border-cyan-500/30 group-hover:opacity-100"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                    </a>
+                  )}
                   
                   <div className="grid grid-cols-2 gap-2 mt-2 pt-4 border-t border-white/5">
                     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-center transition-colors group-hover:bg-emerald-500/10">
@@ -121,7 +169,8 @@ export default function PortfolioPage() {
                 </div>
               </div>
             </Link>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

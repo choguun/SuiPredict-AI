@@ -1,4 +1,4 @@
-import type { MarketInfo, OrderBookSnapshot, PortfolioPosition, VaultSummaryClob } from "./types.js";
+import type { MarketInfo, OrderBookSnapshot, PortfolioPosition, TradeRecord, VaultSummaryClob } from "./types.js";
 
 /**
  * Resolve the indexer URL at call time so a
@@ -176,6 +176,41 @@ export async function getMarketOrderBook(id: string): Promise<OrderBookSnapshot>
     );
   }
   return fetchJson(`/markets/${encodeURIComponent(id)}/book`);
+}
+
+/**
+ * R32 sweep fix: fetch recent trades for a
+ * market. The agents indexer has been
+ * recording trades in the `trades` table
+ * since the position-indexer landed
+ * (round 22), but no SDK helper exposed
+ * them — and no UI surface consumed the
+ * data. This getter is the SDK side of
+ * the new `/markets/<id>/trades` route;
+ * the market detail page can use it to
+ * render a "Recent trades" panel below
+ * the order book. The indexer returns
+ * `{ trades: TradeRecord[] }`; we
+ * unwrap the envelope here so callers
+ * get a plain array. `limit` defaults
+ * to 50 and is capped at 200 to match
+ * the agents-route cap.
+ */
+export async function getMarketTrades(
+  id: string,
+  limit = 50,
+): Promise<TradeRecord[]> {
+  if (!isValidMarketId(id)) {
+    throw new Error(
+      `getMarketTrades: id must be a non-empty path-safe string (got ${id === undefined ? "undefined" : JSON.stringify(id)})`,
+    );
+  }
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 50;
+  const env = await fetchJson<{ trades: TradeRecord[] }>(
+    `/markets/${encodeURIComponent(id)}/trades?limit=${safeLimit}`,
+  );
+  return env.trades ?? [];
 }
 
 /**
