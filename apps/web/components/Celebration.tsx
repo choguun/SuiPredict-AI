@@ -56,8 +56,6 @@ export function Celebration({
     lastSeenStreakRef.current = streak;
     if (next === undefined) return;
     lastCelebratedMilestoneRef.current = next;
-    if (next === undefined) return;
-    lastCelebratedMilestoneRef.current = next;
     setActive(true);
     // Best-effort haptic feedback. The API is undefined on
     // Safari iOS, so guard with optional chaining.
