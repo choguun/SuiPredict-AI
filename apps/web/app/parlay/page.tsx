@@ -23,6 +23,7 @@ import {
   type MarketInfo,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
+import { EmptyState } from "@/components/EmptyState";
 import { ParlayHistory } from "@/components/ParlayHistory";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -604,9 +605,16 @@ export default function ParlayPage() {
         <h1 className="text-3xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-cyan-200">
           Parlay Builder
         </h1>
-        <Card>
-          <p className="text-zinc-400">Connect a wallet to build a parlay.</p>
-        </Card>
+        <EmptyState
+          title="Wallet Disconnected"
+          description="Connect your Sui wallet to build and place multi-leg parlays."
+          actionLabel="Connect Wallet"
+          onAction={() => {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("open-connect-modal"));
+            }
+          }}
+        />
       </div>
     );
   }

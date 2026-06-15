@@ -255,9 +255,24 @@ export default function AdminPage() {
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
           <span>Wallet:</span>
-          <Badge variant={walletConnected ? "success" : "default"}>
-            {walletConnected ? shortAddr(account?.address) : "not connected"}
-          </Badge>
+          {!walletConnected ? (
+            <button
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("open-connect-modal"));
+                }
+              }}
+              className="hover:scale-[1.02] active:scale-95 transition"
+            >
+              <Badge variant="default" className="hover:bg-white/10 transition">
+                not connected (click to connect)
+              </Badge>
+            </button>
+          ) : (
+            <Badge variant="success">
+              {shortAddr(account?.address)}
+            </Badge>
+          )}
           {ADMIN_ADDRESS && (
             <>
               <span>·</span>

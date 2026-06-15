@@ -25,7 +25,9 @@ function readFriends(): string[] {
     if (!raw) return [];
     const j = JSON.parse(raw) as unknown;
     if (!Array.isArray(j)) return [];
-    return j.filter((x): x is string => typeof x === "string" && isSuiAddress(x));
+    return j
+      .filter((x): x is string => typeof x === "string" && isSuiAddress(x))
+      .map((x) => x.toLowerCase());
   } catch {
     return [];
   }
@@ -54,7 +56,7 @@ export function useFriends(): UseFriendsResult {
     setFriends(readFriends());
   }, []);
   const add = useCallback((addr: string) => {
-    const norm = addr.trim();
+    const norm = addr.trim().toLowerCase();
     if (!isSuiAddress(norm)) return false;
     if (friends.includes(norm)) return false;
     const next = [...friends, norm];
@@ -63,11 +65,12 @@ export function useFriends(): UseFriendsResult {
     return true;
   }, [friends]);
   const remove = useCallback((addr: string) => {
-    const next = friends.filter((f) => f !== addr);
+    const norm = addr.trim().toLowerCase();
+    const next = friends.filter((f) => f !== norm);
     setFriends(next);
     writeFriends(next);
   }, [friends]);
-  const has = useCallback((addr: string) => friends.includes(addr), [friends]);
+  const has = useCallback((addr: string) => friends.includes(addr.trim().toLowerCase()), [friends]);
   return { friends, add, remove, has, isValidAddress: isSuiAddress };
 }
 

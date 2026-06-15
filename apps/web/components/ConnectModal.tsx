@@ -206,6 +206,12 @@ export function ConnectModal() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isOpen]);
 
+  useEffect(() => {
+    const handleOpen = () => setIsOpen(true);
+    window.addEventListener("open-connect-modal", handleOpen);
+    return () => window.removeEventListener("open-connect-modal", handleOpen);
+  }, []);
+
   return (
     <>
       {/* Trigger Button */}

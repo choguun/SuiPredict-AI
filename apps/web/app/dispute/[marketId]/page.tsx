@@ -364,9 +364,16 @@ export default function DisputeMarketPage() {
             </button>
           </div>
           {!account && (
-            <p className="text-xs text-amber-300">
+            <button
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("open-connect-modal"));
+                }
+              }}
+              className="mt-2 text-xs text-amber-300 hover:text-amber-200 underline underline-offset-2 text-left"
+            >
               Connect a wallet to file a dispute.
-            </p>
+            </button>
           )}
         </div>
       </Card>

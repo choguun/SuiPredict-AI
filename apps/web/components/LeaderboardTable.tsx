@@ -97,7 +97,7 @@ export function LeaderboardTable({
   }, [friendsOnly, friends.length]);
   const baseRows = data?.rows ?? [];
   const rows = friendsOnly
-    ? baseRows.filter((r) => friends.includes(r.user))
+    ? baseRows.filter((r) => friends.includes(r.user.toLowerCase()))
     : baseRows;
   const weekIndex = data?.week_index ?? 0;
 

@@ -593,7 +593,16 @@ export default function SettingsPage() {
 
       <Card title="Create Policy" className="border-white/10">
         {!account ? (
-          <p className="text-zinc-400">Connect wallet as policy owner</p>
+          <button
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+              }
+            }}
+            className="text-zinc-400 hover:text-white underline underline-offset-2 text-left text-sm"
+          >
+            Connect wallet as policy owner
+          </button>
         ) : (
           <div className="space-y-4 max-w-md mt-2">
             <div>
@@ -726,7 +735,16 @@ export default function SettingsPage() {
 
       <Card title="Profile" className="border-white/10">
         {!account ? (
-          <p className="text-zinc-400">Connect wallet to manage your profile.</p>
+          <button
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+              }
+            }}
+            className="text-zinc-400 hover:text-white underline underline-offset-2 text-left text-sm"
+          >
+            Connect wallet to manage your profile.
+          </button>
         ) : !PROFILE_REGISTRY_ID ? (
           <p className="text-amber-300">
             NEXT_PUBLIC_PROFILE_REGISTRY_ID is not set — ask the operator

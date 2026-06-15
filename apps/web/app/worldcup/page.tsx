@@ -80,7 +80,10 @@ function useJson<T>(url: string, deps: unknown[] = []): {
       }
     };
     void fetchOnce();
-    const t = setInterval(fetchOnce, 60_000);
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void fetchOnce();
+    }, 60_000);
     return () => {
       mounted = false;
       clearInterval(t);

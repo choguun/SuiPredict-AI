@@ -494,9 +494,17 @@ export function DailyPredictionCard() {
               } market${activeMarketIds.length === 1 ? "" : "s"} × 1 DUSDC)`}
         </p>
         <button
-          onClick={handleSubmit}
+          onClick={() => {
+            if (!account) {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+              }
+              return;
+            }
+            handleSubmit();
+          }}
           disabled={
-            !account || !isComplete || submitting || activeMarketIds.length === 0
+            (account && (!isComplete || activeMarketIds.length === 0)) || submitting
           }
           className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
         >

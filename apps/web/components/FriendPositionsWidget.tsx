@@ -182,7 +182,7 @@ export function FriendPositionsWidget({
                       onClick={() =>
                         onCopyBet
                           ? onCopyBet(side, size)
-                          : defaultCopyBet(addr, side)
+                          : defaultCopyBet(marketId, side)
                       }
                       className="shrink-0 rounded-md bg-white/5 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-500/20 hover:text-emerald-300"
                     >

@@ -413,6 +413,12 @@ export default function VaultPage() {
         <EmptyState
           title="Wallet Disconnected"
           description="Connect your Sui wallet to view and manage your vault allocations."
+          actionLabel="Connect Wallet"
+          onAction={() => {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("open-connect-modal"));
+            }
+          }}
         />
       </div>
     );

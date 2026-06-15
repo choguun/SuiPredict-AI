@@ -65,6 +65,12 @@ export default function PortfolioPage() {
         <EmptyState
           title="Wallet Disconnected"
           description="Connect your Sui wallet to view your active prediction positions."
+          actionLabel="Connect Wallet"
+          onAction={() => {
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent("open-connect-modal"));
+            }
+          }}
         />
       </div>
     );

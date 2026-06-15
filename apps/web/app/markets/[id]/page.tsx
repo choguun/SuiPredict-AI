@@ -1680,9 +1680,16 @@ function MarketDetailBody({
               </p>
             </div>
           </div>
-          <span className="shrink-0 rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 py-2 text-xs font-bold text-white text-center">
-            Use Connect button ↗
-          </span>
+          <button
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+              }
+            }}
+            className="shrink-0 rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 py-2 text-xs font-bold text-white text-center hover:scale-[1.02] active:scale-95 transition"
+          >
+            Connect Wallet
+          </button>
         </div>
       )}
       {/* R61 audit fix: 3-step "How it works" callout for
