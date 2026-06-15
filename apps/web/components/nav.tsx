@@ -71,7 +71,7 @@ export function Nav() {
           {PRIMARY_LINKS.map((l) => {
             const active =
               pathname === l.href ||
-              (l.href === "/markets" && pathname.startsWith("/markets/")) ||
+              (l.href === "/markets" && (pathname.startsWith("/markets/") || pathname.startsWith("/dispute/"))) ||
               (l.href === "/worldcup" && pathname.startsWith("/worldcup"));
             return (
               <Link
