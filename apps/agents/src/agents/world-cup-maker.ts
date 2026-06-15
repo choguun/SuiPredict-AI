@@ -164,9 +164,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
   const wcMarkets = allMarkets.filter(
     (m) =>
       m.category === "worldcup" &&
-      m.status === "active" &&
-      m.deepbook_pool_id &&
-      m.onchain_market_id,
+      m.status === "active",
   );
   const matchToMarket = new Map<string, { marketId: string; poolId: string }>();
   for (const m of wcMarkets) {
@@ -180,8 +178,8 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
     if (!m.id.startsWith("wc26-")) continue;
     const wcId = m.id.slice("wc26-".length);
     matchToMarket.set(wcId, {
-      marketId: m.onchain_market_id!,
-      poolId: m.deepbook_pool_id!,
+      marketId: m.onchain_market_id || m.id,
+      poolId: m.deepbook_pool_id || "",
     });
   }
 

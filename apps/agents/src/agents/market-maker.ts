@@ -134,7 +134,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
   // Find an active market that has a DeepBook pool
   const target = listMarkets().find(
-    (m) => m.status === "active" && m.deepbook_pool_id,
+    (m) => m.status === "active" && m.deepbook_pool_id && m.category !== "worldcup",
   );
   if (!target) {
     return recordResult("MarketMaker", {

@@ -26,3 +26,12 @@ deps/deepbookv3-self-hosted/
 # Local deployment outputs
 .env.deployed*
 .vercel
+
+# Compiled output
+**/dist/
+**/tsconfig.tsbuildinfo
+
+# SQLite temp files
+*.db-wal
+*.db-shm
+*.db-journal

@@ -94,7 +94,7 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
     100,
   );
   const expired = listMarkets().filter(
-    (m) => m.status === "active" && m.expiry_ms <= now,
+    (m) => m.status === "active" && m.expiry_ms <= now && m.category !== "worldcup",
   );
 
   if (expired.length === 0) {

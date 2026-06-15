@@ -318,7 +318,7 @@ export default function ParlayPage() {
       cancelled = true;
       clearInterval(t);
     };
-  }, [client, created?.parlayId]);
+  }, [client, created?.parlayId, created?.legCount]);
 
   // Refresh the DUSDC balance whenever the connected account changes.
   // Polling is overkill here — the user only needs a fresh read on
