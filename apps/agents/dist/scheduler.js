@@ -170,31 +170,45 @@ export function msUntilNext(expr, now = new Date()) {
     if (!minute || !hour || !dow) {
         throw new Error(`bad cron: ${expr}`);
     }
-    // R57 agents audit fix: step the search by the largest
-    // granularity that can't be a wildcard, instead of walking
-    // every minute. The previous loop iterated 8 * 24 * 60 = 11520
-    // minutes per call. The scheduler calls this on every
-    // `scheduleNext` re-arm, so a 1-minute cron that takes 5
-    // seconds to finish its tick would re-arm with a 5-second
-    // search budget. Pick a step size based on the wildcards:
-    //   - `hour` is "*" → step by 60 minutes
-    //   - `dow` is "*" → step by 60 minutes (no day constraint)
-    //   - otherwise step by 1 minute
-    const stepMinutes = hour === "*" || dow === "*" ? 60 : 1;
+    // R6X audit fix: just step by 1 minute. The previous
+    // step-60 optimization was wrong for two reasons:
+    //   1. The `if (candidate.getUTCSeconds() !== 0) continue;`
+    //      gate silently rejected every candidate when `now`
+    //      had non-zero seconds (the candidates all share
+    //      `now`'s seconds, so they all fail the check).
+    //   2. For single-integer minute fields (e.g. `0` in
+    //      `0 0 * * *`), step=60 walked past valid candidates
+    //      (minute 0 was never hit by stepping 60 at a time
+    //      from minute 30).
+    // Walking 1 minute at a time through 8 days of candidates
+    // is 11520 iterations — sub-millisecond in Node, so the
+    // previous micro-optimization isn't worth the correctness
+    // cost.
+    const stepMinutes = 1;
     const maxIter = 8 * 24 * 60;
+    const minuteMs = 60_000;
+    // Round `now` down to the nearest minute boundary so the
+    // search starts at a clean minute. Without this, `i=0` is
+    // literally `now` and the `candidateMs <= now.getTime()`
+    // guard rejects it (caller's clock has moved past the
+    // minute boundary we just rounded to). Rounding then
+    // jumping by `i*60_000` from the floor lets i=0 give us
+    // a candidate at the *current* minute boundary (which is
+    // still in the past after the floor, so we start at i=1
+    // effectively — the guard handles it).
+    const nowFloor = Math.floor(now.getTime() / minuteMs) * minuteMs;
     for (let i = 0; i < maxIter; i += stepMinutes) {
-        const candidate = new Date(now.getTime() + i * 60_000);
+        const candidateMs = nowFloor + i * minuteMs;
+        const candidate = new Date(candidateMs);
         if (!matchesPart(minute, candidate.getUTCMinutes()))
             continue;
         if (!matchesPart(hour, candidate.getUTCHours()))
             continue;
         if (dow !== "*" && !matchesPart(dow, candidate.getUTCDay()))
             continue;
-        if (candidate.getUTCSeconds() !== 0)
+        if (candidateMs <= now.getTime())
             continue;
-        if (candidate.getTime() <= now.getTime())
-            continue;
-        return candidate.getTime() - now.getTime();
+        return candidateMs - now.getTime();
     }
     // Shouldn't happen for valid input, but never starve the loop.
     // Warn on excessive iteration so a future cron-format

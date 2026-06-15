@@ -4,6 +4,7 @@ import { Nav } from "@/components/nav";
 import { BottomNav } from "@/components/BottomNav";
 import { BackToTop } from "@/components/BackToTop";
 import { OfflineBanner } from "@/components/OfflineBanner";
+import { Footer } from "@/components/Footer";
 import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import "./globals.css";
@@ -83,6 +84,19 @@ export default function RootLayout({
           </a>
           <Nav />
           <main id="main-content" className="mx-auto max-w-6xl px-4 py-5 sm:py-8">{children}</main>
+          {/* R6X audit fix: site footer with
+              secondary navigation, social links,
+              license info, and a live "network"
+              indicator (the pre-R6X build had no
+              footer anywhere on the site). Renders
+              below the main content but above the
+              mobile bottom-nav z-stack so the
+              fixed bottom-nav still floats over
+              the footer's last row on small
+              screens. The `pb-16 md:pb-0` on
+              <body> still leaves room for the
+              bottom-nav on phones. */}
+          <Footer />
           <BottomNav />
           {/* R30 sweep fix: floating back-to-top
               button. Rendered once at the layout

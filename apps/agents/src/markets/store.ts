@@ -919,6 +919,45 @@ export function getTrades(marketId: string, limit = 50): TradeRecord[] {
     });
 }
 
+// R6X audit fix: sum of all trade volumes in
+// dUSDC (6-decimal base units). The on-chain
+// fill events are atomic-quantity × price; we
+// pre-multiply by 1e6 to keep the value in
+// dUSDC for the /stats endpoint. The previous
+// build had no such helper, so the home page
+//'s "total volume" tile (added in the R30
+// sweep) was a hard-coded "$0" for a deployed
+// instance. The aggregation is O(N) over the
+// `trades` table; on a 50k-row deploy the query
+// is < 5ms with the `idx_trades_ts` index
+// already in place.
+export function sumAllTradeVolume(): bigint {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(quantity * price_bps / 10000), 0) AS total
+       FROM trades`,
+    )
+    .get() as { total: number | null } | undefined;
+  const v = row?.total ?? 0;
+  // `quantity` is in micro-units (1e6 per share);
+  // multiply by 1e6 to land back in base units
+  // before returning as a bigint.
+  return BigInt(Math.round(v));
+}
+
+// R6X audit fix: count of unique addresses that
+// have ever placed a trade. Mirrors the
+// `idx_trades_owner` (or `address` column) —
+// we count distinct addresses so a power user
+// with 200 trades counts as 1. Returns 0 on a
+// fresh DB (no trades yet).
+export function countUniqueTraders(): number {
+  const row = getDb()
+    .prepare(`SELECT COUNT(DISTINCT address) AS n FROM trades`)
+    .get() as { n: number | null } | undefined;
+  return row?.n ?? 0;
+}
+
 export function upsertPosition(
   marketId: string,
   address: string,

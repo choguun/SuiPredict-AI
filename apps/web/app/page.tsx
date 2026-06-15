@@ -14,6 +14,8 @@ import { StreakWelcomeBanner } from "@/components/StreakWelcomeBanner";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
 import { SuivisionLink } from "@/components/SuivisionLink";
 import { EmptyState } from "@/components/EmptyState";
+import { TopForecasters } from "@/components/TopForecasters";
+import { TournamentCountdown } from "@/components/TournamentCountdown";
 
 export const dynamic = "force-dynamic";
 
@@ -384,6 +386,28 @@ export default async function HomePage() {
         <div className="lg:col-span-2 space-y-6">
           <DailyWcCard />
           <DailyPredictionCard />
+        </div>
+      </section>
+
+      {/* R6X audit fix: 2-up live signals row.
+         A first-time visitor landing on `/` now sees
+         a tournament countdown + top forecasters
+         alongside the gamification row, so the
+         "is this thing live?" question is answered
+         without scrolling. Pre-R6X the home page
+         had no time-to-kickoff signal and no
+         "real players are trading" signal. The
+         countdown re-uses the WC_KICKOFF_MS
+         constant in `TournamentCountdown.tsx`;
+         the leaderboard widget polls the agents
+         REST every 60s, paused when the tab is
+         hidden. Both panels gracefully degrade to
+         a skeleton / empty-state when the agents
+         service is unreachable. */}
+      <section className="grid gap-6 sm:grid-cols-2">
+        <TournamentCountdown variant="card" />
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <TopForecasters />
         </div>
       </section>
 

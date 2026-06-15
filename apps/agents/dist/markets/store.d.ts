@@ -88,6 +88,8 @@ export declare function recordTrade(trade: Omit<TradeRecord, "market_id"> & {
 }): void;
 export declare function getOrderBook(marketId: string): OrderBookSnapshot;
 export declare function getTrades(marketId: string, limit?: number): TradeRecord[];
+export declare function sumAllTradeVolume(): bigint;
+export declare function countUniqueTraders(): number;
 export declare function upsertPosition(marketId: string, address: string, yes: number, no: number): void;
 export declare function decrementPosition(marketId: string, address: string, side: "yes" | "no", amount: number): void;
 export declare function getPosition(marketId: string, address: string): {

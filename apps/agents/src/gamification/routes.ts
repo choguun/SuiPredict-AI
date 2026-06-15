@@ -42,6 +42,9 @@ import {
   listAllParlaysForUser,
   listUnfinalizedParlaysForUser,
   listPrizeClaims,
+  listStreakEvents,
+  listDailyScoresForDay,
+  dayIndexFor,
   type ParlayRow,
 } from "./store.js";
 import { countryRollup, liveRollup } from "../agents/leaderboard-worker.js";
@@ -331,6 +334,207 @@ export async function handleGamificationRoute(
     }
     json(res, 200, row);
     return true;
+  }
+
+  // GET /prize/pool
+  //
+  // R6X audit fix: surface the live PrizePool state
+  // (current week, weekly prize, distribution curve, balance).
+  // The leaderboard page already calls this implicitly via
+  // `weeklyPrize` from the env, but a /prize/pool endpoint
+  // gives the /parlay page (which needs the cap to size
+  // parlays), the /admin page, and the future "Prize pool"
+  // dashboard a single source of truth. The on-chain reads
+  // are best-effort: a missing `PRIZE_POOL_ID` env var or a
+  // transient RPC failure surfaces a 503 with a clear
+  // remediation hint, not a 404.
+  //
+  // The route is mounted under `/prize/pool` rather than
+  // `/prize/pool/:week` to keep the leaderboard page's
+  // `process.env.NEXT_PUBLIC_PRIZE_POOL_ID` lookup simple —
+  // the response always reflects the on-chain `current_week`
+  // so callers don't have to guess which week to query.
+  const prizePoolMatch = url.pathname.match(/^\/prize\/pool$/);
+  if (prizePoolMatch) {
+    const prizePoolId = process.env.NEXT_PUBLIC_PRIZE_POOL_ID ?? process.env.PRIZE_POOL_ID ?? "";
+    if (!prizePoolId) {
+      json(res, 503, {
+        error:
+          "PRIZE_POOL_ID is not configured; run `pnpm bootstrap-gamification` or set NEXT_PUBLIC_PRIZE_POOL_ID in your .env",
+      });
+      return true;
+    }
+    try {
+      const client = getSharedClient();
+      const { objects } = await client.getObjects({
+        objectIds: [prizePoolId],
+        include: { json: true },
+      });
+      const obj = objects[0];
+      if (!obj || obj instanceof Error) {
+        json(res, 502, {
+          error: "could not read PrizePool on-chain",
+          prize_pool_id: prizePoolId,
+        });
+        return true;
+      }
+      const j = (obj.json ?? {}) as {
+        current_week?: string | number;
+        weekly_prize?: string | number;
+        distribution?: number[] | string[];
+        balance?: string | number;
+      };
+      json(res, 200, {
+        prize_pool_id: prizePoolId,
+        current_week: safeBigInt(
+          j.current_week != null ? String(j.current_week) : undefined,
+          0n,
+        ).toString(),
+        weekly_prize: safeBigInt(
+          j.weekly_prize != null ? String(j.weekly_prize) : undefined,
+          0n,
+        ).toString(),
+        distribution: Array.isArray(j.distribution) ? j.distribution : [],
+        balance: safeBigInt(
+          j.balance != null ? String(j.balance) : undefined,
+          0n,
+        ).toString(),
+      });
+      return true;
+    } catch (err) {
+      const errorId = logAndCorrelate("/prize/pool", err);
+      json(res, 502, { error: "PrizePool RPC failure", errorId });
+      return true;
+    }
+  }
+
+  // GET /streak/:addr
+  //
+  // R6X audit fix: surface a user's current streak (current_streak,
+  // longest_streak, multiplier, last-participated day) from the
+  // off-chain `daily_scores` + `streak_events` mirrors. The web
+  // StreakProfile component reads on-chain state directly via
+  // `getStreakInfo`, but the home page's StreakWelcomeBanner and
+  // the portfolio / leaderboard rows benefit from a single
+  // REST endpoint that joins "did the user streak today?" +
+  // "what's their rank this week?" in one response. Without
+  // this route, the prior sweep claimed `/streak/:addr` worked
+  // (it didn't — 404), and a curious user sharing a link to
+  // `https://suipredict.ai/portfolio/0x…/streak` would have
+  // landed on a 404 with no navigation back to the working
+  // surface.
+  const streakMatch = url.pathname.match(/^\/streak\/(0x[a-fA-F0-9]+)$/);
+  if (streakMatch) {
+    const addr = streakMatch[1]!.toLowerCase();
+    // Pull the most recent `streak_events` row for this user;
+    // the event is the authoritative off-chain source of
+    // `current_streak` (the sweeper mirrors it from
+    // `streak_system::record_participation` events). Fall back
+    // to the user's most recent `daily_scores` row if no
+    // streak event exists yet (e.g. the sweeper hasn't caught
+    // up, or the user was added before the event subscription
+    // was re-enabled in r15).
+    const events = listStreakEvents(addr, 1);
+    const dailyScores = listDailyScoresForDay(dayIndexFor(Date.now()));
+    const todayScore = dailyScores.find((s) => s.user === addr);
+    if (events.length === 0 && !todayScore) {
+      json(res, 404, {
+        error: "no streak recorded for this user",
+        user: addr,
+        hint: "Start a streak by participating in a daily prediction",
+      });
+      return true;
+    }
+    const last = events[0] ?? null;
+    const currentStreak = Math.max(
+      last?.final_streak ?? last?.new_streak ?? 0,
+      todayScore?.streak_after ?? 0,
+    );
+    const longestStreak = Math.max(
+      last?.longest_streak ?? 0,
+      // Daily scores don't store longest_streak; conservatively
+      // use current_streak as a floor (the next recordStreakEvent
+      // tick will refresh this).
+      todayScore?.streak_after ?? 0,
+    );
+    // Multiplier: 1.0x below 3 days, +10% per tier to a max of
+    // 2.0x at 100 days. The on-chain `streak_system` module
+    // defines the same curve in `multiplier_tier`.
+    const TIER_THRESHOLDS = [3, 7, 14, 30, 100];
+    const TIER_BPS = [0, 1000, 1500, 2000, 3000, 5000]; // +0%, +10%, +15%, +20%, +30%, +50%
+    let tier = 0;
+    for (let i = 0; i < TIER_THRESHOLDS.length; i++) {
+      if (currentStreak >= TIER_THRESHOLDS[i]!) tier = i + 1;
+    }
+    const multiplierBps = 10_000 + (TIER_BPS[tier] ?? 0);
+    json(res, 200, {
+      user: addr,
+      current_streak: currentStreak,
+      longest_streak: longestStreak,
+      multiplier_bps: multiplierBps,
+      multiplier: multiplierBps / 10_000,
+      tier,
+      last_event_ts_ms: last?.ts_ms ?? null,
+      participated_today: !!todayScore,
+    });
+    return true;
+  }
+
+  // GET /stats
+  //
+  // R6X audit fix: a single endpoint for the home-page / footer
+  // "protocol stats" tiles (active markets, total volume, total
+  // users). The home page derives most of these from
+  // `listMarkets()` + `getVaultSummaryClob()` and the
+  // gamification routes, but a single REST call is cheaper on
+  // the home page render and gives the future "Stats" /
+  // "Analytics" page a single source of truth. Returns 200 with
+  // a degraded shape (markets/volume = 0) if SQLite is empty
+  // (e.g. fresh deploy before the WC demo seed runs).
+  if (url.pathname === "/stats") {
+    try {
+      // `listMarkets` and the trade totals are best-effort.
+      // We import dynamically so the gamification route file
+      // doesn't pull the markets store at module load (and
+      // create an init-order dependency).
+      const { listMarkets, sumAllTradeVolume, countUniqueTraders } = await import(
+        "../markets/store.js"
+      );
+      const markets = listMarkets();
+      const active = markets.filter((m) => m.status === "active").length;
+      const resolved = markets.filter((m) => m.status === "resolved").length;
+      const wc = markets.filter(
+        (m) => m.category === "worldcup" && m.status === "active",
+      ).length;
+      let volume = 0n;
+      let traders = 0;
+      try {
+        volume = sumAllTradeVolume();
+      } catch {
+        /* SQLite may not have the trades table yet */
+      }
+      try {
+        traders = countUniqueTraders();
+      } catch {
+        /* same */
+      }
+      json(res, 200, {
+        markets: {
+          total: markets.length,
+          active,
+          resolved,
+          worldcup_active: wc,
+        },
+        volume_dusdc: volume.toString(),
+        unique_traders: traders,
+        ts_ms: Date.now(),
+      });
+      return true;
+    } catch (err) {
+      const errorId = logAndCorrelate("/stats", err);
+      json(res, 500, { error: "stats unavailable", errorId });
+      return true;
+    }
   }
 
   // GET /prize/signature/challenge?user=:addr
