@@ -5,7 +5,7 @@ import {
   useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -199,7 +199,7 @@ export default function ParlayPage() {
   } | null>(null);
   const [loadingBalance, setLoadingBalance] = useState(false);
 
-  async function refreshDusdcBalance() {
+  const refreshDusdcBalance = useCallback(async () => {
     if (!client || !account) return;
     setLoadingBalance(true);
     try {
@@ -237,7 +237,7 @@ export default function ParlayPage() {
     } finally {
       setLoadingBalance(false);
     }
-  }
+  }, [client, account]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,7 +358,21 @@ export default function ParlayPage() {
     // (Effect deps re-run on the next render after setCreated; the
     // created?.parlayId dependency below is what makes that fire.)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, account?.address, created?.parlayId]);
+  }, [client, account?.address, created?.parlayId, refreshDusdcBalance]);
+
+  // Auto-refresh the user's DUSDC balance on window focus / visibility change
+  useEffect(() => {
+    if (!client || !account) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshDusdcBalance();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [client, account, refreshDusdcBalance]);
 
   const payoutBps = useMemo(() => BigInt(Math.round(multiplier * 10_000)), [multiplier]);
 

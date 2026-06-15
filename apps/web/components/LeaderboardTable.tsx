@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import { ClaimPrizeButton } from "@/components/ClaimPrizeButton";
 import { useFriends } from "@/lib/friends";
 
@@ -58,6 +59,7 @@ export function LeaderboardTable({
   limit = 20,
   category = "",
 }: Props) {
+  const account = useCurrentAccount();
   const { data, error, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["leaderboard", "week", limit, category],
     queryFn: () => fetchLeaderboard(limit, category),
@@ -97,7 +99,10 @@ export function LeaderboardTable({
   }, [friendsOnly, friends.length]);
   const baseRows = data?.rows ?? [];
   const rows = friendsOnly
-    ? baseRows.filter((r) => friends.includes(r.user.toLowerCase()))
+    ? baseRows.filter((r) => {
+        const u = r.user.toLowerCase();
+        return friends.includes(u) || (account?.address && u === account.address.toLowerCase());
+      })
     : baseRows;
   const weekIndex = data?.week_index ?? 0;
 
