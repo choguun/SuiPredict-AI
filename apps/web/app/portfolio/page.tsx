@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getPortfolio, listMarkets, type PortfolioPosition } from "@suipredict/sdk";
 import { EmptyState } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";
+import { SuivisionLink } from "@/components/SuivisionLink";
 
 export default function PortfolioPage() {
   const account = useCurrentAccount();
@@ -104,29 +105,6 @@ export default function PortfolioPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {positions.map((p) => {
-            // R61 audit fix: surface a "View on
-            // SuiVision" link for non-demo market
-            // ids (the 0x... Sui object id form). The
-            // card itself is a single <Link> wrapper
-            // so we can't embed a nested <a>; the
-            // fix is an absolutely-positioned icon
-            // button in the top-right corner of the
-            // card with z-20 so it sits above the
-            // card's hit area. The button has its own
-            // onClick handler that stops propagation
-            // (so the parent <Link> doesn't fire) and
-            // the native target="_blank" preserves
-            // cmd/ctrl/middle-click "open in new
-            // tab". Demo ids (wc26-...) and SuiVision-
-            // unsupported networks (localnet) get no
-            // link — the icon simply doesn't render.
-            const explorerNet = (() => {
-              const raw = process.env.NEXT_PUBLIC_SUI_NETWORK ?? "testnet";
-              return ["testnet", "mainnet", "devnet"].includes(raw) ? raw : "testnet";
-            })();
-            const suivisionHref = /^0x[0-9a-fA-F]{64}$/.test(p.market_id)
-              ? `https://${explorerNet}.suivision.xyz/object/${p.market_id}`
-              : null;
             return (
             <Link key={p.market_id} href={`/markets/${encodeURIComponent(p.market_id)}`} className="block">
               <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)] h-full">
@@ -147,20 +125,10 @@ export default function PortfolioPage() {
                       {p.title}
                     </h2>
                   </div>
-                  {suivisionHref && (
-                    <a
-                      href={suivisionHref}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label="View on SuiVision"
-                      className="absolute right-3 top-3 z-20 inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-black/40 text-cyan-400 opacity-0 transition-all hover:bg-cyan-500/20 hover:text-cyan-200 hover:border-cyan-500/30 group-hover:opacity-100"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                        <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                      </svg>
-                    </a>
-                  )}
+                  <SuivisionLink
+                    objectId={p.market_id}
+                    className="absolute right-3 top-3 z-20"
+                  />
                   
                   <div className="grid grid-cols-2 gap-2 mt-2 pt-4 border-t border-white/5">
                     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-center transition-colors group-hover:bg-emerald-500/10">

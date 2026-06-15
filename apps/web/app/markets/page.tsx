@@ -370,8 +370,8 @@ export default async function MarketsPage({
   // one for an unfiltered browse.
   const anyFilterActive =
     !!searchQuery || !!categoryFilter || statusFilter !== "all" || sortKey !== "expiry";
-  const active = finalVisible.filter((m) => m.status === "active").length;
-  const resolved = finalVisible.filter((m) => m.status === "resolved").length;
+  const active = sorted.filter((m) => m.status === "active").length;
+  const resolved = sorted.filter((m) => m.status === "resolved").length;
 
   // Fetch each active market's order book in parallel. Active markets
   // without a book yet (still bootstrapping) fall back to the 0.5
@@ -407,7 +407,7 @@ export default async function MarketsPage({
           </div>
         <div className="grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-[#11141d] p-2 text-center">
           <div className="px-3 py-2">
-            <p className="text-lg font-semibold text-white">{finalVisible.length}</p>
+            <p className="text-lg font-semibold text-white">{finalTotal}</p>
             <p className="text-xs text-zinc-500">
               {anyFilterActive ? "Showing" : "Total"}
             </p>
