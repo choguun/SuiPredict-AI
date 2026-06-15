@@ -105,7 +105,9 @@ export function ClaimPrizeButton(props: Props) {
 
   const onClaim = useCallback(async () => {
     if (!account) {
-      toast.error("Connect your wallet to claim");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("open-connect-modal"));
+      }
       return;
     }
     if (!streakId) {
@@ -368,11 +370,11 @@ export function ClaimPrizeButton(props: Props) {
   return (
     <button
       type="button"
-      disabled={loading || !account || amount === BigInt(0)}
+      disabled={loading || (!!account && amount === BigInt(0))}
       onClick={onClaim}
       className="min-h-9 rounded-md bg-gradient-to-r from-amber-500 to-orange-400 px-3.5 text-xs font-semibold text-zinc-950 shadow-lg shadow-amber-900/30 transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-50 disabled:scale-100"
     >
-      {loading ? "Claiming…" : `Claim ${amountUsdc} DUSDC`}
+      {!account ? "Connect wallet" : loading ? "Claiming…" : `Claim ${amountUsdc} DUSDC`}
     </button>
   );
 }

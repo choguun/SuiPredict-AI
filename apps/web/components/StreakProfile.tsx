@@ -47,7 +47,23 @@ export function StreakProfile() {
   const currentStreak = streak.info?.current_streak ?? 0;
 
   if (!account) {
-    return <StreakProfileEmpty reason="Connect a wallet to start a streak." />;
+    return (
+      <StreakProfileEmpty
+        reason="Connect a wallet to start a streak."
+        cta={
+          <button
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+              }
+            }}
+            className="mt-3 rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110"
+          >
+            Connect Wallet
+          </button>
+        }
+      />
+    );
   }
   if (idLoading) {
     return <StreakProfileEmpty reason="Loading streak…" spinner />;
