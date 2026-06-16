@@ -30,6 +30,12 @@ deps/deepbookv3-self-hosted/
 # Compiled output
 **/tsconfig.tsbuildinfo
 
+# Agents service dist (large; rebuilt on every deploy).
+# The SDK dist is still tracked so consumers can install
+# the prebuilt package; the agents service is only run
+# from source via `pnpm dev:agents` or rebuilt on deploy.
+apps/agents/dist/
+
 # SQLite temp files
 *.db-wal
 *.db-shm
