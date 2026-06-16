@@ -433,6 +433,41 @@ export function buildMintSharesTx(
   quoteIn: string,
   amountAtoms: bigint,
 ): Transaction {
+  // R-UAT-23 follow-up: pre-flight the
+  // `marketId` against the Sui object-id
+  // shape (`0x` + 64 hex chars) so a caller
+  // that passes a SQLite-mirror primary key
+  // (e.g. `wc26-A1v4` for a World Cup
+  // market that has no on-chain market id)
+  // gets a friendly error rather than the
+  // raw `normalizeObjectId` throw deep in
+  // the SDK. The caller is then expected to
+  // surface this error in the UI as a toast.
+  // The pre-flight is intentionally lenient
+  // (regex match, not a full BCS decode) —
+  // a `0x` + 32-byte hex string is the only
+  // shape the on-chain PTB will accept, and
+  // matching it here catches the SQLite
+  // namespace without an extra network call.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(marketId)) {
+    throw new Error(
+      `buildMintSharesTx: marketId "${marketId}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "This usually means the market has no on-chain market id (it's a SQLite-mirror demo row, e.g. a `wc26-*` World Cup market). " +
+        "Minting requires a published on-chain market; use `getMarket(id).onchain_market_id` to check before calling.",
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(vaultId)) {
+    throw new Error(
+      `buildMintSharesTx: vaultId "${vaultId}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "Check NEXT_PUBLIC_FEE_VAULT_ID is set in the web bundle and matches the agents runtime's FEE_VAULT_ID.",
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(quoteIn)) {
+    throw new Error(
+      `buildMintSharesTx: quoteIn "${quoteIn}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "Check that the DUSDC coin object id returned by `listCoins` is a real on-chain coin.",
+    );
+  }
   // Minimum per-leg amount: 1 YES share at the protocol's default
   // scalar (1e6 = 1 share with 6 decimals). Markets created via
   // `buildCreateMarketTx` use `tickSize: 1_000_000`, `lotSize: 1_000_000`,
@@ -1206,6 +1241,33 @@ export function buildPlaceOrderTx(params: {
   if (params.marketStatus !== undefined && params.marketStatus !== "active") {
     throw new Error(
       `buildPlaceOrderTx: market is ${params.marketStatus}, cannot place order`,
+    );
+  }
+  // R-UAT-23 follow-up: same
+  // Sui-id pre-flight as
+  // `buildMintSharesTx`. A
+  // SQLite-mirror `wc26-*`
+  // market id would otherwise
+  // reach `normalizeObjectId`
+  // and throw the raw
+  // `is not a valid Sui object id`
+  // message deep in the SDK.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(params.marketId)) {
+    throw new Error(
+      `buildPlaceOrderTx: marketId "${params.marketId}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "Use `getMarket(id).onchain_market_id` to get the on-chain market id (the SQLite primary key may be a `wc26-*` namespace, not a Sui id).",
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(params.poolId)) {
+    throw new Error(
+      `buildPlaceOrderTx: poolId "${params.poolId}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "The market has no DeepBook pool (it's a SQLite-mirror demo row). Limit orders require a real on-chain pool.",
+    );
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(params.balanceManagerId)) {
+    throw new Error(
+      `buildPlaceOrderTx: balanceManagerId "${params.balanceManagerId}" is not a valid Sui object id (expected 0x + 64 hex chars). ` +
+        "Check that `BALANCE_MANAGER_ID` (or the per-route env) is set to a real on-chain BalanceManager.",
     );
   }
   // R53 audit fix: validate

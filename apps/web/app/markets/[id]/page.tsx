@@ -928,12 +928,35 @@ function MarketDetailBody({
       // amount off the user's DUSDC bag in-PTB and passes only the
       // split coin to `mint_shares` — the whole bag is never
       // deposited.
+      //
+      // R-UAT-23 follow-up: guard the
+      // on-chain market id before calling the
+      // SDK builder. The button is now
+      // disabled when `onchain_market_id` is
+      // empty (R-UAT-23 follow-up in the JSX
+      // below), but a programmatic caller
+      // (e.g. a clipboard-pasted URL to a
+      // SQLite-mirror WC row) would still hit
+      // the raw
+      // `normalizeObjectId("wc26-A1v4")` throw
+      // deep in the SDK. Pre-flight the value
+      // here and surface a clear toast so the
+      // error reaches the user as a friendly
+      // message rather than a stack trace.
+      const onchainMarketId = market.onchain_market_id;
+      if (!onchainMarketId) {
+        throw new Error(
+          `This market has no on-chain market id (it is a SQLite-mirror demo row with id "${market.id}"). ` +
+            "Minting requires a published on-chain market; the world-cup-creator agent has not yet published one. " +
+            "Try a different market or wait for the next on-chain publish cycle.",
+        );
+      }
       const tx = buildMintSharesTx(
         // R60 audit fix: use the on-chain marketId
         // (the SQLite primary key is the `wc26-<matchId>`
         // form, which would abort the on-chain
         // `mint_shares` call).
-        market.onchain_market_id ?? market.id,
+        onchainMarketId,
         FEE_VAULT_ID,
         coin.objectId,
         amountAtoms,
@@ -2685,7 +2708,40 @@ function MarketDetailBody({
           <div className="grid grid-cols-2 gap-3 mt-2">
             <button
               type="button"
-              disabled={busy === "mint" || !account || market.id.startsWith("demo-") || market.status !== "active"}
+              // R-UAT-23 follow-up: the WC markets
+              // (e.g. `wc26-A1v4`) are seeded
+              // into the SQLite mirror with no
+              // on-chain market id (the
+              // world-cup-creator's on-chain path
+              // is gated on a self-hosted DeepBook
+              // pool that doesn't exist for the
+              // current testnet deploy). The
+              // `splitCollateral` flow calls
+              // `buildMintSharesTx(market.onchain_market_id ?? market.id, ...)`;
+              // the SDK then calls
+              // `normalizeObjectId("wc26-A1v4")` and
+              // throws with the raw
+              // `"wc26-A1v4" is not a valid Sui
+              // object id` message. Disable the
+              // button up-front when the market has
+              // no on-chain market id, with a
+              // short `title=` hint that explains why
+              // the button is grey. Users who want
+              // to mint against a real on-chain
+              // market can still do so — just not
+              // against a SQLite-mirror WC row.
+              disabled={
+                busy === "mint" ||
+                !account ||
+                market.id.startsWith("demo-") ||
+                market.status !== "active" ||
+                !market.onchain_market_id
+              }
+              title={
+                !market.onchain_market_id
+                  ? "This market has no on-chain market id (it's a SQLite-mirror demo row). Minting requires an on-chain market — try a different market or wait for the world-cup-creator to publish one on-chain."
+                  : undefined
+              }
               onClick={splitCollateral}
               className="min-h-11 rounded-lg bg-white/10 px-4 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50 border border-white/10"
             >
