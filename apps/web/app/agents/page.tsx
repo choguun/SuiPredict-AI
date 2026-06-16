@@ -238,6 +238,71 @@ function driftLinesFor(h: HealthEnvelope): string[] {
   return lines;
 }
 
+// Server-resolved env values. The drift detector runs in a
+// "use client" component where `process.env.NEXT_PUBLIC_X`
+// is `undefined` (Next.js inlines these at build time and
+// the browser has no `process`). We fetch the server-side
+// values from `/api/web-config` and use the SDK constant
+// for `AGENT_POLICY_PACKAGE_ID` (which the SDK normalizes
+// across web/agents). The fetch is initiated on first
+// mount of the page; if it fails, the page falls back to
+// an empty object (and every entry is reported as
+// "web bundle has no X set" — same behaviour as the
+// pre-fix build).
+type WebConfig = Partial<Record<keyof HealthEnvelope | "package_id" | "referral_treasury_address" | "admin_address" | "parlay_admin_id" | "deepbook_pool_id" | "deepbook_pool_key" | "prize_admin_id" | "profile_registry_id", string>>;
+
+const WEB_CONFIG: WebConfig = {
+  // `process.env` is `undefined` in the browser, so this
+  // object is effectively `{ ...all empty strings }` when
+  // the page is hydrated in the browser. The
+  // `load()` effect below fetches the real values from
+  // `/api/web-config` and overwrites this with the
+  // server-side resolution.
+  package_id: "",
+  deepbook_registry_id: "",
+  vault_id: "",
+  prize_pool_id: "",
+  parlay_pool_id: "",
+  streak_registry_id: "",
+  fee_vault_id: "",
+  referral_treasury_address: "",
+  prize_admin_id: "",
+  profile_registry_id: "",
+  admin_address: "",
+  parlay_admin_id: "",
+  deepbook_pool_id: "",
+  deepbook_pool_key: "",
+};
+
+// Re-implement driftLinesFor to use WEB_CONFIG instead of
+// `process.env[env]` (which is `undefined` in the browser).
+// Same semantics: a row is a drift when (a) the runtime
+// is empty (agents crashed mid-`/health` write), (b) the
+// web bundle is empty (the corresponding PTB sends a
+// zero-id sentinel), or (c) the case-insensitive values
+// differ.
+function driftLinesForWebConfig(h: HealthEnvelope, web: WebConfig): string[] {
+  const lines: string[] = [];
+  for (const { env, label, runtimeKey } of ENV_IDS) {
+    const runtimeVal = String(h[runtimeKey as keyof HealthEnvelope] ?? "");
+    const localVal = label === "AGENT_POLICY_PACKAGE_ID" ? AGENT_POLICY_PACKAGE_ID : (web[runtimeKey as keyof WebConfig] ?? "");
+    if (!runtimeVal) {
+      lines.push(`${label}: runtime value missing from /health`);
+      continue;
+    }
+    if (!localVal) {
+      lines.push(`${label}: web bundle has no ${env} set`);
+      continue;
+    }
+    if (runtimeVal.toLowerCase() !== localVal.toLowerCase()) {
+      lines.push(
+        `${label}: web=${localVal.slice(0, 10)}… runtime=${runtimeVal.slice(0, 10)}…`,
+      );
+    }
+  }
+  return lines;
+}
+
 export default function AgentsPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [manifest, setManifest] = useState<AgentManifestEntry[]>([]);
@@ -295,7 +360,37 @@ export default function AgentsPage() {
       // rebuild with the right NEXT_PUBLIC_* values.
       if (healthRes.status === "fulfilled" && healthRes.value.ok) {
         const h = (await healthRes.value.json()) as HealthEnvelope;
-        setDrift(driftLinesFor(h));
+        // Fetch the web bundle's NEXT_PUBLIC_* values from
+        // the server-side `/api/web-config` route. The page
+        // is a "use client" component, so `process.env` is
+        // unavailable; the constant `WEB_CONFIG` is the
+        // server-rendered substitute. Fall back to it
+        // gracefully if the API route 5xx's.
+        //
+        // The API returns keys prefixed with `NEXT_PUBLIC_`
+        // (matching the env var names). Translate them to
+        // the runtime keys the drift detector looks up
+        // (e.g. `NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID` →
+        // `deepbook_registry_id`). The translation map
+        // is the same `ENV_IDS` array we already iterate.
+        let webCfg: WebConfig = WEB_CONFIG;
+        try {
+          const cfgRes = await fetch("/api/web-config", { cache: "no-store" });
+          if (cfgRes.ok) {
+            const raw = (await cfgRes.json()) as Record<string, string>;
+            const mapped: WebConfig = {};
+            for (const { env, runtimeKey } of ENV_IDS) {
+              const v = raw[env];
+              if (v != null) {
+                (mapped as Record<string, string>)[runtimeKey] = v;
+              }
+            }
+            webCfg = mapped;
+          }
+        } catch {
+          /* keep WEB_CONFIG fallback */
+        }
+        setDrift(driftLinesForWebConfig(h, webCfg));
       }
     }
     void load();
