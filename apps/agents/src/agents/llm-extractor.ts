@@ -197,7 +197,7 @@ const SCHEMA_PROMPTS: Record<ExtractionSchema, string> = {
   - pot: 1, 2, 3, or 4 (the seeding pot)
 Return JSON: {"letter": "A", "teams": [{"code": "MEX", "name": "Mexico", "pot": 1}, ...]}`,
   WcMatchResult: `Extract ALL World Cup match results visible on this page. For every completed or in-progress match in the group, return an object in a top-level "matches" array. For each match:
-  - match_id: stable id like "A1vA3" (infer from teams + group)
+  - match_id: stable id like "A1v3" (format: GroupLetter + HomeIndex + "v" + AwayIndex, e.g. A1v3 or A4v2)
   - home_team, away_team: country names
   - home_goals, away_goals: integer scores (0 if not yet played)
   - status: "completed" for played matches, "scheduled" for future, "in_progress" if live, "postponed" if delayed

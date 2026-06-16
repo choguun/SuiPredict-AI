@@ -9,30 +9,14 @@ const PRIMARY_LINKS = [
   { href: "/", label: "Home" },
   { href: "/worldcup", label: "World Cup" },
   { href: "/markets", label: "Markets" },
-  { href: "/parlay", label: "Parlay" },
-  { href: "/leaderboard", label: "Leaderboard" },
   { href: "/vault", label: "Vault" },
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/friends", label: "Friends" },
 ];
 
-// R30 sweep fix: the desktop nav was missing
-// /settings, /agents, and /admin. A first-time
-// desktop user had no clickable path to those
-// routes — they were only reachable by typing
-// the URL or via the mobile "More" sheet. The
-// fix: a "More" dropdown on the desktop nav
-// (hidden on mobile, where the BottomNav's own
-// "More" sheet already covers the gap). The
-// dropdown closes on outside-click, Escape, or
-// link click — standard menu affordances. The
-// admin link is always present (clicking it
-// without admin authority surfaces a friendly
-// "no admin key" gate inside the page itself).
 const MORE_LINKS = [
+  { href: "/parlay", label: "Parlay", icon: "🎯" },
+  { href: "/leaderboard", label: "Leaderboard", icon: "🏆" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
-  { href: "/agents", label: "Agents", icon: "🤖" },
-  { href: "/admin", label: "Admin", icon: "🛡️" },
 ];
 
 export function Nav() {

@@ -12,12 +12,10 @@ const PRIMARY_LINKS = [
 ];
 
 const MORE_LINKS = [
-  { href: "/friends", label: "Friends", icon: "👥" },
   { href: "/parlay", label: "Parlay", icon: "🎯" },
   { href: "/leaderboard", label: "Leaderboard", icon: "🏆" },
   { href: "/vault", label: "Vault", icon: "🔒" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
-  { href: "/agents", label: "Agents", icon: "🤖" },
 ];
 
 /**
@@ -117,11 +115,11 @@ export function BottomNav() {
           onClick={() => setMoreOpen(false)}
         >
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
             aria-hidden="true"
           />
           <div
-            className="relative w-full max-w-md rounded-t-2xl border-t border-white/10 bg-panel p-4 pb-6 shadow-2xl shadow-black/80"
+            className="relative w-full max-w-md rounded-t-2xl border-t border-white/10 bg-panel p-4 pb-6 shadow-2xl shadow-black/80 animate-in slide-in-from-bottom duration-250 ease-out"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">

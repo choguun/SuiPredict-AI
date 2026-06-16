@@ -45,15 +45,12 @@ const NAV_GROUPS: Array<{
       { label: "Daily prediction", href: "/" },
       { label: "Parlay builder", href: "/parlay" },
       { label: "Provide liquidity", href: "/vault" },
-      { label: "Follow friends", href: "/friends" },
     ],
   },
   {
     title: "Build",
     links: [
-      { label: "AI agents", href: "/agents" },
       { label: "Settings", href: "/settings" },
-      { label: "Admin panel", href: "/admin" },
       { label: "Submit a dispute", href: "/dispute/wc26-K1v4" },
     ],
   },

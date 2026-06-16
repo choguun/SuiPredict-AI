@@ -512,11 +512,6 @@ async function commitResolution(
     // position-indexer from decrementing redemptions
     // — for now, mirror the main loop's "best
     // effort" behaviour.
-    upsertMarket({
-      ...market,
-      status: "resolved",
-      outcome: outcome === 1 ? "yes" : "no",
-    });
     return false;
   }
 }
