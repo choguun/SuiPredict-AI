@@ -95,6 +95,7 @@ export interface PortfolioPosition {
   no: number;
   status: string;
   outcome?: string | null;
+  onchain_market_id?: string | null;
 }
 
 // R56.9 audit fix: the on-the-wire balance fields are

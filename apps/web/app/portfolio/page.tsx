@@ -1,16 +1,137 @@
 "use client";
 
-import { useCurrentAccount } from "@mysten/dapp-kit-react";
+import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
-import { getPortfolio, listMarkets, type PortfolioPosition } from "@suipredict/sdk";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  getPortfolio,
+  listMarkets,
+  type PortfolioPosition,
+  buildRedeemTx,
+  buildRedeemNoTx,
+  buildRedeemWithStreakTx,
+  buildRedeemNoWithStreakTx,
+  yesCoinType,
+  noCoinType,
+  normalizeObjectId,
+  isMoveAbortInModule,
+} from "@suipredict/sdk";
 import { EmptyState } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";
 import { SuivisionLink } from "@/components/SuivisionLink";
+import { useUserStreakId } from "@/hooks/useUserStreakId";
+import { useState } from "react";
+import { toast } from "sonner";
+import { submitAndWait } from "@/lib/dapp-kit";
 
 export default function PortfolioPage() {
   const account = useCurrentAccount();
   const router = useRouter();
+  const client = useCurrentClient();
+  const dAppKit = useDAppKit();
+  const queryClient = useQueryClient();
+  const { streakId } = useUserStreakId(account?.address);
+  const [redeemingMarketId, setRedeemingMarketId] = useState<string | null>(null);
+
+  const friendlyMoveError = (err: unknown, action: string): string => {
+    if (isMoveAbortInModule(err, "prediction_market")) {
+      return `${action} failed: the market is paused or already settled.`;
+    }
+    if (isMoveAbortInModule(err, "balance_manager")) {
+      return `${action} failed: balance manager invariant violated (insufficient funds?).`;
+    }
+    if (isMoveAbortInModule(err, "deepbook")) {
+      return `${action} failed: DeepBook pool rejected the order.`;
+    }
+    if (isMoveAbortInModule(err, "dusdc")) {
+      return `${action} failed: insufficient DUSDC balance.`;
+    }
+    if (isMoveAbortInModule(err, "agent_policy")) {
+      return `${action} failed: agent policy paused, revoked, or out of budget.`;
+    }
+    return `${action} failed on-chain`;
+  };
+
+  const handleRedeem = async (e: React.MouseEvent, p: PortfolioPosition) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!account) return;
+
+    const toastId = toast.loading("Preparing redeem transaction...");
+    setRedeemingMarketId(p.market_id);
+
+    try {
+      const winningSide = p.outcome;
+      if (winningSide !== "yes" && winningSide !== "no") {
+        throw new Error("Cannot redeem: market outcome is not YES or NO.");
+      }
+
+      const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
+
+      // List user's winning coins
+      const { objects } = await client.core.listCoins({
+        owner: normalizeObjectId(account.address),
+        coinType: winningCoinType,
+        limit: 100,
+      });
+
+      const sortedWinning = [...objects].sort((a, b) =>
+        BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+      );
+      const coin = sortedWinning[0];
+      if (!coin) {
+        throw new Error(
+          `You don't hold any ${winningSide.toUpperCase()} tokens for this market`
+        );
+      }
+
+      toast.loading(
+        streakId ? "Redeeming with streak boost..." : "Redeeming...",
+        { id: toastId }
+      );
+
+      const FEE_VAULT_ID = process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
+      if (!FEE_VAULT_ID) {
+        throw new Error("NEXT_PUBLIC_FEE_VAULT_ID is not configured in env");
+      }
+
+      const redeemMarketId = p.onchain_market_id ?? p.market_id;
+      const tx =
+        winningSide === "yes"
+          ? streakId
+            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId)
+          : streakId
+            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
+
+      const r = await submitAndWait(dAppKit, client, tx);
+      if (r.$kind !== "Transaction") {
+        toast.error(friendlyMoveError(r.error, "Redeem"), { id: toastId });
+        return;
+      }
+      if (!r.digest) {
+        toast.error(friendlyMoveError(undefined, "Redeem"), { id: toastId });
+        return;
+      }
+
+      toast.success(`Redeemed: ${r.digest.slice(0, 16)}…`, { id: toastId });
+
+      // Invalidate portfolio and market list queries
+      void queryClient.invalidateQueries({
+        queryKey: ["portfolio", account.address],
+        type: "active",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["marketsList"],
+        type: "active",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Redeem failed", { id: toastId });
+    } finally {
+      setRedeemingMarketId(null);
+    }
+  };
 
   // Markets count is for the header subtitle. `listMarkets()` returns
   // every market regardless of status (active / resolved / cancelled),
@@ -140,6 +261,23 @@ export default function PortfolioPage() {
                       <p className="text-lg font-bold text-rose-300">{(p.no / 1e6).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                     </div>
                   </div>
+                  {p.status === "resolved" && p.outcome && (
+                    ((p.outcome === "yes" && p.yes > 0) || (p.outcome === "no" && p.no > 0)) ? (
+                      <button
+                        onClick={(e) => handleRedeem(e, p)}
+                        disabled={redeemingMarketId !== null}
+                        className="mt-3 w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2.5 text-center text-xs font-bold text-emerald-950 hover:from-emerald-400 hover:to-teal-500 disabled:opacity-50 transition shadow-lg shadow-emerald-950/20 z-30 relative"
+                      >
+                        {redeemingMarketId === p.market_id
+                          ? "Redeeming..."
+                          : `Redeem Winning ${p.outcome.toUpperCase()} Shares`}
+                      </button>
+                    ) : (
+                      <div className="mt-3 w-full rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2 text-center text-xs text-zinc-500">
+                        Position Closed (Lost or Redeemed)
+                      </div>
+                    )
+                  )}
                 </div>
               </div>
             </Link>

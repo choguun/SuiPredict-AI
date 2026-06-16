@@ -79,6 +79,7 @@ export interface PortfolioPosition {
     no: number;
     status: string;
     outcome?: string | null;
+    onchain_market_id?: string | null;
 }
 export interface VaultSummaryClob {
     vault_id: string;

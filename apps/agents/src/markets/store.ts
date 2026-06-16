@@ -616,7 +616,13 @@ export function upsertMarket(market: MarketInfo): void {
     });
 }
 
-export function listMarkets(): MarketInfo[] {
+export function listMarkets(limit?: number, offset?: number): MarketInfo[] {
+  if (limit !== undefined && offset !== undefined) {
+    return getDb()
+      .prepare(`SELECT * FROM markets ORDER BY created_at_ms DESC LIMIT ? OFFSET ?`)
+      .all(limit, offset)
+      .map(rowToMarket);
+  }
   return getDb()
     .prepare(`SELECT * FROM markets ORDER BY created_at_ms DESC`)
     .all()
@@ -1033,14 +1039,26 @@ export function getPosition(
   return row ?? null;
 }
 
-export function getPortfolio(address: string): PortfolioPosition[] {
-  const rows = getDb()
-    .prepare(
-      `SELECT p.*, m.title, m.status, m.outcome
-       FROM positions p JOIN markets m ON m.id = p.market_id
-       WHERE p.address = ? AND (p.yes > 0 OR p.no > 0)`,
-    )
-    .all(address) as Record<string, unknown>[];
+export function getPortfolio(address: string, limit?: number, offset?: number): PortfolioPosition[] {
+  let rows: Record<string, unknown>[];
+  if (limit !== undefined && offset !== undefined) {
+    rows = getDb()
+      .prepare(
+        `SELECT p.*, m.title, m.status, m.outcome, m.onchain_market_id
+         FROM positions p JOIN markets m ON m.id = p.market_id
+         WHERE p.address = ? AND (p.yes > 0 OR p.no > 0)
+         LIMIT ? OFFSET ?`,
+      )
+      .all(address, limit, offset) as Record<string, unknown>[];
+  } else {
+    rows = getDb()
+      .prepare(
+        `SELECT p.*, m.title, m.status, m.outcome, m.onchain_market_id
+         FROM positions p JOIN markets m ON m.id = p.market_id
+         WHERE p.address = ? AND (p.yes > 0 OR p.no > 0)`,
+      )
+      .all(address) as Record<string, unknown>[];
+  }
 
   return rows.map((r) => ({
     market_id: r.market_id as string,
@@ -1049,6 +1067,7 @@ export function getPortfolio(address: string): PortfolioPosition[] {
     no: r.no as number,
     status: r.status as string,
     outcome: (r.outcome as string) ?? null,
+    onchain_market_id: (r.onchain_market_id as string) ?? null,
   }));
 }
 

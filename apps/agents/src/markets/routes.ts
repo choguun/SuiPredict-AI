@@ -70,7 +70,13 @@ export function handleMarketsRoute(
   if (req.method !== "GET") return false;
 
   if (url.pathname === "/markets") {
-    json(res, 200, listMarkets());
+    const limit = Number(url.searchParams.get("limit"));
+    const offset = Number(url.searchParams.get("offset"));
+    if (Number.isInteger(limit) && Number.isInteger(offset)) {
+      json(res, 200, listMarkets(limit, offset));
+    } else {
+      json(res, 200, listMarkets());
+    }
     return true;
   }
 
@@ -135,7 +141,13 @@ export function handleMarketsRoute(
 
   const portfolioMatch = url.pathname.match(/^\/portfolio\/(0x[a-fA-F0-9]{64})$/);
   if (portfolioMatch) {
-    json(res, 200, getPortfolio(portfolioMatch[1]!));
+    const limit = Number(url.searchParams.get("limit"));
+    const offset = Number(url.searchParams.get("offset"));
+    if (Number.isInteger(limit) && Number.isInteger(offset)) {
+      json(res, 200, getPortfolio(portfolioMatch[1]!, limit, offset));
+    } else {
+      json(res, 200, getPortfolio(portfolioMatch[1]!));
+    }
     return true;
   }
 
