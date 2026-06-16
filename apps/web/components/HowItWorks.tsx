@@ -108,23 +108,23 @@ export function HowItWorks({
 
   if (variant === "inline") return <div className={className}>{stepsEl}</div>;
 
-  return (
-    <Card className={`border-white/10 ${className}`}>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-extrabold text-white">How SuiPredict works</h2>
-          <p className="text-xs text-zinc-500">Three steps. Three transactions. One wallet.</p>
-        </div>
-        <Link
-          href="/markets"
-          className="shrink-0 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition"
-        >
-          Get started →
-        </Link>
-      </div>
-      {stepsEl}
-    </Card>
-  );
+  // return (
+  //   <Card className={`border-white/10 ${className}`}>
+  //     <div className="mb-4 flex items-center justify-between">
+  //       <div>
+  //         <h2 className="text-lg font-extrabold text-white">How SuiPredict works</h2>
+  //         <p className="text-xs text-zinc-500">Three steps. Three transactions. One wallet.</p>
+  //       </div>
+  //       <Link
+  //         href="/markets"
+  //         className="shrink-0 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 transition"
+  //       >
+  //         Get started →
+  //       </Link>
+  //     </div>
+  //     {stepsEl}
+  //   </Card>
+  // );
 }
 
 const HOW_IT_WORKS_DISMISSED_KEY = "suipredict.howItWorks.dismissed";
