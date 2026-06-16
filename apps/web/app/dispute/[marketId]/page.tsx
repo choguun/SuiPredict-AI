@@ -9,7 +9,7 @@ import {
   useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { buildDisputeMarketTx, getMarket, isMoveAbortCode, normalizeObjectId } from "@suipredict/sdk";
+import { buildDisputeMarketTx, getMarket, isMoveAbortCode } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -260,8 +260,19 @@ export default function DisputeMarketPage() {
         queryKey: ["marketsList"],
         type: "active",
       });
+      // R63 audit fix: build the per-market query key
+      // from `marketId` (the raw URL param) without
+      // calling `normalizeObjectId`. The URL can
+      // contain either the SQLite id (`wc26-...`)
+      // or the on-chain id (`0x...`); TanStack Query
+      // matches on the exact tuple, so a key built
+      // from the wrong form misses the registered
+      // cache and the invalidation is a no-op. The
+      // previous `normalizeObjectId` call threw for
+      // `wc26-...` ids and the invalidation failed
+      // before reaching the queryClient.
       void queryClient.invalidateQueries({
-        queryKey: ["market", normalizeObjectId(marketId)],
+        queryKey: ["market", marketId],
         type: "active",
       });
     } catch (err) {
