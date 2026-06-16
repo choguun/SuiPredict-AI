@@ -847,17 +847,26 @@ function MarketDetailBody({
         // DUSDC — a user who clicks that link would
         // land on a SUI balance, come back, and
         // see the same "no DUSDC" error. The
-        // self-hosted faucet (ConnectModal →
-        // "Get 100 DUSDC") mints from the
-        // protocol's TreasuryCap and is the actual
-        // fix. Open the ConnectModal automatically
-        // so the user lands on the faucet button
-        // — one less click to recover.
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("open-connect-modal"));
-        }
+        // self-hosted faucet (the "Faucet 100 DUSDC"
+        // compact button in this Collateral card,
+        // or the "Get 100 DUSDC" CTA in the
+        // ConnectModal) mints from the protocol's
+        // TreasuryCap and is the actual fix.
+        //
+        // R63 audit fix: drop the
+        // `open-connect-modal` dispatch here. The
+        // "Mint Shares" button is `!account`-disabled
+        // (line ~2527), so this code only fires
+        // when the user is already connected and
+        // has zero DUSDC. Opening the ConnectModal
+        // at that point is a no-op (the user is
+        // already connected) and just adds visual
+        // noise. The compact FaucetButton in this
+        // same Collateral card is the actionable
+        // surface — the user can click it directly
+        // without bouncing through the modal.
         throw new Error(
-          "You don't have any DUSDC yet. Open the wallet menu and click \"Get 100 DUSDC\" to mint from the protocol faucet. (The Sui testnet faucet only mints SUI for gas, not DUSDC.)",
+          "You don't have any DUSDC yet. Click \"Faucet 100 DUSDC\" below to mint from the protocol faucet. (The Sui testnet faucet only mints SUI for gas, not DUSDC.)",
         );
       }
       // R51 audit fix: pick the largest coin, not
@@ -2619,8 +2628,24 @@ function MarketDetailBody({
                   </span>
                 )}
                 {!market.id.startsWith("demo-") && (
+                  // R63 audit fix: pass the on-chain
+                  // marketId, not the SQLite primary-key
+                  // form. For WC markets the SQLite id is
+                  // `wc26-<matchId>` but the dispute
+                  // builder calls `normalizeObjectId(marketId)`
+                  // (which throws on non-Sui-ids) and
+                  // `tx.object(...)` (which aborts on-chain
+                  // with `MoveAbort` if the object isn't a
+                  // valid PredictionMarket). Use
+                  // `onchain_market_id ?? market.id` — same
+                  // pattern the mint / redeem / placeOrder
+                  // builders use (R60 audit fix). For non-WC
+                  // markets the two are identical; the
+                  // fallback is a safety net.
                   <Link
-                    href={`/dispute/${encodeURIComponent(market.id)}`}
+                    href={`/dispute/${encodeURIComponent(
+                      (market as { onchain_market_id?: string }).onchain_market_id ?? market.id,
+                    )}`}
                     className="w-fit rounded-md border border-amber-500/40 bg-amber-500/10 px-5 py-2.5 text-sm font-semibold text-amber-200 transition hover:bg-amber-500/20"
                   >
                     Dispute outcome
@@ -2636,20 +2661,39 @@ function MarketDetailBody({
                    doesn't index a localnet node). The link
                    only renders for non-demo markets because
                    SuiVision can't index a SQLite-only stub. */}
-                {!market.id.startsWith("demo-") && (
-                  <a
-                    href={`https://${SUI_NETWORK_FOR_EXPLORER}.suivision.xyz/object/${encodeURIComponent(market.id)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-fit inline-flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-5 py-2.5 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
-                  >
+                {!market.id.startsWith("demo-") && (() => {
+                  // R63 audit fix: use the on-chain
+                  // marketId, not the SQLite form, and
+                  // gate on the strict `0x + 64 hex`
+                  // shape so a WC market's `wc26-*`
+                  // SQLite id (which isn't a Sui object
+                  // id) doesn't produce a broken
+                  // `https://testnet.suivision.xyz/object/wc26-...`
+                  // link that 404s. The pre-fix code
+                  // was the asymmetric survivor — the
+                  // header SuiVision link (line ~1999)
+                  // already uses
+                  // `onchain_market_id ?? market.id` and
+                  // the same `^0x[0-9a-fA-F]{64}$` gate.
+                  // Mirror that pattern so both
+                  // SuiVision links behave identically.
+                  const onchainId = market.onchain_market_id ?? market.id;
+                  if (!/^0x[0-9a-fA-F]{64}$/.test(onchainId)) return null;
+                  return (
+                    <a
+                      href={`https://${SUI_NETWORK_FOR_EXPLORER}.suivision.xyz/object/${encodeURIComponent(onchainId)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-fit inline-flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-5 py-2.5 text-sm font-semibold text-cyan-200 transition hover:bg-cyan-500/20"
+                    >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path strokeLinecap="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
                       <path strokeLinecap="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
                     </svg>
                     View on SuiVision ↗
-                  </a>
-                )}
+                    </a>
+                  );
+                })()}
               </div>
             )}
           </div>

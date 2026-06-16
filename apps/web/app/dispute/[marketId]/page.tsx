@@ -64,6 +64,13 @@ export default function DisputeMarketPage() {
     "loading" | "active" | "resolved" | "cancelled" | "disputed" | "not_found"
   >("loading");
   const [outcome, setOutcome] = useState<"yes" | "no" | null>(null);
+  // R63 audit fix: the on-chain marketId (Sui object id)
+  // resolved from the URL param. The URL can carry either
+  // form (`wc26-...` SQLite id or `0x...` on-chain id) and
+  // the dispute builder requires the on-chain form. Set by
+  // the pre-flight useEffect below; the submit() builder
+  // reads it to know which id to pass to the PTB.
+  const [onchainMarketId, setOnchainMarketId] = useState<string | null>(null);
   // Stricter signal than `m.status === "disputed"`. The boolean is
   // flipped by `markMarketDisputed` in the same SQL UPDATE that sets
   // `status = 'disputed'`, but the boolean lets us reason about
@@ -88,11 +95,38 @@ export default function DisputeMarketPage() {
     let cancelled = false;
     (async () => {
       try {
-        const m = await getMarket(normalizeObjectId(marketId));
+        // R63 audit fix: pass `marketId` (the raw URL
+        // param) to `getMarket` instead of
+        // `normalizeObjectId(marketId)`. The agents
+        // service's `getMarket` handler already
+        // accepts both the SQLite id (`wc26-...`)
+        // and the on-chain id (`0x...`) — its SQL
+        // is `WHERE id = ? OR onchain_market_id = ?`
+        // (see `apps/agents/src/markets/store.ts`).
+        // The previous `normalizeObjectId` call
+        // threw for `wc26-...` ids (the URL form
+        // for WC markets) and the user saw a
+        // confusing "normalizeObjectId: not a valid
+        // Sui object id" instead of the dispute
+        // page's own "Market not found" state. The
+        // SDK-level validation in `getMarket`
+        // (`/indexer-client.ts:155-180`) still
+        // rejects path-traversal chars, so the
+        // safety guarantees are preserved.
+        const m = await getMarket(marketId);
         if (cancelled) return;
         setMarketStatus(m.status);
         setOutcome(m.outcome ?? null);
         setMarketDisputed(Boolean(m.disputed));
+        // Also stash the resolved on-chain id so the
+        // submit() builder can pass it to
+        // `buildDisputeMarketTx` (which calls
+        // `tx.object(...)` and aborts on a non-Sui id).
+        // For SQLite-only rows (`onchain_market_id ===
+        // null`) the submit() short-circuits on
+        // `status === "active"` etc. so a stale link
+        // can't burn gas.
+        setOnchainMarketId(m.onchain_market_id ?? null);
       } catch {
         if (!cancelled) setMarketStatus("not_found");
       }
@@ -163,7 +197,26 @@ export default function DisputeMarketPage() {
     setError(null);
     const toastId = toast.loading("Filing dispute...");
     try {
-      const tx = buildDisputeMarketTx(marketId, evidenceUri.trim());
+      // R63 audit fix: pass the resolved on-chain
+      // marketId to the PTB builder, not the raw
+      // URL param. The URL can be either the SQLite
+      // id (`wc26-...`) or the on-chain id
+      // (`0x...`); the pre-flight useEffect resolves
+      // it via `getMarket` (which matches on both)
+      // and stashes the on-chain form in
+      // `onchainMarketId`. The PTB builder calls
+      // `normalizeObjectId` (throws on non-Sui ids)
+      // and `tx.object(...)` (aborts on-chain with
+      // `MoveAbort` if the object isn't a valid
+      // PredictionMarket). For SQLite-only rows
+      // (no on-chain object), `canSubmit` is false
+      // (gated on `status === "resolved"`) so this
+      // branch never fires.
+      if (!onchainMarketId) {
+        toast.error("On-chain market id not resolved yet — wait for the indexer and try again.", { id: toastId });
+        return;
+      }
+      const tx = buildDisputeMarketTx(onchainMarketId, evidenceUri.trim());
       // R54 audit fix: route through `submitAndWait` so the
       // subsequent `invalidateQueries` / state refetch hits a
       // node that has already finalized the tx. The previous

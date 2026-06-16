@@ -55,7 +55,20 @@ export default function PortfolioPage() {
   const handleRedeem = async (e: React.MouseEvent, p: PortfolioPosition) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!account) return;
+    // R63 audit fix: gate on `!client` too. The
+    // pre-flight `client.core.listCoins` and the
+    // `submitAndWait` call both throw if dapp-kit is
+    // still initializing (race on initial mount) or
+    // after a wallet disconnect mid-render. The
+    // sibling markets/[id], dispute, vault, and
+    // parlay pages all gate on
+    // `!account || !client || !...` BEFORE calling
+    // `submitAndWait`; the portfolio page was the
+    // survivor. The bug surfaces as a "Cannot read
+    // properties of undefined" TypeError that
+    // crashes the catch block before the friendly
+    // "Redeem failed" toast can render.
+    if (!account || !client) return;
 
     const toastId = toast.loading("Preparing redeem transaction...");
     setRedeemingMarketId(p.market_id);
