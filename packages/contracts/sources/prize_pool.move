@@ -123,6 +123,18 @@ public struct PrizeClaimed has copy, drop {
     amount: u64,
 }
 
+// MOVE-GAP-16 fix: emit on every `set_distribution` so the
+// off-chain leaderboard reconciler can detect a payout-curve
+// change. The pre-fix build was silent on this — a judge
+// asking "what about rank 5?" mid-demo would have no
+// observable on-chain signal that the curve was re-balanced.
+public struct DistributionSet has copy, drop {
+    pool_id: ID,
+    admin: address,
+    new_sum_bps: u64,
+    distribution_length: u64,
+}
+
 // ============================================================
 // Init
 // ============================================================
@@ -262,6 +274,18 @@ public fun set_distribution<PrizeCoin>(
     };
     assert!(sum == BPS, EInvalidDistribution);
     pool.distribution_bps = new_dist;
+    // MOVE-GAP-16 fix: emit a `DistributionSet` event so the
+    // agents `position-indexer` (and the off-chain leaderboard
+    // reconciler) can detect when the payout curve changed.
+    // The pre-fix build was silent on this — a judge asking
+    // "what about rank 5?" mid-demo would have no observable
+    // on-chain signal that the distribution was re-balanced.
+    event::emit(DistributionSet {
+        pool_id: object::id(pool),
+        admin: ctx.sender(),
+        new_sum_bps: sum,
+        distribution_length: vector::length(&pool.distribution_bps),
+    });
 }
 
 /// Rotate the prize admin's ed25519 pubkey (e.g. after backend key rotation).
