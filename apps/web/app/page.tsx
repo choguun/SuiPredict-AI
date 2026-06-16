@@ -16,6 +16,7 @@ import { SuivisionLink } from "@/components/SuivisionLink";
 import { EmptyState } from "@/components/EmptyState";
 import { TopForecasters } from "@/components/TopForecasters";
 import { TournamentCountdown } from "@/components/TournamentCountdown";
+import { StreakAndPredictionCard } from "@/components/StreakAndPredictionCard";
 
 export const dynamic = "force-dynamic";
 
@@ -233,7 +234,7 @@ export default async function HomePage() {
         <h1 className="text-2xl font-bold text-white">GM, Trader 🔥</h1>
         <Link
           href="/markets"
-          className="shrink-0 rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-900/30 active:scale-95 transition"
+          className="shrink-0 rounded-lg bg-gradient-to-r from-orange-500 to-red-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-red-900/30 active:scale-95 transition"
         >
           Trade →
         </Link>
@@ -241,14 +242,14 @@ export default async function HomePage() {
 
       {/* 2. Massive Hero Section (Hidden on Mobile) */}
       <section className="hidden sm:block relative overflow-hidden rounded-3xl border border-white/10 bg-black/40 p-8 sm:p-16 backdrop-blur-xl">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-violet-900/40 via-[#0B0E14]/80 to-[#0B0E14] -z-10" />
-        <div className="absolute -top-40 -right-40 h-[500px] w-[500px] rounded-full bg-cyan-600/20 blur-[100px] -z-10" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-red-900/40 via-[#0B0E14]/80 to-[#0B0E14] -z-10" />
+        <div className="absolute -top-40 -right-40 h-[500px] w-[500px] rounded-full bg-red-600/20 blur-[100px] -z-10" />
         
         <div className="relative z-10 max-w-3xl">
           <Badge variant="success" className="bg-emerald-500/10 text-emerald-300 border-emerald-500/20 mb-6">
             DeepBook V3 Powered CLOB
           </Badge>
-          <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-cyan-200 sm:text-6xl mb-6">
+          <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-red-200 sm:text-6xl mb-6">
             Predict the future. <br className="hidden sm:block" />
             Trade probability.
           </h1>
@@ -259,7 +260,7 @@ export default async function HomePage() {
           <div className="flex flex-col sm:flex-row gap-4">
             <Link
               href="/markets"
-              className="inline-flex min-h-14 items-center justify-center rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 px-8 text-base font-bold text-white shadow-[0_0_40px_rgba(6,182,212,0.3)] transition-all hover:scale-[1.02] hover:shadow-[0_0_60px_rgba(6,182,212,0.5)]"
+              className="inline-flex min-h-14 items-center justify-center rounded-xl bg-gradient-to-r from-orange-500 to-red-500 px-8 text-base font-bold text-white shadow-[0_0_40px_rgba(239,68,68,0.3)] transition-all hover:scale-[1.02] hover:shadow-[0_0_60px_rgba(239,68,68,0.5)]"
             >
               Start Trading Now
             </Link>
@@ -300,8 +301,8 @@ export default async function HomePage() {
           </p>
         </div>
 
-        <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-4 lg:p-6 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.1)]">
-          <div className="mb-3 lg:mb-4 flex h-8 w-8 lg:h-10 lg:w-10 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-400">
+        <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-4 lg:p-6 transition-all hover:-translate-y-1 hover:border-red-500/30 hover:shadow-[0_0_30px_rgba(239,68,68,0.1)]">
+          <div className="mb-3 lg:mb-4 flex h-8 w-8 lg:h-10 lg:w-10 items-center justify-center rounded-lg bg-red-500/10 text-red-400">
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -310,8 +311,8 @@ export default async function HomePage() {
           <p className="mt-1 text-2xl lg:text-3xl font-bold text-white">{formatUsd(vault?.total_balance)}</p>
         </div>
 
-        <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-4 lg:p-6 transition-all hover:-translate-y-1 hover:border-violet-500/30 hover:shadow-[0_0_30px_rgba(139,92,246,0.1)]">
-          <div className="mb-3 lg:mb-4 flex h-8 w-8 lg:h-10 lg:w-10 items-center justify-center rounded-lg bg-violet-500/10 text-violet-400">
+        <div className="group rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.04] to-transparent p-4 lg:p-6 transition-all hover:-translate-y-1 hover:border-orange-500/30 hover:shadow-[0_0_30px_rgba(249,115,22,0.1)]">
+          <div className="mb-3 lg:mb-4 flex h-8 w-8 lg:h-10 lg:w-10 items-center justify-center rounded-lg bg-orange-500/10 text-orange-400">
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
             </svg>
@@ -383,19 +384,19 @@ export default async function HomePage() {
          We group these top elements inside a unified grid where Left Column (1/3) and Right Column (2/3)
          contain vertically stacked widgets. This prevents layout gaps and misalignment on desktop. */}
       <section className="grid gap-6 lg:grid-cols-3">
-        {/* Left Column - User Info, Countdown, and Forecasters leaderboard */}
+        {/* Left Column - User Info, Countdown, Forecasters leaderboard, and the
+            combined Streak + Daily Parlay card (single connect-wallet CTA). */}
         <div className="lg:col-span-1 space-y-6">
-          <StreakProfile />
           <TournamentCountdown variant="card" />
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
             <TopForecasters />
           </div>
+          <StreakAndPredictionCard />
         </div>
 
-        {/* Right Column - Daily Matches & Active Parlay Builder */}
+        {/* Right Column - Daily World Cup matches */}
         <div className="lg:col-span-2 space-y-6">
           <DailyWcCard />
-          <DailyPredictionCard />
         </div>
       </section>
 
@@ -464,7 +465,7 @@ export default async function HomePage() {
                 <Link
                   key={m.id}
                   href={`/markets/${encodeURIComponent(m.id)}`}
-                  className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 transition-all hover:border-cyan-500/30 hover:bg-panel-hover hover:shadow-2xl hover:shadow-cyan-900/10"
+                  className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 transition-all hover:border-red-500/30 hover:bg-panel-hover hover:shadow-2xl hover:shadow-red-900/10"
                 >
                   <SuivisionLink
                     objectId={homeOnchainId}
@@ -516,7 +517,7 @@ export default async function HomePage() {
                           : `Ends ${formatDate(m.expiry_ms)}`}
                       </span>
                     </div>
-                    <h3 className="text-xl font-bold text-white mb-2 leading-tight group-hover:text-cyan-100 transition-colors">{m.title}</h3>
+                    <h3 className="text-xl font-bold text-white mb-2 leading-tight group-hover:text-red-100 transition-colors">{m.title}</h3>
                     <p className="line-clamp-2 text-sm text-zinc-400 mb-6">{m.description}</p>
                   </div>
                   

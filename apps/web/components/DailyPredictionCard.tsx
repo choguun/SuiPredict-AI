@@ -258,7 +258,7 @@ export function DailyPredictionCard() {
   if (dailyQuery.isLoading) {
     return (
       <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 shadow-xl shadow-black/50 transition-all">
-        <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px]" />
+        <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-orange-500/10 blur-[80px]" />
         <div className="mb-4 flex justify-between items-start gap-4">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
@@ -269,7 +269,7 @@ export function DailyPredictionCard() {
           </div>
         </div>
         <div className="flex-1 flex flex-col items-center justify-center text-sm text-zinc-500">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-violet-500 mb-3" />
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500 mb-3" />
           <span>Loading today&apos;s matches…</span>
         </div>
       </div>
@@ -277,8 +277,8 @@ export function DailyPredictionCard() {
   }
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20">
-      <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px]" />
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 shadow-xl shadow-black/50 transition-all hover:border-orange-500/30 hover:shadow-red-900/20">
+      <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-orange-500/10 blur-[80px]" />
 
       {/* Header - Always Unified */}
       <div className="mb-4 flex justify-between items-start gap-4">
@@ -296,7 +296,7 @@ export function DailyPredictionCard() {
             onClick={() => setBrowseMode((b) => !b)}
             className={`shrink-0 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
               browseMode
-                ? "border-violet-500/50 bg-violet-500/20 text-violet-300"
+                ? "border-orange-500/50 bg-orange-500/20 text-red-300"
                 : "border-white/10 bg-white/5 text-white hover:bg-white/10"
             }`}
           >
@@ -355,10 +355,10 @@ export function DailyPredictionCard() {
                   key={m.id}
                   className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-all ${
                     checked
-                      ? "border-violet-500/40 bg-violet-500/10 shadow-[0_0_10px_rgba(139,92,246,0.05)]"
+                      ? "border-orange-500/40 bg-orange-500/10 shadow-[0_0_10px_rgba(249,115,22,0.05)]"
                       : atCap
                         ? "border-white/5 bg-white/[0.01] opacity-40 cursor-not-allowed"
-                        : "border-white/10 bg-black/20 hover:border-cyan-500/30 hover:bg-black/30"
+                        : "border-white/10 bg-black/20 hover:border-red-500/30 hover:bg-black/30"
                   }`}
                 >
                   <input
@@ -377,7 +377,7 @@ export function DailyPredictionCard() {
                         setSelections(next);
                       }
                     }}
-                    className="h-4 w-4 rounded border-white/20 bg-black/40 accent-violet-500 cursor-pointer disabled:cursor-not-allowed"
+                    className="h-4 w-4 rounded border-white/20 bg-black/40 accent-orange-500 cursor-pointer disabled:cursor-not-allowed"
                   />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs font-semibold text-white">{m.title}</p>
@@ -400,7 +400,7 @@ export function DailyPredictionCard() {
       ) : activeMarketIds.length === 0 ? (
         /* Empty selections state */
         <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-          <div className="h-12 w-12 rounded-full bg-violet-500/10 flex items-center justify-center mb-3 text-violet-400">
+          <div className="h-12 w-12 rounded-full bg-orange-500/10 flex items-center justify-center mb-3 text-orange-400">
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
             </svg>
@@ -417,7 +417,7 @@ export function DailyPredictionCard() {
                   dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
                 );
               }}
-              className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-900/30 transition hover:scale-[1.02]"
+              className="rounded-lg bg-gradient-to-r from-orange-500 to-red-500 py-2 text-xs font-bold text-white shadow-lg shadow-red-900/30 transition hover:scale-[1.02]"
             >
               Quick Add Top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} Matches
             </button>
@@ -441,20 +441,20 @@ export function DailyPredictionCard() {
                   className={`relative group flex flex-col gap-2 rounded-xl border p-3 transition-all sm:flex-row sm:items-center sm:justify-between ${
                     selected !== undefined
                       ? "border-white/10 bg-white/[0.04]"
-                      : "border-white/5 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-panel-hover"
+                      : "border-white/5 bg-white/[0.02] hover:border-red-500/30 hover:bg-panel-hover"
                   }`}
                 >
                   <div className="flex flex-1 flex-col gap-1.5 pr-8 sm:pr-0 min-w-0">
                     <div className="flex items-start gap-2.5">
                       <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
-                        selected !== undefined ? "bg-white/20 text-white" : "bg-white/10 text-zinc-500 group-hover:bg-cyan-500/20 group-hover:text-cyan-400"
+                        selected !== undefined ? "bg-white/20 text-white" : "bg-white/10 text-zinc-500 group-hover:bg-red-500/20 group-hover:text-red-400"
                       }`}>
                         {idx + 1}
                       </div>
                       <div className="flex w-full flex-col gap-2 min-w-0">
                         <Link
                           href={`/markets/${encodeURIComponent(market.id)}`}
-                          className={`text-xs font-medium transition-colors hover:text-cyan-300 truncate ${selected !== undefined ? "text-zinc-300" : "text-white"}`}
+                          className={`text-xs font-medium transition-colors hover:text-red-300 truncate ${selected !== undefined ? "text-zinc-300" : "text-white"}`}
                         >
                           {market.title}
                         </Link>
@@ -530,7 +530,7 @@ export function DailyPredictionCard() {
             disabled={
               (account && (!isComplete || activeMarketIds.length === 0)) || submitting
             }
-            className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
+            className="w-full rounded-xl bg-gradient-to-r from-orange-500 to-red-500 py-3 text-sm font-bold text-white shadow-lg shadow-red-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
           >
             {submitting
               ? "Minting shares…"

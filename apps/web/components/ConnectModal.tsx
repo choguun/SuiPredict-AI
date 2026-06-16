@@ -218,7 +218,7 @@ export function ConnectModal() {
       {activeAddress ? (
         <button
           onClick={() => setIsOpen(true)}
-          className="flex items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-600/10 px-4 py-2.5 text-sm font-semibold text-violet-300 shadow-[0_0_15px_rgba(139,92,246,0.15)] transition hover:bg-violet-600/20 hover:border-violet-500/50"
+          className="flex items-center gap-2 rounded-xl border border-orange-500/30 bg-orange-600/10 px-4 py-2.5 text-sm font-semibold text-red-300 shadow-[0_0_15px_rgba(249,115,22,0.15)] transition hover:bg-orange-600/20 hover:border-orange-500/50"
         >
           {isZkLogin && (
             <svg className="h-4 w-4" viewBox="0 0 24 24">
@@ -233,7 +233,7 @@ export function ConnectModal() {
       ) : (
         <button
           onClick={() => setIsOpen(true)}
-          className="rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-105 hover:shadow-cyan-500/20"
+          className="rounded-xl bg-gradient-to-r from-orange-500 to-red-500 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-red-900/30 transition-all hover:scale-105 hover:shadow-red-500/20"
         >
           Connect Wallet
         </button>
@@ -260,8 +260,8 @@ export function ConnectModal() {
           {/* Modal Content */}
           <div className="relative w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-3xl border border-white/10 bg-panel-strong shadow-2xl shadow-black/80 animate-in zoom-in-95 duration-200 hide-scrollbar">
             {/* Background Gradients */}
-            <div className="absolute -top-32 -right-32 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
-            <div className="absolute -bottom-32 -left-32 h-64 w-64 rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
+            <div className="absolute -top-32 -right-32 h-64 w-64 rounded-full bg-orange-600/10 blur-[80px] pointer-events-none" />
+            <div className="absolute -bottom-32 -left-32 h-64 w-64 rounded-full bg-red-600/10 blur-[80px] pointer-events-none" />
             
             <div className="relative p-6 sm:p-8">
               <div className="flex items-center justify-between mb-8">
@@ -285,7 +285,7 @@ export function ConnectModal() {
                 /* Connected State View */
                 <div className="space-y-6">
                   <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-white/5 bg-white/[0.02] p-8 text-center">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-violet-600 to-cyan-600 text-2xl shadow-lg">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-orange-500 to-red-500 text-2xl shadow-lg">
                       👾
                     </div>
                     <div>
@@ -381,7 +381,7 @@ export function ConnectModal() {
                             href="https://chromewebstore.google.com/detail/sui-wallet/opcgpfmipidbgpenhmajoajjkoblbom"
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 rounded-md bg-cyan-500/20 px-3 py-1.5 text-xs font-semibold text-cyan-200 border border-cyan-500/30 hover:bg-cyan-500/30 transition"
+                            className="inline-flex items-center gap-1.5 rounded-md bg-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-200 border border-red-500/30 hover:bg-red-500/30 transition"
                           >
                             Install Sui Wallet →
                           </a>
@@ -457,7 +457,7 @@ export function ConnectModal() {
                         }`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="font-semibold text-cyan-300 hover:text-cyan-200 underline underline-offset-2"
+                        className="font-semibold text-red-300 hover:text-red-200 underline underline-offset-2"
                       >
                         Get testnet SUI for gas →
                       </a>
