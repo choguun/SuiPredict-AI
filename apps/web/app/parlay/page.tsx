@@ -491,7 +491,10 @@ export default function ParlayPage() {
         poolId: PARLAY_POOL_ID,
         coinId: coin.objectId,
         collateralAtoms: COLLATERAL_ATOMS,
-        marketIds: legs.map((l) => l.marketId),
+        marketIds: legs.map((l) => {
+          const m = markets.find((x) => x.id === l.marketId);
+          return m?.onchain_market_id ?? l.marketId;
+        }),
         predictions: legs.map((l) => l.prediction),
         payoutBps,
         coinType: DUSDC_TYPE,

@@ -534,7 +534,9 @@ export async function runPositionIndexer(
       const yes = Number(j.yes_minted ?? 0);
       const no = Number(j.no_minted ?? 0);
       if (yes <= 0 && no <= 0) return;
-      upsertPosition(j.market_id, j.user, yes, no);
+      const market = getMarket(j.market_id);
+      const dbMarketId = market ? market.id : j.market_id;
+      upsertPosition(dbMarketId, j.user, yes, no);
     },
   );
 
@@ -567,7 +569,7 @@ export async function runPositionIndexer(
       const market = getMarket(j.market_id);
       if (!market || !market.outcome) return;
       const side = market.outcome === "yes" ? "yes" : "no";
-      decrementPosition(j.market_id, j.user, side, burned);
+      decrementPosition(market.id, j.user, side, burned);
     },
   );
 
@@ -610,8 +612,10 @@ export async function runPositionIndexer(
       const j = ev.parsedJson as OrderPlacedJson;
       if (!j?.market_id || !j?.order_id) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      const market = getMarket(j.market_id);
+      const dbMarketId = market ? market.id : j.market_id;
       recordChainOrder({
-        market_id: j.market_id,
+        market_id: dbMarketId,
         order_id: String(j.order_id),
         pool_id: j.pool_id ?? "",
         // Keep the on-chain u64 as a string — JS Number coercion
@@ -649,8 +653,10 @@ export async function runPositionIndexer(
       const j = ev.parsedJson as SettledJson;
       if (!j?.market_id || !j?.trader) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      const market = getMarket(j.market_id);
+      const dbMarketId = market ? market.id : j.market_id;
       recordSettlement({
-        market_id: j.market_id,
+        market_id: dbMarketId,
         pool_id: j.pool_id ?? "",
         trader: j.trader,
         timestamp_ms: ts,
@@ -694,7 +700,7 @@ export async function runPositionIndexer(
       // writes a row first and the indexer races with it.
       const onChainTs = ev.timestampMs ? Number(ev.timestampMs) : 0;
       upsertMarket({
-        id: j.market_id,
+        id: existing?.id ?? j.market_id,
         title: existing?.title ?? safeTitle,
         description: existing?.description ?? "",
         category: existing?.category ?? onChainCategory ?? "general",
@@ -724,6 +730,7 @@ export async function runPositionIndexer(
         deepbook_base_scalar: existing?.deepbook_base_scalar ?? 1_000_000,
         deepbook_quote_scalar: existing?.deepbook_quote_scalar ?? 1_000_000,
         referral_id: existing?.referral_id ?? null,
+        onchain_market_id: existing?.onchain_market_id ?? j.market_id,
         created_at_ms:
           existing?.created_at_ms ?? (onChainTs || Date.now()),
       });
@@ -741,7 +748,9 @@ export async function runPositionIndexer(
       const j = ev.parsedJson as OrderCancelledJson;
       if (!j?.market_id || j?.order_id == null) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
-      markOrderCancelled(j.market_id, String(j.order_id), ts);
+      const market = getMarket(j.market_id);
+      const dbMarketId = market ? market.id : j.market_id;
+      markOrderCancelled(dbMarketId, String(j.order_id), ts);
     },
   );
 
@@ -765,8 +774,10 @@ export async function runPositionIndexer(
       };
       if (!j?.market_id || !Array.isArray(j.order_ids)) return;
       const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+      const market = getMarket(j.market_id);
+      const dbMarketId = market ? market.id : j.market_id;
       for (const id of j.order_ids) {
-        markOrderCancelled(j.market_id, String(id), ts);
+        markOrderCancelled(dbMarketId, String(id), ts);
       }
     },
   );

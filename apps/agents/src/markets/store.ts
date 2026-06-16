@@ -630,7 +630,9 @@ export function listMarkets(limit?: number, offset?: number): MarketInfo[] {
 }
 
 export function getMarket(id: string): MarketInfo | null {
-  const row = getDb().prepare(`SELECT * FROM markets WHERE id = ?`).get(id);
+  const row = getDb()
+    .prepare(`SELECT * FROM markets WHERE id = ? OR onchain_market_id = ?`)
+    .get(id, id);
   return row ? rowToMarket(row) : null;
 }
 
@@ -647,9 +649,9 @@ export function markMarketResolved(
   // source of truth; the DB mirror should be idempotent.
   getDb()
     .prepare(
-      `UPDATE markets SET status = 'resolved', outcome = ? WHERE id = ? AND status != 'resolved'`,
+      `UPDATE markets SET status = 'resolved', outcome = ? WHERE (id = ? OR onchain_market_id = ?) AND status != 'resolved'`,
     )
-    .run(outcome, marketId);
+    .run(outcome, marketId, marketId);
 }
 
 // R57 agents audit fix: dedicated helper for the post-referral
@@ -664,8 +666,8 @@ export function patchMarketReferralId(
   referralId: string,
 ): void {
   getDb()
-    .prepare(`UPDATE markets SET referral_id = ? WHERE id = ?`)
-    .run(referralId, marketId);
+    .prepare(`UPDATE markets SET referral_id = ? WHERE id = ? OR onchain_market_id = ?`)
+    .run(referralId, marketId, marketId);
 }
 
 export function markMarketDisputed(
@@ -690,9 +692,9 @@ export function markMarketDisputed(
            dispute_evidence_uri = ?,
            last_dispute_at_ms = ?,
            status = 'disputed'
-       WHERE id = ? AND status = 'resolved'`,
+       WHERE (id = ? OR onchain_market_id = ?) AND status = 'resolved'`,
     )
-    .run(disputeCount, evidenceUri, timestampMs, marketId);
+    .run(disputeCount, evidenceUri, timestampMs, marketId, marketId);
   if (result.changes === 0) {
     console.warn(
       `[store.markMarketDisputed] no-op for market=${marketId}; ` +
@@ -719,9 +721,9 @@ export function markMarketUndisputed(
        SET disputed = 0,
            status = 'resolved',
            outcome = ?
-       WHERE id = ? AND status = 'disputed'`,
+       WHERE (id = ? OR onchain_market_id = ?) AND status = 'disputed'`,
     )
-    .run(finalOutcome, marketId);
+    .run(finalOutcome, marketId, marketId);
   if (result.changes === 0) {
     console.warn(
       `[store.markMarketUndisputed] no-op for market=${marketId}; ` +
