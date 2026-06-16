@@ -19,7 +19,7 @@ export default function MarketDetailLoading() {
       <span className="sr-only">Loading market…</span>
       <div className="h-5 w-32 rounded-lg bg-white/5" />
 
-      <div className="rounded-lg border border-white/10 bg-[#11141d] p-5 sm:p-6">
+      <div className="rounded-lg border border-white/10 bg-panel-strong p-5 sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="w-full">
             <div className="mb-3 flex gap-2">

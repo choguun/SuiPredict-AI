@@ -114,7 +114,7 @@ function HowItWorksCallout() {
         </button>
       </div>
       <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
             Authorize
@@ -123,7 +123,7 @@ function HowItWorksCallout() {
             Add an agent wallet address and a daily DUSDC budget. The on-chain policy is shared across all of your positions.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
             Pause
@@ -132,7 +132,7 @@ function HowItWorksCallout() {
             Pause anytime to freeze all agent actions. Resume without losing the budget or the authorized addresses.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
             Revoke

@@ -390,7 +390,7 @@ export default async function MarketsPage({
 
   return (
     <div className="space-y-5">
-      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40 mb-8">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-6 sm:p-10 shadow-2xl shadow-black/40 mb-8">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
         
@@ -405,7 +405,7 @@ export default async function MarketsPage({
               DeepBook YES order book. NO is shown as the complement price.
             </p>
           </div>
-        <div className="grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-[#11141d] p-2 text-center">
+        <div className="grid grid-cols-3 gap-2 rounded-lg border border-white/10 bg-panel-strong p-2 text-center">
           <div className="px-3 py-2">
             <p className="text-lg font-semibold text-white">{finalTotal}</p>
             <p className="text-xs text-zinc-500">
@@ -492,7 +492,7 @@ export default async function MarketsPage({
             defaultValue={searchQuery}
             placeholder="Search markets (e.g. ETH, World Cup, BTC)..."
             aria-label="Search markets"
-            className="w-full rounded-lg border border-white/10 bg-[#0d1019] py-2.5 pl-10 pr-10 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+            className="w-full rounded-lg border border-white/10 bg-panel py-2.5 pl-10 pr-10 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
           />
           {/* R61 audit fix: inline "clear" link inside the
              search input. The pre-R61 build had a
@@ -523,7 +523,7 @@ export default async function MarketsPage({
           name="status"
           defaultValue={statusFilter}
           aria-label="Filter by status"
-          className="rounded-lg border border-white/10 bg-[#0d1019] px-3 py-2.5 text-sm text-white focus:border-emerald-500/50 focus:outline-none"
+          className="rounded-lg border border-white/10 bg-panel px-3 py-2.5 text-sm text-white focus:border-emerald-500/50 focus:outline-none"
         >
           <option value="all">All status</option>
           <option value="live">Live only</option>
@@ -533,7 +533,7 @@ export default async function MarketsPage({
           name="sort"
           defaultValue={sortKey}
           aria-label="Sort markets"
-          className="rounded-lg border border-white/10 bg-[#0d1019] px-3 py-2.5 text-sm text-white focus:border-emerald-500/50 focus:outline-none"
+          className="rounded-lg border border-white/10 bg-panel px-3 py-2.5 text-sm text-white focus:border-emerald-500/50 focus:outline-none"
         >
           <option value="expiry">Ends soonest</option>
           <option value="newest">Newest</option>
@@ -663,7 +663,7 @@ export default async function MarketsPage({
             <Link
               key={m.id}
               href={`/markets/${encodeURIComponent(m.id)}`}
-              className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 transition-all hover:border-cyan-500/30 hover:bg-[#151924] hover:shadow-2xl hover:shadow-cyan-900/10"
+              className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 transition-all hover:border-cyan-500/30 hover:bg-panel-hover hover:shadow-2xl hover:shadow-cyan-900/10"
             >
               <SuivisionLink
                 objectId={onchainId}

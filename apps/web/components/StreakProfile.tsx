@@ -153,7 +153,7 @@ export function StreakProfile() {
   return (
     <>
       <Celebration streak={currentStreak} />
-    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/50 transition-all hover:border-orange-500/30 hover:shadow-orange-900/20">
+    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all hover:border-orange-500/30 hover:shadow-orange-900/20">
       <div className="absolute -right-20 -top-20 h-40 w-40 rounded-full bg-orange-500/10 blur-[50px] -z-10" />
       <div className="flex flex-col gap-5">
         <div className="flex items-center justify-between">
@@ -309,7 +309,7 @@ function StreakProfileEmpty({
   spinner?: boolean;
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/50">
+    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50">
       <div className="absolute -right-20 -top-20 h-40 w-40 rounded-full bg-orange-500/10 blur-[50px] -z-10" />
       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
         {spinner && (

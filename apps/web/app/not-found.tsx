@@ -40,7 +40,7 @@ export default async function NotFound() {
   return (
     <div className="space-y-8 pb-12">
       {/* Hero */}
-      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-8 sm:p-12 text-center shadow-2xl shadow-black/40">
+      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-8 sm:p-12 text-center shadow-2xl shadow-black/40">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[100px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[100px] pointer-events-none" />
 
@@ -101,7 +101,7 @@ export default async function NotFound() {
               <Link
                 key={m.id}
                 href={`/markets/${encodeURIComponent(m.id)}`}
-                className="group flex flex-col gap-2 rounded-2xl border border-white/10 bg-[#0d1019] p-4 transition hover:border-emerald-500/30"
+                className="group flex flex-col gap-2 rounded-2xl border border-white/10 bg-panel p-4 transition hover:border-emerald-500/30"
               >
                 <div className="flex items-center gap-2">
                   <Badge variant="success" className="text-[10px]">

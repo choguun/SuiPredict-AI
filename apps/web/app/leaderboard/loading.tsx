@@ -23,7 +23,7 @@ export default function LeaderboardLoading() {
         <div className="mt-2 h-4 w-72 rounded-lg bg-white/5" />
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-[#0d1019] p-5">
+      <div className="rounded-2xl border border-white/10 bg-panel p-5">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           {[1, 2, 3].map((i) => (
             <div key={i} className="h-10 rounded-md bg-white/[0.04]" />
@@ -31,7 +31,7 @@ export default function LeaderboardLoading() {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-[#0d1019] p-5">
+      <div className="rounded-2xl border border-white/10 bg-panel p-5">
         <div className="space-y-3">
           {[1, 2, 3, 4, 5].map((i) => (
             <div

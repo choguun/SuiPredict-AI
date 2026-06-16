@@ -202,7 +202,7 @@ export default function GroupPage() {
         return (
           <Link
             href={`/markets/${encodeURIComponent("wc26-" + next.id)}`}
-            className="group block rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-900/20 via-[#0d1019] to-cyan-900/10 p-4 sm:p-5 transition hover:border-emerald-500/40"
+            className="group block rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-900/20 via-panel to-cyan-900/10 p-4 sm:p-5 transition hover:border-emerald-500/40"
           >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
@@ -238,7 +238,7 @@ export default function GroupPage() {
           {group.teams.map((t) => (
             <div
               key={t.code}
-              className="flex items-center gap-3 rounded-2xl border border-white/10 bg-[#0d1019] p-4"
+              className="flex items-center gap-3 rounded-2xl border border-white/10 bg-panel p-4"
             >
               <span className="text-3xl leading-none">{t.flag}</span>
               <div className="min-w-0">
@@ -271,7 +271,7 @@ export default function GroupPage() {
             {arr.map((m) => (
               <div
                 key={m.id}
-                className="rounded-2xl border border-white/10 bg-[#0d1019] hover:border-emerald-500/30 transition"
+                className="rounded-2xl border border-white/10 bg-panel hover:border-emerald-500/30 transition"
               >
                 <Link
                   href={`/markets/${encodeURIComponent("wc26-" + m.id)}`}

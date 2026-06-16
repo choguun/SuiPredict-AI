@@ -398,7 +398,7 @@ export default function AgentsPage() {
           manifest length), and includes a
           short blurb on what the agents
           actually do. */}
-      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-6 sm:p-10 shadow-2xl shadow-black/40">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
         <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">

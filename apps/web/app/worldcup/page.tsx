@@ -268,7 +268,7 @@ export default function WorldCupPage() {
          is in play so it doesn't take up space
          pre-tournament. */}
       {liveMatches.length > 0 && (
-        <section className="relative overflow-hidden rounded-2xl border border-rose-500/30 bg-gradient-to-r from-rose-500/10 via-[#0d1019] to-rose-500/5 p-4 sm:p-5">
+        <section className="relative overflow-hidden rounded-2xl border border-rose-500/30 bg-gradient-to-r from-rose-500/10 via-panel to-rose-500/5 p-4 sm:p-5">
           <div className="absolute -top-20 -right-20 h-40 w-40 rounded-full bg-rose-500/20 blur-[60px] -z-10" />
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">
@@ -311,7 +311,7 @@ export default function WorldCupPage() {
       )}
 
       {/* Live match ticker */}
-      <section className="rounded-2xl border border-white/10 bg-[#0d1019] p-5 sm:p-6">
+      <section className="rounded-2xl border border-white/10 bg-panel p-5 sm:p-6">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold text-white">🔴 Live & Upcoming</h2>
@@ -388,7 +388,7 @@ export default function WorldCupPage() {
               <Link
                 key={g.letter}
                 href={`/worldcup/group/${g.letter}`}
-                className="group flex flex-col gap-3 rounded-2xl border border-white/10 bg-[#0d1019] p-4 hover:border-emerald-500/30 transition"
+                className="group flex flex-col gap-3 rounded-2xl border border-white/10 bg-panel p-4 hover:border-emerald-500/30 transition"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-lg font-extrabold text-white">Group {g.letter}</span>
@@ -462,7 +462,7 @@ export default function WorldCupPage() {
               <Link
                 key={m.id}
                 href={`/markets/${encodeURIComponent("wc26-" + m.id)}`}
-                className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-[#0d1019] px-4 py-3 hover:border-emerald-500/30 transition"
+                className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-panel px-4 py-3 hover:border-emerald-500/30 transition"
               >
                 <div className="flex items-center gap-2 min-w-0">
                   {isLive && (

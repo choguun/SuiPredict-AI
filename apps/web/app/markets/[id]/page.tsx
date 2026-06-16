@@ -1732,7 +1732,7 @@ function MarketDetailBody({
             </button>
           </div>
           <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+            <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
               <div className="flex items-center gap-2 text-cyan-300 font-bold">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
                 Mint
@@ -1742,7 +1742,7 @@ function MarketDetailBody({
                 1 DUSDC gives 1 YES + 1 NO.
               </p>
             </li>
-            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+            <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
               <div className="flex items-center gap-2 text-cyan-300 font-bold">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
                 Trade
@@ -1752,7 +1752,7 @@ function MarketDetailBody({
                 buy more of the side you do.
               </p>
             </li>
-            <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+            <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
               <div className="flex items-center gap-2 text-cyan-300 font-bold">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
                 Redeem
@@ -1766,7 +1766,7 @@ function MarketDetailBody({
         </div>
       )}
 
-      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-8 shadow-2xl shadow-black/40">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-6 sm:p-8 shadow-2xl shadow-black/40">
         {/* Background Gradients */}
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />

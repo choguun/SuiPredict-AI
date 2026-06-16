@@ -183,7 +183,7 @@ export default async function HomePage() {
           visually obvious. */}
       <Link
         href="/worldcup"
-        className="group relative block overflow-hidden rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-emerald-900/50 via-[#0d1019] to-amber-900/30 p-5 sm:p-7 transition-all hover:border-emerald-400/50 hover:shadow-[0_0_40px_rgba(16,185,129,0.15)]"
+        className="group relative block overflow-hidden rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-emerald-900/50 via-panel to-amber-900/30 p-5 sm:p-7 transition-all hover:border-emerald-400/50 hover:shadow-[0_0_40px_rgba(16,185,129,0.15)]"
       >
         <div className="absolute -top-20 -right-10 h-40 w-40 rounded-full bg-emerald-500/20 blur-[80px] -z-10" />
         <div className="flex items-center justify-between gap-4">
@@ -476,7 +476,7 @@ export default async function HomePage() {
                 <Link
                   key={m.id}
                   href={`/markets/${encodeURIComponent(m.id)}`}
-                  className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 transition-all hover:border-cyan-500/30 hover:bg-[#151924] hover:shadow-2xl hover:shadow-cyan-900/10"
+                  className="group relative flex flex-col justify-between overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 transition-all hover:border-cyan-500/30 hover:bg-panel-hover hover:shadow-2xl hover:shadow-cyan-900/10"
                 >
                   <SuivisionLink
                     objectId={homeOnchainId}

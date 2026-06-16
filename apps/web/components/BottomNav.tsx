@@ -121,7 +121,7 @@ export function BottomNav() {
             aria-hidden="true"
           />
           <div
-            className="relative w-full max-w-md rounded-t-2xl border-t border-white/10 bg-[#0d1019] p-4 pb-6 shadow-2xl shadow-black/80"
+            className="relative w-full max-w-md rounded-t-2xl border-t border-white/10 bg-panel p-4 pb-6 shadow-2xl shadow-black/80"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">

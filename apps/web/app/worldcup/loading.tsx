@@ -32,14 +32,14 @@ export default function WorldCupLoading() {
       <span className="sr-only">Loading World Cup dashboard…</span>
 
       {/* Hero */}
-      <div className="rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-900/40 via-[#0B0E14] to-[#0B0E14] p-6 sm:p-10">
+      <div className="rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-900/40 via-panel to-panel p-6 sm:p-10">
         <div className="h-6 w-48 rounded-full bg-emerald-500/10" />
         <div className="mt-4 h-12 w-3/4 max-w-2xl rounded-lg bg-white/5" />
         <div className="mt-2 h-4 w-2/3 max-w-xl rounded-lg bg-white/5" />
       </div>
 
       {/* Live & Upcoming ticker */}
-      <div className="rounded-2xl border border-white/10 bg-[#0d1019] p-5 sm:p-6">
+      <div className="rounded-2xl border border-white/10 bg-panel p-5 sm:p-6">
         <div className="mb-4 flex items-center justify-between">
           <div className="h-6 w-40 rounded-lg bg-white/5" />
           <div className="h-6 w-28 rounded-lg bg-white/5" />
@@ -61,7 +61,7 @@ export default function WorldCupLoading() {
           {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((i) => (
             <div
               key={i}
-              className="h-40 rounded-2xl border border-white/10 bg-[#0d1019]"
+              className="h-40 rounded-2xl border border-white/10 bg-panel"
             />
           ))}
         </div>

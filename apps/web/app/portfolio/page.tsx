@@ -201,7 +201,7 @@ export default function PortfolioPage() {
   return (
     <div className="space-y-6 sm:space-y-8">
       {/* Header Section */}
-      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-6 sm:p-10 shadow-2xl shadow-black/40">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
         
@@ -228,7 +228,7 @@ export default function PortfolioPage() {
           {positions.map((p) => {
             return (
             <Link key={p.market_id} href={`/markets/${encodeURIComponent(p.market_id)}`} className="block">
-              <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)] h-full">
+              <div className="group relative overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/30 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)] h-full">
                 <div className="absolute inset-0 bg-gradient-to-b from-white/[0.04] to-transparent pointer-events-none group-hover:from-cyan-500/5 transition-colors" />
                 <div className="relative z-10 flex flex-col h-full justify-between gap-4">
                   <div>

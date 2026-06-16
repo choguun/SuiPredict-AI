@@ -96,7 +96,7 @@ function HowItWorksCallout() {
         </button>
       </div>
       <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
             Lock
@@ -106,7 +106,7 @@ function HowItWorksCallout() {
             tracking every leg you chose.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
             Wait
@@ -116,7 +116,7 @@ function HowItWorksCallout() {
             Any single loss = the whole parlay loses the collateral.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
             Payout
@@ -874,7 +874,7 @@ export default function ParlayPage() {
                   onChange={(e) => setParlaySearch(e.target.value)}
                   placeholder="Filter markets by name or category…"
                   aria-label="Filter available markets"
-                  className="w-full rounded-lg border border-white/10 bg-[#0d1019] py-2 pl-9 pr-3 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+                  className="w-full rounded-lg border border-white/10 bg-panel py-2 pl-9 pr-3 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
                 />
               </div>
             </div>

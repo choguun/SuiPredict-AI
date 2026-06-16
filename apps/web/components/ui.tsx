@@ -27,7 +27,7 @@ export function Card({
   return (
     <div
       id={id}
-      className={`relative overflow-hidden rounded-2xl border border-white/10 bg-[#11141d] p-5 sm:p-6 shadow-xl shadow-black/40 ${className}`}
+      className={`relative overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 sm:p-6 shadow-xl shadow-black/40 ${className}`}
     >
       <div className="absolute inset-0 bg-gradient-to-b from-white/[0.04] to-transparent pointer-events-none" />
       <div className="relative z-10">

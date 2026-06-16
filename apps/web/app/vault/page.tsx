@@ -78,7 +78,7 @@ function HowItWorksCallout() {
         </button>
       </div>
       <ol className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">1</span>
             Deposit
@@ -87,7 +87,7 @@ function HowItWorksCallout() {
             Mint VLP shares 1-for-1 with DUSDC. VLP is a transferable receipt of your vault stake.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">2</span>
             Earn
@@ -96,7 +96,7 @@ function HowItWorksCallout() {
             Agents quote bid/ask spreads on the CLOB. The spread profit flows back to the vault pro-rata.
           </p>
         </li>
-        <li className="rounded-lg border border-cyan-500/15 bg-[#0d1019] p-3">
+        <li className="rounded-lg border border-cyan-500/15 bg-panel p-3">
           <div className="flex items-center gap-2 text-cyan-300 font-bold">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-[10px]">3</span>
             Withdraw
@@ -427,7 +427,7 @@ export default function VaultPage() {
   return (
     <div className="space-y-6 sm:space-y-8">
       {/* Header Section */}
-      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#11141d] p-6 sm:p-10 shadow-2xl shadow-black/40">
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-panel-strong p-6 sm:p-10 shadow-2xl shadow-black/40">
         <div className="absolute -top-40 -right-40 h-[400px] w-[400px] rounded-full bg-cyan-600/10 blur-[80px] pointer-events-none" />
         <div className="absolute -bottom-40 -left-40 h-[400px] w-[400px] rounded-full bg-violet-600/10 blur-[80px] pointer-events-none" />
 
@@ -462,7 +462,7 @@ export default function VaultPage() {
 
       {/* Stats Section */}
       <div className="grid gap-4 sm:grid-cols-3">
-        <div className="group relative overflow-hidden rounded-2xl border border-emerald-500/20 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-emerald-500/40 hover:shadow-[0_0_30px_rgba(16,185,129,0.15)]">
+        <div className="group relative overflow-hidden rounded-2xl border border-emerald-500/20 bg-panel-strong p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-emerald-500/40 hover:shadow-[0_0_30px_rgba(16,185,129,0.15)]">
           <div className="absolute inset-0 bg-gradient-to-b from-emerald-500/5 to-transparent pointer-events-none" />
           <div className="relative z-10">
             <Stat
@@ -471,7 +471,7 @@ export default function VaultPage() {
             />
           </div>
         </div>
-        <div className="group relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/40 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)]">
+        <div className="group relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-panel-strong p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-cyan-500/40 hover:shadow-[0_0_30px_rgba(6,182,212,0.15)]">
           <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 to-transparent pointer-events-none" />
           <div className="relative z-10">
             <Stat
@@ -480,7 +480,7 @@ export default function VaultPage() {
             />
           </div>
         </div>
-        <div className="group relative overflow-hidden rounded-2xl border border-violet-500/20 bg-[#11141d] p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-violet-500/40 hover:shadow-[0_0_30px_rgba(139,92,246,0.15)]">
+        <div className="group relative overflow-hidden rounded-2xl border border-violet-500/20 bg-panel-strong p-6 shadow-xl shadow-black/40 transition-all hover:-translate-y-1 hover:border-violet-500/40 hover:shadow-[0_0_30px_rgba(139,92,246,0.15)]">
           <div className="absolute inset-0 bg-gradient-to-b from-violet-500/5 to-transparent pointer-events-none" />
           <div className="relative z-10">
             <Stat

@@ -264,7 +264,7 @@ export function DailyPredictionCard() {
 
   if (dailyQuery.isLoading) {
     return (
-      <div className="flex h-full min-h-[300px] items-center justify-center rounded-2xl border border-white/10 bg-[#11141d] p-8 text-sm text-zinc-500">
+      <div className="flex h-full min-h-[300px] items-center justify-center rounded-2xl border border-white/10 bg-panel-strong p-8 text-sm text-zinc-500">
         Loading today&apos;s markets…
       </div>
     );

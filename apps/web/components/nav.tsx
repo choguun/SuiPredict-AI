@@ -119,7 +119,7 @@ export function Nav() {
               <div
                 role="menu"
                 aria-label="More destinations"
-                className="absolute right-0 top-full z-10 mt-1 w-44 overflow-hidden rounded-lg border border-white/10 bg-[#11141d] p-1 shadow-2xl shadow-black/60"
+                className="absolute right-0 top-full z-10 mt-1 w-44 overflow-hidden rounded-lg border border-white/10 bg-panel-strong p-1 shadow-2xl shadow-black/60"
               >
                 {MORE_LINKS.map((l) => {
                   const active = pathname === l.href;

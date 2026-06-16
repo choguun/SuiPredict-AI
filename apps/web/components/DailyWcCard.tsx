@@ -98,7 +98,7 @@ export function DailyWcCard() {
   });
 
   return (
-    <Card className="border-emerald-500/20 bg-gradient-to-b from-emerald-900/10 to-[#0d1019]">
+    <Card className="border-emerald-500/20 bg-gradient-to-b from-emerald-900/10 to-panel">
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -154,7 +154,7 @@ export function DailyWcCard() {
             {wcQuery.data.map((m) => (
               <li
                 key={m.id}
-                className="rounded-xl border border-white/10 bg-[#0d1019] p-3"
+                className="rounded-xl border border-white/10 bg-panel p-3"
               >
                 <Link
                   href={`/markets/${encodeURIComponent(m.id)}`}
