@@ -5,6 +5,7 @@ import { useWallets, useCurrentAccount, useDAppKit } from "@mysten/dapp-kit-reac
 import { useEnokiFlow, useZkLogin } from "@mysten/enoki/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { FaucetButton } from "@/components/FaucetButton";
 
 /**
  * R51 audit fix: validate `NEXT_PUBLIC_SUI_NETWORK`
@@ -312,6 +313,21 @@ export function ConnectModal() {
                   >
                     Disconnect
                   </button>
+                  {/* Self-hosted DUSDC faucet. Renders
+                     inside the connected view because it
+                     needs a recipient address; the
+                     disconnected view below has a
+                     corresponding "Get testnet SUI"
+                     link. The FaucetButton self-handles
+                     the "agents service is offline" /
+                     "faucet disabled" / "no TreasuryCap"
+                     states, so the user always sees a
+                     clear "why isn't this working"
+                     explanation instead of a greyed-out
+                     button. The 100 DUSDC default is
+                     enough for ~50 mints at the minimum
+                     size. */}
+                  <FaucetButton />
                 </div>
               ) : (
                 /* Disconnected State View */

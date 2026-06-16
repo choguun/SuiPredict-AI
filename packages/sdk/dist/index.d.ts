@@ -13,6 +13,7 @@ export * from "./badge-nft-client.js";
 export * from "./parlay-client.js";
 export * from "./user-profile-client.js";
 export * from "./protocol-reads.js";
+export { getFaucetInfo, requestFaucetDusdc, type FaucetInfo, type FaucetMintResponse, } from "./faucet-client.js";
 export * as predict from "./predict/index.js";
 export * from "./constants.js";
 export * from "./types.js";

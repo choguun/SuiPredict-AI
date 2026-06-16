@@ -43,6 +43,7 @@ import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
 import { FriendPositionsWidget } from "@/components/FriendPositionsWidget";
+import { FaucetButton } from "@/components/FaucetButton";
 import { RecentTrades } from "@/components/RecentTrades";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { clampNumberString } from "@/lib/forms";
@@ -605,6 +606,35 @@ function MarketDetailBody({
       .catch(() => {});
   }, [account, marketId, refreshCounter]);
 
+  // Listen for `faucet-mint` window events from the
+  // FaucetButton so a successful faucet hit re-fetches the
+  // user's portfolio + bumps the order-book refresh. Without
+  // this, the user would have to manually click ↻ Refresh
+  // (or wait for the 4s polling tick) to see their new
+  // DUSDC balance in the trade panel. The pattern mirrors
+  // the existing `open-connect-modal` event bus.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onFaucetMint = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { recipient?: string }
+        | undefined;
+      // No-op if the mint wasn't for this user (e.g. a
+      // developer testing both ConnectModal wallets from
+      // the same browser).
+      if (
+        detail?.recipient &&
+        account?.address &&
+        detail.recipient.toLowerCase() !== account.address.toLowerCase()
+      ) {
+        return;
+      }
+      setRefreshCounter((c) => c + 1);
+    };
+    window.addEventListener("faucet-mint", onFaucetMint);
+    return () => window.removeEventListener("faucet-mint", onFaucetMint);
+  }, [account?.address]);
+
   useEffect(() => {
     if (!account) return;
     const key = `suipredict.deepbook.${account.address}`;
@@ -809,9 +839,25 @@ function MarketDetailBody({
         // testnet faucet is the actionable item
         // — the parent `toast.error(...)` block
         // (line ~734) renders the string verbatim.
+        //
+        // R63 audit fix: surface the self-hosted
+        // DUSDC faucet in the error toast. The
+        // Sui testnet faucet (faucet.sui.io) only
+        // mints SUI for gas, not the protocol's
+        // DUSDC — a user who clicks that link would
+        // land on a SUI balance, come back, and
+        // see the same "no DUSDC" error. The
+        // self-hosted faucet (ConnectModal →
+        // "Get 100 DUSDC") mints from the
+        // protocol's TreasuryCap and is the actual
+        // fix. Open the ConnectModal automatically
+        // so the user lands on the faucet button
+        // — one less click to recover.
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("open-connect-modal"));
+        }
         throw new Error(
-          "You don't have any DUSDC yet. Get testnet DUSDC at https://faucet.sui.io/?address=" +
-            account.address,
+          "You don't have any DUSDC yet. Open the wallet menu and click \"Get 100 DUSDC\" to mint from the protocol faucet. (The Sui testnet faucet only mints SUI for gas, not DUSDC.)",
         );
       }
       // R51 audit fix: pick the largest coin, not
@@ -2449,6 +2495,23 @@ function MarketDetailBody({
           <p className="mb-4 text-sm leading-6 text-zinc-400">
             Split 1 DUSDC → 1 YES + 1 NO. Merge pair back to DUSDC.
           </p>
+          {/* Self-hosted DUSDC faucet. Rendered inside the
+             Collateral card because the user is exactly
+             one click away from needing DUSDC to mint
+             YES+NO shares. The compact variant is a
+             single 1-tap button — the FaucetButton
+             self-handles the "agents offline" /
+             "faucet disabled" / "no TreasuryCap" states
+             and renders a friendly hint instead of a
+             greyed-out button. The corresponding
+             `faucet-mint` window event triggers a
+             re-fetch of the user's DUSDC balance so they
+             can immediately click "Mint Shares" again. */}
+          <FaucetButton
+            variant="compact"
+            label="Faucet 100 DUSDC"
+            className="mb-3"
+          />
           <div className="grid grid-cols-2 gap-3 mt-2">
             <button
               type="button"

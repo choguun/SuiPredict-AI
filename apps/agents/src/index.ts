@@ -70,6 +70,7 @@ import { closeSharedClient, resetSharedJsonRpcClient, safeInt } from "./lib.js";
 import { getRecentDecisions, closeDb as closeDecisionsDb } from "./store.js";
 import { handleMarketsRoute } from "./markets/routes.js";
 import { handleGamificationRoute } from "./gamification/routes.js";
+import { handleFaucetRoute } from "./faucet.js";
 import { closeDb as closeGamificationDb } from "./gamification/store.js";
 import { closeDb as closeMarketsDb } from "./markets/store.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
@@ -651,6 +652,13 @@ function startHealthServer() {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     if (handleMarketsRoute(req, res, url)) return;
     if (await handleGamificationRoute(req, res, url)) return;
+    // Self-hosted DUSDC faucet. Sits between the gamification
+    // and the health handler so a 4xx from the gamification
+    // routes doesn't shadow the /faucet/info check. The
+    // POST path is side-effecting (mints DUSDC on-chain) and
+    // is rate-limited per (IP, route) and per (recipient, route)
+    // inside the handler.
+    if (handleFaucetRoute(req, res, url)) return;
     if (url.pathname === "/health") {
       // Expose the configured package id and other env-derived config
       // so the web client can detect drift between the web bundle

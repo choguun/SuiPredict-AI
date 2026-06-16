@@ -46,6 +46,15 @@ export * from "./badge-nft-client.js";
 export * from "./parlay-client.js";
 export * from "./user-profile-client.js";
 export * from "./protocol-reads.js";
+// R63 audit fix: a thin client-side helper for
+// the agents-side `/faucet/*` endpoints (see
+// `apps/agents/src/faucet.ts`). The web app's
+// `FaucetButton` component calls these directly
+// (no SDK dep), but third-party tools (audit
+// bots, CI smoke tests, third-party UIs) that
+// already import from `@suipredict/sdk` get the
+// same shape without a hand-rolled fetch.
+export { getFaucetInfo, requestFaucetDusdc, } from "./faucet-client.js";
 // Legacy DeepBook Predict
 export * as predict from "./predict/index.js";
 // Backward-compatible re-exports

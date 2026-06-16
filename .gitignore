@@ -28,7 +28,6 @@ deps/deepbookv3-self-hosted/
 .vercel
 
 # Compiled output
-**/dist/
 **/tsconfig.tsbuildinfo
 
 # SQLite temp files

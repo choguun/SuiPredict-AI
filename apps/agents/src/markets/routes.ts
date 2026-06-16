@@ -70,12 +70,47 @@ export function handleMarketsRoute(
   if (req.method !== "GET") return false;
 
   if (url.pathname === "/markets") {
-    const limit = Number(url.searchParams.get("limit"));
-    const offset = Number(url.searchParams.get("offset"));
-    if (Number.isInteger(limit) && Number.isInteger(offset)) {
-      json(res, 200, listMarkets(limit, offset));
-    } else {
+    // R63 audit fix: the previous handler used
+    // `Number.isInteger(limit) && Number.isInteger(offset)` to
+    // decide between the paginated and the un-paginated branch.
+    // `Number(null) === 0` and `Number.isInteger(0) === true`,
+    // so an un-parameterised `GET /markets` (no `?limit=` and no
+    // `?offset=`) took the paginated branch with
+    // `(limit=0, offset=0)` and called `listMarkets(0, 0)` —
+    // SQLite's `LIMIT 0` returns 0 rows, so the home page's
+    // `await listMarkets()` and the markets list's server-side
+    // fetch both rendered the empty state, even when 47+ WC
+    // markets existed. Route the no-params case through
+    // `listMarkets()` (the un-paginated branch) by checking that
+    // the raw query-string value is actually a positive integer
+    // (not a coerced 0 from a missing param).
+    const rawLimit = url.searchParams.get("limit");
+    const rawOffset = url.searchParams.get("offset");
+    if (rawLimit !== null && rawOffset !== null) {
+      const limit = Number(rawLimit);
+      const offset = Number(rawOffset);
+      if (
+        Number.isInteger(limit) &&
+        Number.isInteger(offset) &&
+        limit > 0 &&
+        offset >= 0
+      ) {
+        json(res, 200, listMarkets(limit, offset));
+      } else {
+        json(res, 400, {
+          error: "limit must be a positive integer; offset must be a non-negative integer",
+        });
+      }
+    } else if (rawLimit === null && rawOffset === null) {
       json(res, 200, listMarkets());
+    } else {
+      // One set, the other missing — reject so the caller knows
+      // the param shape is wrong (vs. silently falling through
+      // to the un-paginated branch and returning 50+ rows when
+      // they expected a slice).
+      json(res, 400, {
+        error: "limit and offset must be provided together",
+      });
     }
     return true;
   }
