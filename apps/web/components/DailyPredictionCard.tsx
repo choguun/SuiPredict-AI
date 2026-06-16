@@ -257,9 +257,9 @@ export function DailyPredictionCard() {
 
   if (dailyQuery.isLoading) {
     return (
-      <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all min-h-[350px]">
-        <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] -z-10" />
-        <div className="mb-6 flex justify-between items-start gap-4">
+      <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 shadow-xl shadow-black/50 transition-all">
+        <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px]" />
+        <div className="mb-4 flex justify-between items-start gap-4">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
             <p className="text-xs text-zinc-400">
@@ -277,11 +277,11 @@ export function DailyPredictionCard() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20 min-h-[350px]">
-      <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] -z-10" />
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-5 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20">
+      <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px]" />
 
       {/* Header - Always Unified */}
-      <div className="mb-6 flex justify-between items-start gap-4">
+      <div className="mb-4 flex justify-between items-start gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
           <p className="text-xs text-zinc-400">
@@ -346,7 +346,7 @@ export function DailyPredictionCard() {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto max-h-[260px] space-y-2 pr-1">
+          <div className="flex-1 overflow-y-auto max-h-[200px] space-y-2 pr-1">
             {dailyMarkets.map((m) => {
               const checked = activeMarketIds.includes(m.id);
               const atCap = activeMarketIds.length >= DEFAULT_PARLAY_LIMIT;
@@ -392,7 +392,7 @@ export function DailyPredictionCard() {
 
           <button
             onClick={() => setBrowseMode(false)}
-            className="w-full mt-2 rounded-xl bg-white/5 border border-white/10 py-3 text-xs font-bold text-white transition hover:bg-white/10"
+            className="w-full mt-2 rounded-xl bg-white/5 border border-white/10 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"
           >
             Show Selection Details ({activeMarketIds.length} leg{activeMarketIds.length === 1 ? "" : "s"} added)
           </button>
@@ -417,13 +417,13 @@ export function DailyPredictionCard() {
                   dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
                 );
               }}
-              className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-2.5 text-xs font-bold text-white shadow-lg shadow-cyan-900/30 transition hover:scale-[1.02]"
+              className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-900/30 transition hover:scale-[1.02]"
             >
               Quick Add Top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} Matches
             </button>
             <button
               onClick={() => setBrowseMode(true)}
-              className="rounded-lg border border-white/10 bg-white/5 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"
+              className="rounded-lg border border-white/10 bg-white/5 py-2 text-xs font-bold text-white transition hover:bg-white/10"
             >
               Choose Custom Legs
             </button>
@@ -432,20 +432,20 @@ export function DailyPredictionCard() {
       ) : (
         /* Active Selected Legs List */
         <div className="flex-1 flex flex-col justify-between">
-          <div className="space-y-3 overflow-y-auto max-h-[300px] pr-1">
+          <div className="space-y-2.5 overflow-y-auto max-h-[240px] pr-1">
             {activeMarkets.map((market, idx) => {
               const selected = selections[market.id];
               return (
                 <div
                   key={market.id}
-                  className={`relative group flex flex-col gap-3 rounded-xl border p-4 transition-all sm:flex-row sm:items-center sm:justify-between ${
+                  className={`relative group flex flex-col gap-2 rounded-xl border p-3 transition-all sm:flex-row sm:items-center sm:justify-between ${
                     selected !== undefined
                       ? "border-white/10 bg-white/[0.04]"
                       : "border-white/5 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-panel-hover"
                   }`}
                 >
-                  <div className="flex flex-1 flex-col gap-2.5 pr-8 sm:pr-0 min-w-0">
-                    <div className="flex items-start gap-3">
+                  <div className="flex flex-1 flex-col gap-1.5 pr-8 sm:pr-0 min-w-0">
+                    <div className="flex items-start gap-2.5">
                       <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
                         selected !== undefined ? "bg-white/20 text-white" : "bg-white/10 text-zinc-500 group-hover:bg-cyan-500/20 group-hover:text-cyan-400"
                       }`}>
@@ -478,10 +478,10 @@ export function DailyPredictionCard() {
                     </svg>
                   </button>
 
-                  <div className="flex shrink-0 gap-2 items-center w-full sm:w-auto mt-1 sm:mt-0">
+                  <div className="flex shrink-0 gap-1.5 items-center w-full sm:w-auto mt-1 sm:mt-0">
                     <button
                       onClick={() => setSelections((s) => ({ ...s, [market.id]: true }))}
-                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
                         selected === true
                           ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)] scale-105"
                           : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
@@ -491,7 +491,7 @@ export function DailyPredictionCard() {
                     </button>
                     <button
                       onClick={() => setSelections((s) => ({ ...s, [market.id]: false }))}
-                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
                         selected === false
                           ? "bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-[0_0_15px_rgba(244,63,94,0.2)] scale-105"
                           : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
@@ -509,7 +509,7 @@ export function DailyPredictionCard() {
 
       {/* Footer Area - Only render if daily markets are available */}
       {dailyMarkets.length > 0 && (
-        <div className="mt-6 border-t border-white/5 pt-6">
+        <div className="mt-4 border-t border-white/5 pt-4">
           <p className="mb-2 text-center text-[10px] uppercase tracking-wider text-zinc-500">
             {!account
               ? "Sign in to lock in your predictions"
@@ -530,7 +530,7 @@ export function DailyPredictionCard() {
             disabled={
               (account && (!isComplete || activeMarketIds.length === 0)) || submitting
             }
-            className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
+            className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
           >
             {submitting
               ? "Minting shares…"
