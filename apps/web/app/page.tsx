@@ -379,35 +379,23 @@ export default async function HomePage() {
           by localStorage so a returning user never
           sees it twice. */}
       {markets.length > 0 && <HowItWorksDismissable />}
+      {/* R6X audit fix: Unified main dashboard layout.
+         We group these top elements inside a unified grid where Left Column (1/3) and Right Column (2/3)
+         contain vertically stacked widgets. This prevents layout gaps and misalignment on desktop. */}
       <section className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-1">
+        {/* Left Column - User Info, Countdown, and Forecasters leaderboard */}
+        <div className="lg:col-span-1 space-y-6">
           <StreakProfile />
+          <TournamentCountdown variant="card" />
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <TopForecasters />
+          </div>
         </div>
+
+        {/* Right Column - Daily Matches & Active Parlay Builder */}
         <div className="lg:col-span-2 space-y-6">
           <DailyWcCard />
           <DailyPredictionCard />
-        </div>
-      </section>
-
-      {/* R6X audit fix: 2-up live signals row.
-         A first-time visitor landing on `/` now sees
-         a tournament countdown + top forecasters
-         alongside the gamification row, so the
-         "is this thing live?" question is answered
-         without scrolling. Pre-R6X the home page
-         had no time-to-kickoff signal and no
-         "real players are trading" signal. The
-         countdown re-uses the WC_KICKOFF_MS
-         constant in `TournamentCountdown.tsx`;
-         the leaderboard widget polls the agents
-         REST every 60s, paused when the tab is
-         hidden. Both panels gracefully degrade to
-         a skeleton / empty-state when the agents
-         service is unreachable. */}
-      <section className="grid gap-6 sm:grid-cols-2">
-        <TournamentCountdown variant="card" />
-        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
-          <TopForecasters />
         </div>
       </section>
 
