@@ -112,14 +112,7 @@ export function DailyPredictionCard() {
     activeMarketIds.length > 0 &&
     activeSelectionsCount === activeMarketIds.length;
 
-  const handleAddMarket = () => {
-    const nextAvailable = dailyMarkets.find(
-      (m) => !activeMarketIds.includes(m.id),
-    );
-    if (nextAvailable) {
-      setActiveMarketIds([...activeMarketIds, nextAvailable.id]);
-    }
-  };
+
 
   const handleRemoveMarket = (id: string) => {
     setActiveMarketIds(activeMarketIds.filter((marketId) => marketId !== id));
@@ -264,259 +257,293 @@ export function DailyPredictionCard() {
 
   if (dailyQuery.isLoading) {
     return (
-      <div className="flex h-full min-h-[300px] items-center justify-center rounded-2xl border border-white/10 bg-panel-strong p-8 text-sm text-zinc-500">
-        Loading today&apos;s markets…
-      </div>
-    );
-  }
-
-  if (dailyMarkets.length === 0) {
-    return (
-      <div className="relative flex h-full min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-8 text-center shadow-xl shadow-black/50">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full bg-violet-500/10 blur-[80px] -z-10" />
-        <h2 className="text-xl font-bold text-white mb-2">No daily markets yet</h2>
-        <p className="max-w-xs text-sm leading-relaxed text-zinc-400">
-          The market creator agent publishes 5 daily markets at 00:00 UTC. Check
-          back soon, or browse active markets.
-        </p>
-        <Link
-          href="/markets"
-          className="mt-4 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
-        >
-          Browse all markets
-        </Link>
-      </div>
-    );
-  }
-
-  if (activeMarkets.length === 0) {
-    return (
-      <div className="relative flex h-full min-h-[300px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-8 text-center shadow-xl shadow-black/50">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-64 w-64 rounded-full bg-violet-500/10 blur-[80px] -z-10" />
-        <h2 className="text-xl font-bold text-white mb-2">Build your daily parlay</h2>
-        <p className="max-w-xs text-sm leading-relaxed text-zinc-400 mb-4">
-          We found {dailyMarkets.length} market
-          {dailyMarkets.length === 1 ? "" : "s"} expiring in the next 36 hours.
-          Add up to {DEFAULT_PARLAY_LIMIT} to start your streak.
-        </p>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            onClick={() =>
-              setActiveMarketIds(
-                dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
-              )
-            }
-            className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02]"
-          >
-            Add top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} markets
-          </button>
-          <button
-            onClick={() => setBrowseMode((b) => !b)}
-            className="rounded-lg border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-white/10"
-          >
-            {browseMode ? "Hide list" : "Choose markets…"}
-          </button>
-        </div>
-        {browseMode && (
-          <div className="mt-5 w-full max-w-md text-left">
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-              Pick {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} to add
+      <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all min-h-[350px]">
+        <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] -z-10" />
+        <div className="mb-6 flex justify-between items-start gap-4">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
+            <p className="text-xs text-zinc-400">
+              Predict daily matches correctly to keep your streak alive and earn up to{" "}
+              <span className="font-semibold text-emerald-400">150% yield boost</span>.
             </p>
-            <ul className="max-h-72 space-y-1 overflow-y-auto pr-1">
-              {dailyMarkets.map((m) => {
-                const checked = activeMarketIds.includes(m.id);
-                const atCap = activeMarketIds.length >= DEFAULT_PARLAY_LIMIT;
-                return (
-                  <li key={m.id}>
-                    <label
-                      className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 transition ${
-                        checked
-                          ? "border-emerald-500/40 bg-emerald-500/10"
-                          : atCap
-                            ? "border-white/5 bg-white/[0.02] opacity-50"
-                            : "border-white/10 bg-black/20 hover:border-cyan-500/30"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={!checked && atCap}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setActiveMarketIds([...activeMarketIds, m.id]);
-                          } else {
-                            setActiveMarketIds(
-                              activeMarketIds.filter((id) => id !== m.id),
-                            );
-                            const next = { ...selections };
-                            delete next[m.id];
-                            setSelections(next);
-                          }
-                        }}
-                        className="h-4 w-4 rounded border-white/20 bg-black/40 accent-emerald-500"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs text-white">{m.title}</p>
-                        <p className="text-[10px] uppercase tracking-wider text-zinc-500">
-                          {m.category} · {Math.round(m.yesProbability * 100)}% YES
-                        </p>
-                      </div>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
           </div>
-        )}
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center text-sm text-zinc-500">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-violet-500 mb-3" />
+          <span>Loading today&apos;s matches…</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20">
+    <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-panel-strong p-6 shadow-xl shadow-black/50 transition-all hover:border-violet-500/30 hover:shadow-violet-900/20 min-h-[350px]">
       <div className="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-violet-600/10 blur-[80px] -z-10" />
 
+      {/* Header - Always Unified */}
       <div className="mb-6 flex justify-between items-start gap-4">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-white mb-1">Your Daily Parlay</h2>
-          <p className="text-sm text-zinc-400">
-            Predict {activeMarketIds.length} daily market
-            {activeMarketIds.length === 1 ? "" : "s"} correctly to keep your
-            streak alive and earn up to{" "}
+          <p className="text-xs text-zinc-400">
+            Predict daily matches correctly to keep your streak alive and earn up to{" "}
             <span className="font-semibold text-emerald-400">150% yield boost</span>.
           </p>
         </div>
-        {activeMarketIds.length < Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length) && (
+
+        {/* Toggle checklist button */}
+        {dailyMarkets.length > 0 && (
           <button
-            onClick={handleAddMarket}
-            className="shrink-0 flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10"
+            onClick={() => setBrowseMode((b) => !b)}
+            className={`shrink-0 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+              browseMode
+                ? "border-violet-500/50 bg-violet-500/20 text-violet-300"
+                : "border-white/10 bg-white/5 text-white hover:bg-white/10"
+            }`}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              {browseMode ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16m-7 6h7" />
+              )}
             </svg>
-            Add Leg
+            {browseMode ? "Done" : "Choose Legs"}
           </button>
         )}
       </div>
 
-      <div className="flex-1 space-y-3">
-        {activeMarkets.map((market, idx) => {
-          const selected = selections[market.id];
-          return (
-            <div
-              key={market.id}
-              className={`relative group flex flex-col gap-4 rounded-xl border p-4 transition-all sm:flex-row sm:items-center sm:justify-between ${
-                selected !== undefined
-                  ? "border-white/10 bg-white/[0.04]"
-                  : "border-white/5 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-panel-hover"
-              }`}
-            >
-              <div className="flex flex-1 flex-col gap-3 pr-8 sm:pr-0">
-                <div className="flex items-start gap-4">
-                  <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-colors ${
-                    selected !== undefined ? "bg-white/20 text-white" : "bg-white/10 text-zinc-500 group-hover:bg-cyan-500/20 group-hover:text-cyan-400"
-                  }`}>
-                    {idx + 1}
+      {/* Body States */}
+      {dailyMarkets.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
+          <h3 className="text-lg font-bold text-white mb-2">No daily markets yet</h3>
+          <p className="max-w-xs text-xs leading-relaxed text-zinc-400 mb-4">
+            The market creator agent publishes daily markets at 00:00 UTC. Check back soon, or browse active markets.
+          </p>
+          <Link
+            href="/markets"
+            className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
+          >
+            Browse all markets
+          </Link>
+        </div>
+      ) : browseMode ? (
+        /* Checklist Selection View */
+        <div className="flex-1 flex flex-col gap-4">
+          <div className="flex justify-between items-center px-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+              Pick up to {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} legs
+            </span>
+            {activeMarketIds.length > 0 && (
+              <button
+                onClick={() => {
+                  setActiveMarketIds([]);
+                  setSelections({});
+                }}
+                className="text-[10px] font-semibold text-zinc-500 hover:text-rose-400 transition-colors"
+              >
+                Clear All
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto max-h-[260px] space-y-2 pr-1">
+            {dailyMarkets.map((m) => {
+              const checked = activeMarketIds.includes(m.id);
+              const atCap = activeMarketIds.length >= DEFAULT_PARLAY_LIMIT;
+              return (
+                <label
+                  key={m.id}
+                  className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-all ${
+                    checked
+                      ? "border-violet-500/40 bg-violet-500/10 shadow-[0_0_10px_rgba(139,92,246,0.05)]"
+                      : atCap
+                        ? "border-white/5 bg-white/[0.01] opacity-40 cursor-not-allowed"
+                        : "border-white/10 bg-black/20 hover:border-cyan-500/30 hover:bg-black/30"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={!checked && atCap}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setActiveMarketIds([...activeMarketIds, m.id]);
+                      } else {
+                        setActiveMarketIds(
+                          activeMarketIds.filter((id) => id !== m.id),
+                        );
+                        const next = { ...selections };
+                        delete next[m.id];
+                        setSelections(next);
+                      }
+                    }}
+                    className="h-4 w-4 rounded border-white/20 bg-black/40 accent-violet-500 cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-semibold text-white">{m.title}</p>
+                    <p className="text-[10px] uppercase tracking-wider text-zinc-500 mt-0.5">
+                      {m.category} · {Math.round(m.yesProbability * 100)}% YES
+                    </p>
                   </div>
-                  <div className="flex w-full flex-col gap-2.5">
-                    <Link
-                      href={`/markets/${encodeURIComponent(market.id)}`}
-                      className={`text-sm font-medium transition-colors hover:text-cyan-300 ${selected !== undefined ? "text-zinc-300" : "text-white"}`}
-                    >
-                      {market.title}
-                    </Link>
-                    <div className="flex items-center gap-3">
-                      <ProbabilityBar yesProbability={market.yesProbability} className="h-1.5 opacity-60 group-hover:opacity-100 transition-opacity" />
-                      <span className="shrink-0 text-[10px] font-bold tracking-wider text-zinc-500 uppercase">
-                        {Math.round(market.yesProbability * 100)}% YES
-                      </span>
+                </label>
+              );
+            })}
+          </div>
+
+          <button
+            onClick={() => setBrowseMode(false)}
+            className="w-full mt-2 rounded-xl bg-white/5 border border-white/10 py-3 text-xs font-bold text-white transition hover:bg-white/10"
+          >
+            Show Selection Details ({activeMarketIds.length} leg{activeMarketIds.length === 1 ? "" : "s"} added)
+          </button>
+        </div>
+      ) : activeMarketIds.length === 0 ? (
+        /* Empty selections state */
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
+          <div className="h-12 w-12 rounded-full bg-violet-500/10 flex items-center justify-center mb-3 text-violet-400">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          </div>
+          <h3 className="text-sm font-bold text-white mb-1">Build Your Parlay</h3>
+          <p className="max-w-xs text-xs leading-relaxed text-zinc-400 mb-5">
+            We found {dailyMarkets.length} match{dailyMarkets.length === 1 ? "" : "es"} for today.
+            Add up to {DEFAULT_PARLAY_LIMIT} to qualify for a streak.
+          </p>
+          <div className="flex flex-col gap-2 w-full max-w-[280px]">
+            <button
+              onClick={() => {
+                setActiveMarketIds(
+                  dailyMarkets.slice(0, DEFAULT_PARLAY_LIMIT).map((m) => m.id),
+                );
+              }}
+              className="rounded-lg bg-gradient-to-r from-violet-600 to-cyan-600 py-2.5 text-xs font-bold text-white shadow-lg shadow-cyan-900/30 transition hover:scale-[1.02]"
+            >
+              Quick Add Top {Math.min(DEFAULT_PARLAY_LIMIT, dailyMarkets.length)} Matches
+            </button>
+            <button
+              onClick={() => setBrowseMode(true)}
+              className="rounded-lg border border-white/10 bg-white/5 py-2.5 text-xs font-bold text-white transition hover:bg-white/10"
+            >
+              Choose Custom Legs
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* Active Selected Legs List */
+        <div className="flex-1 flex flex-col justify-between">
+          <div className="space-y-3 overflow-y-auto max-h-[300px] pr-1">
+            {activeMarkets.map((market, idx) => {
+              const selected = selections[market.id];
+              return (
+                <div
+                  key={market.id}
+                  className={`relative group flex flex-col gap-3 rounded-xl border p-4 transition-all sm:flex-row sm:items-center sm:justify-between ${
+                    selected !== undefined
+                      ? "border-white/10 bg-white/[0.04]"
+                      : "border-white/5 bg-white/[0.02] hover:border-cyan-500/30 hover:bg-panel-hover"
+                  }`}
+                >
+                  <div className="flex flex-1 flex-col gap-2.5 pr-8 sm:pr-0 min-w-0">
+                    <div className="flex items-start gap-3">
+                      <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold transition-colors ${
+                        selected !== undefined ? "bg-white/20 text-white" : "bg-white/10 text-zinc-500 group-hover:bg-cyan-500/20 group-hover:text-cyan-400"
+                      }`}>
+                        {idx + 1}
+                      </div>
+                      <div className="flex w-full flex-col gap-2 min-w-0">
+                        <Link
+                          href={`/markets/${encodeURIComponent(market.id)}`}
+                          className={`text-xs font-medium transition-colors hover:text-cyan-300 truncate ${selected !== undefined ? "text-zinc-300" : "text-white"}`}
+                        >
+                          {market.title}
+                        </Link>
+                        <div className="flex items-center gap-3">
+                          <ProbabilityBar yesProbability={market.yesProbability} className="h-1.5 opacity-60 group-hover:opacity-100 transition-opacity" />
+                          <span className="shrink-0 text-[9px] font-bold tracking-wider text-zinc-500 uppercase">
+                            {Math.round(market.yesProbability * 100)}% YES
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   </div>
+
+                  <button
+                    onClick={() => handleRemoveMarket(market.id)}
+                    className="absolute right-3 top-3 sm:relative sm:right-auto sm:top-auto sm:ml-2 flex h-6 w-6 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 sm:order-last"
+                    title="Remove Leg"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+
+                  <div className="flex shrink-0 gap-2 items-center w-full sm:w-auto mt-1 sm:mt-0">
+                    <button
+                      onClick={() => setSelections((s) => ({ ...s, [market.id]: true }))}
+                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                        selected === true
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)] scale-105"
+                          : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
+                      }`}
+                    >
+                      YES
+                    </button>
+                    <button
+                      onClick={() => setSelections((s) => ({ ...s, [market.id]: false }))}
+                      className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                        selected === false
+                          ? "bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-[0_0_15px_rgba(244,63,94,0.2)] scale-105"
+                          : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
+                      }`}
+                    >
+                      NO
+                    </button>
+                  </div>
                 </div>
-              </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-              <button
-                onClick={() => handleRemoveMarket(market.id)}
-                className="absolute right-3 top-3 sm:relative sm:right-auto sm:top-auto sm:ml-2 flex h-6 w-6 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-rose-500/20 hover:text-rose-400 sm:order-last"
-                title="Remove Leg"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-
-              <div className="flex shrink-0 gap-2 items-center w-full sm:w-auto mt-2 sm:mt-0">
-                <button
-                  onClick={() => setSelections((s) => ({ ...s, [market.id]: true }))}
-                  className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2.5 text-xs font-bold transition-all ${
-                    selected === true
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_15px_rgba(16,185,129,0.2)] scale-105"
-                      : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
-                  }`}
-                >
-                  YES
-                </button>
-                <button
-                  onClick={() => setSelections((s) => ({ ...s, [market.id]: false }))}
-                  className={`flex-1 sm:flex-none sm:w-20 rounded-lg px-3 py-2.5 text-xs font-bold transition-all ${
-                    selected === false
-                      ? "bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-[0_0_15px_rgba(244,63,94,0.2)] scale-105"
-                      : "bg-black/40 text-zinc-500 hover:bg-white/10 hover:text-white border border-white/5"
-                  }`}
-                >
-                  NO
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-6 border-t border-white/5 pt-6">
-        <p className="mb-2 text-center text-[10px] uppercase tracking-wider text-zinc-500">
-          {/* R62 audit fix: surface the per-market
-             cost + total DUSDC in the submit
-             footer. The pre-R62 build had a
-             single "Lock In Predictions" CTA
-             with no preview of the cost — a user
-             about to mint shares for 3 markets
-             had to back out and add a 4th leg to
-             see the math update. The cost is
-             `amountPerMarket * legCount` in DUSDC
-             (1 DUSDC per market by default —
-             matches the `amountPerMarket` in
-             `handleSubmit`). The "Connect wallet"
-             copy stays for the no-wallet path. */}
-          {!account
-            ? "Sign in to lock in your predictions"
-            : `Total cost: ${activeMarketIds.length} DUSDC (${
-                activeMarketIds.length
-              } market${activeMarketIds.length === 1 ? "" : "s"} × 1 DUSDC)`}
-        </p>
-        <button
-          onClick={() => {
-            if (!account) {
-              if (typeof window !== "undefined") {
-                window.dispatchEvent(new CustomEvent("open-connect-modal"));
+      {/* Footer Area - Only render if daily markets are available */}
+      {dailyMarkets.length > 0 && (
+        <div className="mt-6 border-t border-white/5 pt-6">
+          <p className="mb-2 text-center text-[10px] uppercase tracking-wider text-zinc-500">
+            {!account
+              ? "Sign in to lock in your predictions"
+              : `Total cost: ${activeMarketIds.length} DUSDC (${
+                  activeMarketIds.length
+                } market${activeMarketIds.length === 1 ? "" : "s"} × 1 DUSDC)`}
+          </p>
+          <button
+            onClick={() => {
+              if (!account) {
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("open-connect-modal"));
+                }
+                return;
               }
-              return;
+              handleSubmit();
+            }}
+            disabled={
+              (account && (!isComplete || activeMarketIds.length === 0)) || submitting
             }
-            handleSubmit();
-          }}
-          disabled={
-            (account && (!isComplete || activeMarketIds.length === 0)) || submitting
-          }
-          className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
-        >
-          {submitting
-            ? "Minting shares…"
-            : !account
-              ? "Connect wallet to lock in"
-              : !isComplete
-                ? `Pick YES/NO for all ${activeMarketIds.length} markets (${activeSelectionsCount}/${activeMarketIds.length})`
-                : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
-        </button>
-      </div>
+            className="w-full rounded-xl bg-gradient-to-r from-violet-600 to-cyan-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-cyan-900/30 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:scale-100 disabled:shadow-none"
+          >
+            {submitting
+              ? "Minting shares…"
+              : !account
+                ? "Connect wallet to lock in"
+                : activeMarketIds.length === 0
+                  ? "Select matches to build parlay"
+                  : !isComplete
+                    ? `Pick YES/NO for all ${activeMarketIds.length} matches (${activeSelectionsCount}/${activeMarketIds.length})`
+                    : `Lock In Predictions (${activeSelectionsCount}/${activeMarketIds.length})`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
