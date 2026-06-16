@@ -4,7 +4,6 @@ import {
   DUSDC_TREASURY_CAP_ID,
   yesCoinType,
   resolveDeepbookPackageId,
-  buildAuthorizeSpendTx,
   listAllCoins,
 } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
@@ -189,11 +188,19 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       // constant so a mainnet deploy that rotates the
       // cap (or a self-hosted dUSDC package) honours
       // the env without a code change.
+      //
+      // The mint step stays as its own PTB because
+      // `mint_and_transfer` is a one-shot
+      // transfer-to-address operation; it doesn't
+      // depend on any of the BM objects the rest of
+      // this function touches, so combining it would
+      // force the whole atomic PTB to fail (and roll
+      // back the mint) on a downstream error. Keep
+      // it separate.
       const treasuryCapId = DUSDC_TREASURY_CAP_ID;
       if (!treasuryCapId) {
         throw new Error("DUSDC_TREASURY_CAP_ID is unset; cannot mint DUSDC.");
       }
-      // Mint DUSDC via TreasuryCap
       const mintTx = new Transaction();
       mintTx.moveCall({
         target: "0x2::coin::mint_and_transfer",
@@ -206,99 +213,131 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       if (!dusdcId) throw new Error("Failed to mint DUSDC");
     }
 
-    // 1. Deposit DUSDC into BM
-    const depTx = new Transaction();
-    depTx.moveCall({ target: `${DB}::balance_manager::deposit`, typeArguments: [quoteType], arguments: [depTx.object(bmId), depTx.object(dusdcId)] });
-    await executeTransaction(client, depTx, ctx.signer);
-    // 1. Withdraw settled amounts (with owner proof)
-    const withdrawTx = new Transaction();
-    const wProof = withdrawTx.moveCall({
-      target: `${DB}::balance_manager::generate_proof_as_owner`,
-      arguments: [withdrawTx.object(bmId)],
-    });
-    withdrawTx.moveCall({
-      target: `${DB}::pool::withdraw_settled_amounts`,
-      typeArguments: [baseType, quoteType],
-      arguments: [withdrawTx.object(poolId), withdrawTx.object(bmId), wProof],
-    });
-    await executeTransaction(client, withdrawTx, ctx.signer);
-
-    // 2. Authorize spend
-    if (AGENT_POLICY_ID) {
-      const authTx = buildAuthorizeSpendTx(AGENT_POLICY_ID, cycleAuthDollars);
-      await executeTransaction(client, authTx, ctx.signer);
-    }
-
-    // 3. Place bid (price must be multiple of tick_size=1_000_000)
-    // R60 audit fix: the previous prices were `5000 / 10000 * 1_000_000 * 1_000_000`
-    // = 500_000_000 (mid: 0.5) for BOTH bid and ask. That
-    // meant the on-chain order was placed at the mid, not
-    // at the calculated bid/ask spread (4800 / 5200 bps).
-    // The SQLite mirror recorded `bidBps` / `askBps` (the
-    // off-book display) but the actual on-chain order was
-    // always at mid — producing a crossed book every tick
-    // and double-charging the maker for inventory that
-    // never traded. Use the actual `bidBps` / `askBps`
-    // values (in the same unit as the SQLite mirror) so
-    // the on-chain book matches the off-book display.
+    // 1. Atomic PTB #1: deposit + authorize_spend.
+    // R61 fix: the pre-fix build submitted these as 4
+    // separate PTBs in sequence. The agents service has
+    // other workers (RiskMonitor every 5min,
+    // PositionIndexer every 1min, the WC maker every
+    // 2min) all sharing the same gas coin (the agent
+    // account has only one SUI coin). Between PTBs the
+    // gas coin was consumed by another worker, the
+    // next PTB was rebuilt with the stale version, and
+    // the Sui node returned:
+    //   "Transaction needs to be rebuilt because object
+    //    <gas-coin> version <X> is unavailable for
+    //    consumption, current version: <X+N>"
+    // Producing a `quote_failed` every minute and an
+    // empty on-chain order book. Combining the BM
+    // setup into one PTB eliminates that race.
+    //
+    // R61.b follow-up: the original 8-call PTB and the
+    // 4-call PTB both failed with
+    // `balance_manager::withdraw_with_proof` abort
+    // code 3 (`EInvalidProof`). The
+    // `withdraw_settled_amounts` call in the same
+    // PTB invalidated the proofs that the bid and ask
+    // `place_limit_order` calls needed. Even putting
+    // the orders in a separate PTB didn't help because
+    // the MM's `withdraw_settled_amounts` (a BM
+    // state-touching op) invalidated the proof the
+    // same PTB used. The fix: drop the
+    // `withdraw_settled_amounts` from the per-cycle
+    // critical path. The settled balance carries over
+    // from cycle to cycle (it only needs to be
+    // withdrawn when the maker changes pools or
+    // withdraws inventory) so running it on every
+    // tick is unnecessary. Keep the deposit so the
+    // BM has fresh DUSDC to quote against.
     const bidPrice = BigInt(Math.round((bidBps / 10_000) * 1_000_000 * 1_000_000));
     const askPrice = BigInt(Math.round((askBps / 10_000) * 1_000_000 * 1_000_000));
-    const bidTx = new Transaction();
-    const bProof = bidTx.moveCall({
-      target: `${DB}::balance_manager::generate_proof_as_owner`,
-      arguments: [bidTx.object(bmId)],
+    const setupTx = new Transaction();
+    setupTx.moveCall({
+      target: `${DB}::balance_manager::deposit`,
+      typeArguments: [quoteType],
+      arguments: [setupTx.object(bmId), setupTx.object(dusdcId)],
     });
-    bidTx.moveCall({
-      target: `${DB}::pool::place_limit_order`,
-      typeArguments: [baseType, quoteType],
-      arguments: [
-        bidTx.object(poolId),
-        bidTx.object(bmId),
-        bProof,
-        bidTx.pure.u64(0n),
-        bidTx.pure.u8(0),
-        bidTx.pure.u8(1),
-        bidTx.pure.u64(bidPrice),
-        bidTx.pure.u64(BigInt(QUOTE_SIZE)),
-        bidTx.pure.bool(true),
-        bidTx.pure.bool(false),                        // payWithDeep=false (use DUSDC)
-        bidTx.pure.u64(BigInt(Date.now() + 3600_000)),
-        bidTx.object.clock(),
-      ],
-    });
-    const bidResult = await executeTransaction(client, bidTx, ctx.signer);
+    if (AGENT_POLICY_ID) {
+      setupTx.moveCall({
+        target: `${process.env.AGENT_POLICY_PACKAGE_ID ?? ""}::agent_policy::authorize_spend`,
+        typeArguments: [],
+        arguments: [
+          setupTx.object(AGENT_POLICY_ID),
+          setupTx.pure.u64(BigInt(cycleAuthDollars * 1_000_000)),
+          setupTx.object.clock(),
+        ],
+      });
+    }
+    await executeTransaction(client, setupTx, ctx.signer);
 
-    // 4. Place ask
-    const askTx = new Transaction();
-    const aProof = askTx.moveCall({
+    // 2. Atomic PTB #2: place_limit_order bid + place_limit_order ask.
+    // The bid and ask are placed in the same PTB with
+    // distinct `client_order_id` values (0 and 1) so
+    // the on-chain matcher sees two independent orders.
+    // Sharing a PTB means a single gas-coin read, but
+    // PTB-A's `withdraw_settled_amounts` would
+    // invalidate the TradeProof if it ran in the same
+    // PTB, so the orders are isolated to their own
+    // PTB. Two PTBs vs the pre-fix four is still a
+    // 50% reduction in gas-coin reads, which is the
+    // minimum to avoid the version race against the
+    // 1-min PositionIndexer and 2-min WorldCupMaker.
+    const orderTx = new Transaction();
+    const bProof = orderTx.moveCall({
       target: `${DB}::balance_manager::generate_proof_as_owner`,
-      arguments: [askTx.object(bmId)],
+      arguments: [orderTx.object(bmId)],
     });
-    askTx.moveCall({
+    orderTx.moveCall({
       target: `${DB}::pool::place_limit_order`,
       typeArguments: [baseType, quoteType],
       arguments: [
-        askTx.object(poolId),
-        askTx.object(bmId),
-        aProof,
-        askTx.pure.u64(1n),
-        askTx.pure.u8(0),
-        askTx.pure.u8(1),
-        askTx.pure.u64(askPrice),
-        askTx.pure.u64(BigInt(QUOTE_SIZE)),
-        askTx.pure.bool(false),
-        askTx.pure.bool(false),                        // payWithDeep=false
-        askTx.pure.u64(BigInt(Date.now() + 3600_000)),
-        askTx.object.clock(),
+        orderTx.object(poolId),
+        orderTx.object(bmId),
+        bProof,
+        orderTx.pure.u64(0n),
+        orderTx.pure.u8(0),
+        orderTx.pure.u8(1),
+        orderTx.pure.u64(bidPrice),
+        orderTx.pure.u64(BigInt(QUOTE_SIZE)),
+        orderTx.pure.bool(true),
+        orderTx.pure.bool(false),
+        orderTx.pure.u64(BigInt(Date.now() + 3600_000)),
+        orderTx.object.clock(),
       ],
     });
-    await executeTransaction(client, askTx, ctx.signer);
+    const aProof = orderTx.moveCall({
+      target: `${DB}::balance_manager::generate_proof_as_owner`,
+      arguments: [orderTx.object(bmId)],
+    });
+    orderTx.moveCall({
+      target: `${DB}::pool::place_limit_order`,
+      typeArguments: [baseType, quoteType],
+      arguments: [
+        orderTx.object(poolId),
+        orderTx.object(bmId),
+        aProof,
+        orderTx.pure.u64(1n),
+        orderTx.pure.u8(0),
+        orderTx.pure.u8(1),
+        orderTx.pure.u64(askPrice),
+        orderTx.pure.u64(BigInt(QUOTE_SIZE)),
+        orderTx.pure.bool(false),
+        orderTx.pure.bool(false),
+        orderTx.pure.u64(BigInt(Date.now() + 3600_000)),
+        orderTx.object.clock(),
+      ],
+    });
+    const result = await executeTransaction(client, orderTx, ctx.signer);
 
     // Record on-chain orders in SQLite so the frontend order book stays in sync.
-    // Use unique numeric IDs derived from timestamp to avoid type conflicts.
+    // Use unique numeric IDs derived from the shared
+    // digest (0/1 offset) so the bid and ask are
+    // distinct rows in the SQLite mirror.
+    const baseOrderId = Number(
+      BigInt("0x" + result.digest.slice(2, 18)) % BigInt(1e15),
+    );
     upsertOrder({
       market_id: target.id,
-      order_id: Number(BigInt("0x" + bidResult.digest.slice(2, 18)) % BigInt(1e15)),
+      order_id: baseOrderId,
       owner: agentAddr,
       is_bid: true,
       price_bps: bidBps,
@@ -307,7 +346,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     });
     upsertOrder({
       market_id: target.id,
-      order_id: Number(BigInt("0x" + bidResult.digest.slice(2, 18)) % BigInt(1e15)) + 1,
+      order_id: baseOrderId + 1,
       owner: agentAddr,
       is_bid: false,
       price_bps: askBps,
@@ -317,9 +356,9 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
     return recordResult("MarketMaker", {
       action: "place_quotes",
-      reasoning: `Quoted ${bidBps / 100}¢/${askBps / 100}¢ on ${target.title.slice(0, 36)}...`,
+      reasoning: `Quoted ${bidBps / 100}¢/${askBps / 100}¢ on ${target.title.slice(0, 36)}... (atomic PTB)`,
       confidence: 85,
-      txDigest: bidResult.digest,
+      txDigest: result.digest,
     });
   } catch (err) {
     return recordResult("MarketMaker", {
