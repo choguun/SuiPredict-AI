@@ -152,6 +152,27 @@ export function RecentActivity() {
             "skip",
             "monitor",
             "indexer_poll",
+            // UAT-FN-09 follow-up: the
+            // PositionIndexer's "index"
+            // action runs every 1min and
+            // reports "Indexed 0 created,
+            // 0 mints, 0 redeems, ..." in
+            // the happy path. The home
+            // page's "Live agent activity"
+            // strip was previously
+            // dominated by 3-4 identical
+            // "PositionIndexer 1m ago"
+            // rows — a user landing on /
+            // would assume the indexer is
+            // the only thing the fleet
+            // does. Hide the "index" and
+            // "monitor" actions; the
+            // interesting per-cycle work
+            // (create / resolve / quote)
+            // still surfaces, and the
+            // indexer status is visible
+            // on the /agents page.
+            "index",
             "quote_failed",
             "pause_failed",
             "resolve_failed",
