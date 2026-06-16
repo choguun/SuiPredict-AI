@@ -111,6 +111,59 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
   // minutes of polling. Use the singleton.
   const client = getSharedClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
+  // E2E-GAP-04 fix: poll for `DistributionSet` events
+  // emitted by `prize_pool::set_distribution` (added
+  // in the MOVE-GAP-16 fix) and log them. The on-chain
+  // event is the only signal an operator has that the
+  // payout curve changed; without this poll the
+  // off-chain leaderboard reconciler would silently
+  // drift from the on-chain `distribution` getter.
+  // Best-effort: a 5xx or RPC error logs the failure
+  // but does not abort the prize-admin cycle (the
+  // fund + settle steps are the primary path).
+  // Note: the gRPC client's `queryEvents` returns at
+  // most 1000 events per call; we ask for the most
+  // recent 5 (descending order) which is enough for a
+  // weekly cron — if the operator re-tuned the curve
+  // more than 5 times in the past 24h, the older
+  // change is logged on the next run.
+  const AGENT_POLICY_PACKAGE_ID = process.env.AGENT_POLICY_PACKAGE_ID ?? "";
+  if (AGENT_POLICY_PACKAGE_ID) {
+    try {
+      // E2E-GAP-04 fix: use the JSON-RPC client for
+      // `queryEvents`; the gRPC `SuiGrpcClient` exposes
+      // a different event API that the SDK doesn't
+      // currently wrap. The `getSharedJsonRpcClient()`
+      // helper is the R55 singleton — same one the
+      // position-indexer and streak-sweeper use.
+      const { getSharedJsonRpcClient } = await import("../lib.js");
+      const jsonRpc = getSharedJsonRpcClient();
+      const ev = await jsonRpc.queryEvents({
+        query: {
+          MoveEventType: `${AGENT_POLICY_PACKAGE_ID}::prize_pool::DistributionSet`,
+        },
+        limit: 5,
+        order: "descending",
+      });
+      for (const e of ev.data) {
+        const parsed = e.parsedJson as {
+          pool_id?: string;
+          admin?: string;
+          new_sum_bps?: string | number;
+          distribution_length?: string | number;
+        } | null;
+        if (!parsed) continue;
+        console.log(
+          `[prize-admin] DistributionSet: pool=${parsed.pool_id} admin=${parsed.admin} sum=${parsed.new_sum_bps} length=${parsed.distribution_length}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[prize-admin] DistributionSet poll failed (non-fatal):",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   let fundedAmount = 0n;
   let settledWeek: number | null = null;

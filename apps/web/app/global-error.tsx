@@ -19,6 +19,7 @@
  * link so the user always has a way back.
  */
 
+import Link from "next/link";
 import { useEffect } from "react";
 
 export default function GlobalError({
@@ -65,12 +66,12 @@ export default function GlobalError({
               >
                 Try again
               </button>
-              <a
+              <Link
                 href="/"
                 className="rounded-lg border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
               >
                 ← Back to home
-              </a>
+              </Link>
             </div>
           </div>
         </div>

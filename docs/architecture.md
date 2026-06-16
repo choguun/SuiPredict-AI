@@ -61,9 +61,10 @@ SuiPredict uses DeepBook V3 as the CLOB backend for all prediction market tradin
 | Function | Description |
 |---------|-------------|
 | `create_market` | Creates `PredictionMarket<Q>` + DeepBook permissionless pool in one tx |
-| `split` | 1 DBUSDC -> 1 YES + 1 NO (stored in user balance) |
-| `merge` | 1 YES + 1 NO -> 1 DBUSDC |
+| `split` (`mint_shares`) | 1 DBUSDC -> 1 YES + 1 NO (stored in user balance) |
+| `redeem` (post-resolution) | 1 winning token -> (1 - 0.5% fee) DBUSDC |
 | `place_limit_order` | Delegates to DeepBook `placeLimitOrder` |
+| _no on-chain `merge` before resolution_ | Exit a pre-resolution position by selling YES and NO separately on the DeepBook CLOB |
 | `mint_referral` | Links market pool -> `DeepBookPoolReferral` |
 | `claim_referral_rewards` | Sweeps accumulated DBUSDC/DEEP/YES dust to treasury |
 | `resolve_market` | Sets outcome, enables `redeem` for winners |

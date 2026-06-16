@@ -824,6 +824,28 @@ export function buildPlaceMarketOrderTx(params) {
  * `EInvalidPrice` / `EInvalidQuantity`).
  */
 export function buildPlaceOrderTx(params) {
+    // E2E-GAP-03 fix: pre-flight market
+    // status. The on-chain `place_order`
+    // aborts with `EMarketNotActive`
+    // (code 1) when `market.status !==
+    // "active"`; a programmatic caller
+    // (SDK script, agent) that doesn't
+    // pre-flight would burn gas on a
+    // guaranteed-abort PTB with a
+    // cryptic on-chain message. The
+    // web markets/[id] page already
+    // gates the Buy button on the
+    // same condition; this builder
+    // check is the SDK-level mirror
+    // so SDK consumers get the same
+    // fast-fail behaviour. Skip the
+    // check when `marketStatus` is
+    // `undefined` (the caller's
+    // choice — some agents may want
+    // to pre-flight elsewhere).
+    if (params.marketStatus !== undefined && params.marketStatus !== "active") {
+        throw new Error(`buildPlaceOrderTx: market is ${params.marketStatus}, cannot place order`);
+    }
     // R53 audit fix: validate
     // `price` and `quantity` at the
     // build boundary. The on-chain

@@ -369,6 +369,90 @@ fun withdraw_fees_admin_can_skim() {
 }
 
 // ============================================================
+// mint_shares — demo-critical, was untested
+// ============================================================
+//
+// MOVE-GAP-06 fix: `mint_shares` is the entry point for the
+// entire market. The agents `position-indexer` tails `MintedEvent`
+// to keep the off-chain position table fresh, and the web
+// trade card's "Mint" button is the first thing a user clicks
+// after the wallet connect. The pre-fix suite covered 0 of the
+// 1% mint-fee math. The 3 tests below close that gap: 1 happy
+// path, plus abort paths for resolved market and zero amount.
+
+#[test]
+fun mint_shares_credits_collateral_and_mints_pair() {
+    let mut scenario = ts::begin(CREATOR);
+    let mut market = fresh_market(0, &mut scenario);
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    // Pre-flight: market collateral is empty, vault is empty.
+    assert!(prediction_market::collateral_value(&market) == 0, 0);
+    assert!(prediction_market::fee_balance(&vault) == 0, 0);
+    // Mint 1 SUI of shares — the canonical demo size.
+    let total: u64 = 1_000_000_000;
+    let quote_in = coin::mint_for_testing<SUI>(total, ts::ctx(&mut scenario));
+    prediction_market::mint_shares<SUI>(
+        &mut market,
+        &mut vault,
+        quote_in,
+        ts::ctx(&mut scenario),
+    );
+    // 1% mint fee (100 bps / 10_000 bps) — `vault.fee_balance` should
+    // hold the fee, `market.collateral` should hold the rest.
+    let expected_fee: u64 = total / 100;
+    let expected_net: u64 = total - expected_fee;
+    assert!(prediction_market::fee_balance(&vault) == expected_fee, 0);
+    assert!(prediction_market::collateral_value(&market) == expected_net, 0);
+    // Sanity: fee + net = total (no dust, no leak).
+    assert!(expected_fee + expected_net == total, 0);
+    ts::return_shared(vault);
+    prediction_market::destroy_for_testing(market);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = prediction_market::EMarketNotActive)]
+fun mint_shares_on_resolved_market_aborts() {
+    let mut scenario = ts::begin(CREATOR);
+    let now = 1_000_000;
+    let mut market = fresh_market(now, &mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    clock.set_for_testing(now);
+    ts::next_tx(&mut scenario, CREATOR);
+    // Resolve first — mint_shares should then abort with
+    // EMarketNotActive (market.resolved == true).
+    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    let quote_in = coin::mint_for_testing<SUI>(1_000, ts::ctx(&mut scenario));
+    prediction_market::mint_shares<SUI>(
+        &mut market,
+        &mut vault,
+        quote_in,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(vault);
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = prediction_market::EZeroAmount)]
+fun mint_shares_zero_amount_aborts() {
+    let mut scenario = ts::begin(CREATOR);
+    let mut market = fresh_market(0, &mut scenario);
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    let quote_in = coin::mint_for_testing<SUI>(0, ts::ctx(&mut scenario));
+    prediction_market::mint_shares<SUI>(
+        &mut market,
+        &mut vault,
+        quote_in,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(vault);
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
+
+// ============================================================
 // redeem_with_streak / redeem_no_with_streak
 // ============================================================
 
@@ -534,6 +618,143 @@ fun redeem_no_with_streak_yes_market_aborts() {
     );
     ts::return_to_sender(&scenario, user_streak);
     ts::return_shared(registry);
+    ts::return_shared(vault);
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
+
+// ============================================================
+// redeem (no streak) — basic, demo-critical
+// ============================================================
+//
+// MOVE-GAP-01 fix: the no-streak `redeem` and `redeem_no` paths
+// are the ones the web portfolio page calls
+// (`buildRedeemTx` / `buildRedeemNoTx` in
+// `apps/web/app/portfolio/page.tsx:13-17`) and the ones the
+// agents `position-indexer` tails via the `RedeemedEvent`. The
+// pre-fix test suite covered only the `_with_streak` variants —
+// a typo in the no-streak event field set would compile clean,
+// pass `sui move test`, and silently break the portfolio tab at
+// demo time. The four tests below close that gap: 1 happy path
+// for `redeem`, 1 happy path for `redeem_no`, plus 2 abort paths
+// each (EWrongOutcome + EMarketNotActive). The pattern mirrors
+// the existing `redeem_with_streak_*` tests (lines 422-506).
+
+#[test]
+fun redeem_happy_path() {
+    let mut scenario = ts::begin(CREATOR);
+    let now = 1_000_000;
+    let mut market = fresh_market(now, &mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    clock.set_for_testing(now);
+    ts::next_tx(&mut scenario, CREATOR);
+    // Resolve to YES (outcome = 1) so a YES redeem is valid.
+    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    // Seed collateral + mint a winning YES coin.
+    let gross: u64 = 100_000;
+    let collateral_seed = coin::mint_for_testing<SUI>(gross, ts::ctx(&mut scenario));
+    prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
+    let winning_coin = prediction_market::mint_yes_for_testing(&mut market, gross, ts::ctx(&mut scenario));
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    // Pre-flight: collateral fully seeded, vault empty.
+    assert!(prediction_market::collateral_value(&market) == gross, 0);
+    assert!(prediction_market::fee_balance(&vault) == 0, 0);
+    // Call the no-streak variant. The pre-fix test suite only
+    // exercised `redeem_with_streak`; the basic `redeem` was
+    // uncovered despite being what the web portfolio page calls.
+    prediction_market::redeem<SUI>(
+        &mut market,
+        &mut vault,
+        winning_coin,
+        ts::ctx(&mut scenario),
+    );
+    // 0.5% fee math (matches `redeem_with_streak_happy_path`).
+    let expected_fee: u64 = (gross * 50) / 10_000;
+    let expected_net: u64 = gross - expected_fee;
+    assert!(prediction_market::fee_balance(&vault) == expected_fee, 0);
+    assert!(prediction_market::collateral_value(&market) == 0, 0);
+    assert!(gross - expected_fee - expected_net == 0, 0);
+    ts::return_shared(vault);
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    ts::end(scenario);
+}
+
+#[test]
+fun redeem_no_happy_path() {
+    let mut scenario = ts::begin(CREATOR);
+    let now = 1_000_000;
+    let mut market = fresh_market(now, &mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    clock.set_for_testing(now);
+    ts::next_tx(&mut scenario, CREATOR);
+    // Resolve to NO (outcome = 2) so a NO redeem is valid.
+    prediction_market::resolve_market<SUI>(&mut market, 2, &clock, ts::ctx(&mut scenario));
+    let gross: u64 = 100_000;
+    let collateral_seed = coin::mint_for_testing<SUI>(gross, ts::ctx(&mut scenario));
+    prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
+    let winning_coin = prediction_market::mint_no_for_testing(&mut market, gross, ts::ctx(&mut scenario));
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    assert!(prediction_market::collateral_value(&market) == gross, 0);
+    assert!(prediction_market::fee_balance(&vault) == 0, 0);
+    prediction_market::redeem_no<SUI>(
+        &mut market,
+        &mut vault,
+        winning_coin,
+        ts::ctx(&mut scenario),
+    );
+    let expected_fee: u64 = (gross * 50) / 10_000;
+    let expected_net: u64 = gross - expected_fee;
+    assert!(prediction_market::fee_balance(&vault) == expected_fee, 0);
+    assert!(prediction_market::collateral_value(&market) == 0, 0);
+    assert!(gross - expected_fee - expected_net == 0, 0);
+    ts::return_shared(vault);
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    ts::end(scenario);
+}
+
+#[test, expected_failure(abort_code = prediction_market::EMarketNotActive)]
+fun redeem_unresolved_market_aborts() {
+    let mut scenario = ts::begin(CREATOR);
+    let mut market = fresh_market(0, &mut scenario);
+    let clock = fresh_clock(&mut scenario);
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    // Mint a YES coin without resolving — redeem must abort with
+    // EMarketNotActive (market.resolved == false).
+    let winning_coin = prediction_market::mint_yes_for_testing(&mut market, 1, ts::ctx(&mut scenario));
+    prediction_market::redeem<SUI>(
+        &mut market,
+        &mut vault,
+        winning_coin,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(vault);
+    clock.destroy_for_testing();
+    prediction_market::destroy_for_testing(market);
+    abort 999
+}
+
+#[test, expected_failure(abort_code = prediction_market::EWrongOutcome)]
+fun redeem_yes_on_no_market_aborts() {
+    let mut scenario = ts::begin(CREATOR);
+    let now = 1_000_000;
+    let mut market = fresh_market(now, &mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    clock.set_for_testing(now);
+    ts::next_tx(&mut scenario, CREATOR);
+    // Resolve to NO (outcome = 2) and try to redeem YES — must
+    // hit the EWrongOutcome branch on line 569.
+    prediction_market::resolve_market<SUI>(&mut market, 2, &clock, ts::ctx(&mut scenario));
+    let winning_coin = prediction_market::mint_yes_for_testing(&mut market, 1, ts::ctx(&mut scenario));
+    let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
+    prediction_market::redeem<SUI>(
+        &mut market,
+        &mut vault,
+        winning_coin,
+        ts::ctx(&mut scenario),
+    );
     ts::return_shared(vault);
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);

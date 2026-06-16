@@ -85,6 +85,18 @@ public fun create_policy(
 }
 
 /// Agent authorizes spend before executing a Predict transaction.
+///
+/// MOVE-GAP-18 doc note: `policy.spent += amount` happens *here*,
+/// before the agent's downstream PTB call (e.g. DeepBook
+/// `place_limit_order`) runs. The on-chain design assumes the
+/// authorize-and-spend pair lives in the **same** transaction;
+/// the Sui PTB either finalizes both calls atomically (and the
+/// debited budget reflects the actual on-chain spend) or aborts
+/// the whole PTB (and the budget is restored). A future SDK
+/// builder who splits the two calls across transactions would
+/// silently lose budget on every failed downstream call. See
+/// `packages/sdk/src/predict-client.ts#buildAuthorizeSpendTx` for
+/// the matching PTB composition.
 public fun authorize_spend(
     policy: &mut AgentPolicy,
     amount: u64,

@@ -47,7 +47,14 @@ public struct Deallocated has copy, drop {
 
 const ENotAdmin: u64 = 0;
 const EZeroAmount: u64 = 1;
-const EInsufficientAvailable: u64 = 3;
+// MOVE-GAP-04 fix: was `const EInsufficientAvailable: u64 = 3;`
+// (skipping 2). The other 9 modules use sequential numbering
+// 0..N; the E2 gap was either an intentional reservation for a
+// since-removed code or an oversight. Renumbered to 2 so a
+// future contributor can't accidentally alias an unrelated
+// error path or collide with a refactor that re-introduces a
+// third error.
+const EInsufficientAvailable: u64 = 2;
 
 public fun create_vault<QuoteCoin>(
     treasury: TreasuryCap<VLP>,

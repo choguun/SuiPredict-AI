@@ -307,6 +307,18 @@ export declare function buildPlaceOrderTx(params: {
     quantity: bigint;
     isBid: boolean;
     orderType?: number;
+    /**
+     * Optional market status pre-flight. If supplied, the
+     * builder throws a clear error for non-`active` markets
+     * rather than letting the PTB abort on-chain with the
+     * opaque `EMarketNotActive` (code 1). The web markets/[id]
+     * page already pre-flights the same condition in the
+     * form-level `disabled` check, so this is a defense-in-depth
+     * for SDK callers (agents, scripts, programmatic users).
+     *
+     * E2E-GAP-03 fix.
+     */
+    marketStatus?: string;
 }): Transaction;
 /**
  * The on-chain wrapper's price is in 1e9-scaled quote

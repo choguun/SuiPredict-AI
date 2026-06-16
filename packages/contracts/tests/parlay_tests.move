@@ -590,6 +590,68 @@ fun record_leg_out_of_range_aborts() {
     abort 999
 }
 
+/// MOVE-GAP-08 fix: a parlay leg cannot be recorded against a
+/// disputed market. The pre-fix suite covered the
+/// `EMarketNotResolved` and `ELegMismatch` abort paths but
+/// missed the cross-module `EMarketDisputed` invariant
+/// (parlay's `record_leg` calls `prediction_market::is_disputed`
+/// at line 339). This test creates a 2-leg parlay, resolves
+/// the first leg's market, disputes it within the dispute
+/// window, and asserts that `record_leg` aborts on the
+/// disputed market.
+#[test, expected_failure(abort_code = suipredict_agent_policy::parlay::EMarketDisputed)]
+fun record_leg_on_disputed_market_aborts() {
+    use sui::clock;
+    use suipredict_agent_policy::prediction_market;
+
+    let mut scenario = ts::begin(ADMIN);
+    setup_pool(&mut scenario);
+
+    // Two fresh markets, both unresolved.
+    let mut m1 = fresh_market(&mut scenario);
+    let mut m2 = fresh_market(&mut scenario);
+    let mut clock = fresh_clock(&mut scenario);
+    // Advance the clock past m1's expiry so we can resolve it.
+    clock.set_for_testing(2_000_000);
+    ts::next_tx(&mut scenario, CREATOR);
+    prediction_market::resolve_market<SUI>(&mut m1, 1, &clock, ts::ctx(&mut scenario));
+    // Dispute the resolved market within the dispute window.
+    // The dispute can be filed by anyone (not just the
+    // creator) per the `dispute_market` signature.
+    ts::next_tx(&mut scenario, USER);
+    prediction_market::dispute_market<SUI>(
+        &mut m1,
+        b"https://example.com/evidence",
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    // Now create a parlay referencing both markets. m1 is
+    // resolved + disputed; m2 is unresolved. `create_parlay`
+    // doesn't gate on `is_disputed` (only on the count of
+    // unresolved legs and on the payout cap), so the
+    // create call should succeed.
+    ts::next_tx(&mut scenario, USER);
+    let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
+    let coin = coin::mint_for_testing<SUI>(10, ts::ctx(&mut scenario));
+    parlay::create_parlay(
+        &mut pool,
+        coin,
+        vector[object::id(&m1), object::id(&m2)],
+        vector[PREDICT_YES, PREDICT_NO],
+        PAYOUT_2X_BPS,
+        &clock,
+        ts::ctx(&mut scenario),
+    );
+    ts::return_shared(pool);
+    // `record_leg` against the disputed m1 must abort with
+    // `EMarketDisputed` (parlay.move:339). m1 is at
+    // `leg_index = 0` in the parlay we just created.
+    ts::next_tx(&mut scenario, USER);
+    let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    abort 999
+}
+
 // ============================================================
 // finalize_parlay — happy path
 // ============================================================

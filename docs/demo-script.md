@@ -22,7 +22,7 @@
 ### 3. Order book + trading (60s)
 
 - Show bids/asks, spread, mid price (from DeepBook L2 book)
-- Explain split: 1 DBUSDC -> 1 YES + 1 NO; merge: 1 YES + 1 NO -> 1 DBUSDC
+- Explain split: 1 DBUSDC -> 1 YES + 1 NO. Exit pre-resolution by selling YES and NO on the DeepBook CLOB (no on-chain merge). Post-resolution, redeem the winning side for (1 - 0.5% fee) DBUSDC.
 - Implied NO price = 1 - YES
 - Demo mode: agent-fed book from DeepBook SDK; live mode: on-chain limit order
 
@@ -49,7 +49,7 @@
 - 1% mint fee + 0.5% redeem fee + referral rebates fund protocol revenue
 - Referral Keeper sweeps trading fee rebates to treasury automatically
 - Four agents: Creator, Market Maker, Resolver, Referral Keeper
-- Polymarket complement (YES + NO = $1) in Move `split`/`merge`
+- Polymarket complement (YES + NO ≈ $1 mid) in Move `mint_shares` + DeepBook order book. There is intentionally no on-chain pre-resolution `merge` — the web UI's "merge" button falls back to "sell YES + sell NO on the order book".
 
 ## Backup
 

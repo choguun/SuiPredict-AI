@@ -286,8 +286,17 @@ public fun record_participation(
     };
 
     // Keep registry in sync (so off-chain readers can find by address).
-    let _ = registry;
-    let _ = prev_streak;
+    // MOVE-GAP-13 fix: was
+    //     let _ = registry;
+    //     let _ = prev_streak;
+    // The `let _ = …` pattern is a dead-code marker for unused
+    // locals. The `registry` parameter is borrowed immutably
+    // (the function takes `&StreakRegistry`); the borrow
+    // itself is the side-effect, no further use is needed.
+    // `prev_streak` was a leftover from a refactor that
+    // pre-computed the value to log; the function now logs
+    // `streak.current_streak` directly, so the local is
+    // genuinely dead. Removed both — 4 LoC saved.
 }
 
 // ============================================================

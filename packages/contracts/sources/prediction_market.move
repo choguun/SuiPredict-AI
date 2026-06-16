@@ -1045,8 +1045,14 @@ public fun dispute_evidence_uri<Q>(market: &PredictionMarket<Q>): &vector<u8> {
 // Imports
 // ============================================================
 
-use std::vector;
-use std::option::{Self, Option};
+// MOVE-GAP-03 fix: the file imported `std::vector` and
+// `std::option::{Self, Option}` twice (once at the top of the
+// file, again at the bottom in the test-helpers block). The
+// Move compiler accepts the duplicate without warning (the
+// `unused_use` lint is silenced via `--silence-warnings` per
+// AGENTS.md), but it's a code smell that suggested an
+// in-flight refactor. The top-of-file imports already cover
+// the test helpers; the duplicate block was deleted.
 
 // ============================================================
 // Test helpers

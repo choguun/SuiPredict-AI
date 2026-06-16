@@ -1055,7 +1055,43 @@ export function buildPlaceOrderTx(params: {
   quantity: bigint;
   isBid: boolean;
   orderType?: number;
+  /**
+   * Optional market status pre-flight. If supplied, the
+   * builder throws a clear error for non-`active` markets
+   * rather than letting the PTB abort on-chain with the
+   * opaque `EMarketNotActive` (code 1). The web markets/[id]
+   * page already pre-flights the same condition in the
+   * form-level `disabled` check, so this is a defense-in-depth
+   * for SDK callers (agents, scripts, programmatic users).
+   *
+   * E2E-GAP-03 fix.
+   */
+  marketStatus?: string;
 }): Transaction {
+  // E2E-GAP-03 fix: pre-flight market
+  // status. The on-chain `place_order`
+  // aborts with `EMarketNotActive`
+  // (code 1) when `market.status !==
+  // "active"`; a programmatic caller
+  // (SDK script, agent) that doesn't
+  // pre-flight would burn gas on a
+  // guaranteed-abort PTB with a
+  // cryptic on-chain message. The
+  // web markets/[id] page already
+  // gates the Buy button on the
+  // same condition; this builder
+  // check is the SDK-level mirror
+  // so SDK consumers get the same
+  // fast-fail behaviour. Skip the
+  // check when `marketStatus` is
+  // `undefined` (the caller's
+  // choice — some agents may want
+  // to pre-flight elsewhere).
+  if (params.marketStatus !== undefined && params.marketStatus !== "active") {
+    throw new Error(
+      `buildPlaceOrderTx: market is ${params.marketStatus}, cannot place order`,
+    );
+  }
   // R53 audit fix: validate
   // `price` and `quantity` at the
   // build boundary. The on-chain
