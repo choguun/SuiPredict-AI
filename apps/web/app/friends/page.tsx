@@ -109,7 +109,7 @@ function FriendCard({ addr, onRemove }: { addr: string; onRemove: () => void }) 
                 {p.market_title ?? p.market_id.slice(0, 16)}
               </Link>
               <span className="shrink-0 text-[10px] text-zinc-500 font-mono">
-                {p.yes > 0 ? `${p.yes}Y` : ""} {p.no > 0 ? `${p.no}N` : ""}
+                {p.yes > 0 ? `${p.yes / 1e6}Y` : ""} {p.no > 0 ? `${p.no / 1e6}N` : ""}
               </span>
             </li>
           ))}

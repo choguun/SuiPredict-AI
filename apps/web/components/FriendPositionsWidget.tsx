@@ -159,13 +159,13 @@ export function FriendPositionsWidget({
                     <div className="text-xs font-semibold text-white">
                       {shortAddr(addr)}
                     </div>
-                    <div className="text-[10px] text-zinc-500">
+                    <div className="text-[10px] text-zinc-500 font-mono">
                       {p.yes > 0 && (
-                        <span className="text-emerald-400">{p.yes} YES</span>
+                        <span className="text-emerald-400">{p.yes / 1e6} YES</span>
                       )}
                       {p.yes > 0 && p.no > 0 && " · "}
                       {p.no > 0 && (
-                        <span className="text-rose-400">{p.no} NO</span>
+                        <span className="text-rose-400">{p.no / 1e6} NO</span>
                       )}
                     </div>
                     <a
