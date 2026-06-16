@@ -16,7 +16,15 @@ const PRIMARY_LINKS = [
 const MORE_LINKS = [
   { href: "/parlay", label: "Parlay", icon: "🎯" },
   { href: "/leaderboard", label: "Leaderboard", icon: "🏆" },
-  { href: "/settings", label: "Settings", icon: "⚙️" },
+  // UAT-FN-06 fix: the page content is the on-chain
+  // agent policy (agent address, budget cap, pause /
+  // revoke controls, profile mirror). The pre-fix build
+  // labelled this in the nav as "Settings" with a gear
+  // icon — a user landing here looking for profile
+  // preferences would bounce. Rename to "Agent Policy"
+  // (matches the H1 and the URL) and switch to a robot
+  // icon so the more-menu label matches the page.
+  { href: "/agent-policy", label: "Agent Policy", icon: "🤖" },
 ];
 
 export function Nav() {

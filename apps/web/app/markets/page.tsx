@@ -697,7 +697,22 @@ export default async function MarketsPage({
                             : "bg-rose-500/20 text-rose-300 border-rose-500/30"
                         }`}
                       >
-                        🏆 {m.outcome.toUpperCase()} won
+                        {/* UAT-FN-11 fix: the pre-fix
+                           copy "🏆 NO won" reads like
+                           "not won" / "did not win"
+                           — a native English reader
+                           sees a typo, not a
+                           declaration of the
+                           winning side. Switch to
+                           the same "Winner: NO" /
+                           "Winner: YES" form the
+                           market detail page uses
+                           (which the qa-tester
+                           also flagged and which
+                           the home page itself
+                           uses on the
+                           /markets/[id] hero). */}
+                        🏆 Winner: {m.outcome.toUpperCase()}
                       </span>
                     )}
                     {isLiveWc && (

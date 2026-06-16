@@ -29,6 +29,17 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: "/legacy/:path*", destination: "/", permanent: false },
+      // UAT-FN-06 fix: the pre-fix nav labelled the
+      // page as "Settings" with a gear icon, but the
+      // page content is the on-chain agent policy.
+      // Renamed the route to /agent-policy and added a
+      // redirect from /settings so any existing links
+      // (operator bookmarks, demo scripts) still land
+      // on the right page. `permanent: false` (a 307
+      // rather than a 308) because the change is
+      // recent — a 308 would tell Google to re-rank
+      // the new URL, which is unnecessary.
+      { source: "/settings", destination: "/agent-policy", permanent: false },
     ];
   },
 };

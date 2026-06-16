@@ -55,7 +55,7 @@
     │       ├── markets/   SQLite store + REST routes (incl. /wc/* endpoints)
     │       ├── gamification/  prize/streak/leaderboard state
     │       └── index.ts   HTTP server (default :3001)
-    └── web/         Next.js 15 + React 19 + dApp Kit (mobile-first PWA)
+    └── web/         Next.js 15 + React 19 + dApp Kit (mobile-first, installable)
         └── app/
             ├── markets/         CLOB markets list + detail
             ├── worldcup/        World Cup 2026 dashboard (groups, fixtures, live ticker)
@@ -67,7 +67,7 @@
             ├── leaderboard/     weekly top-N (with friends-only filter)
             ├── dispute/[id]/    dispute flow
             ├── admin/           admin panel
-            ├── settings/        profile / agent policy
+            ├── agent-policy/    on-chain agent policy (operator: budget cap, pause/revoke, profile)
             └── agents/          agent decision feed
 ```
 
@@ -75,7 +75,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                  Frontend (Next.js 15 PWA)                   │
+│     Frontend (Next.js 15, installable, mobile-first)        │
 │   /worldcup  /markets  /friends  /parlay  /leaderboard  …    │
 └───────────┬───────────────────────┬───────────────────┬────────────┘
            │ gRPC + REST         │ zkLogin         │
@@ -195,7 +195,7 @@ The full SOP covers mainnet preparation, gas budgeting, agent key custody, secre
 | `/portfolio` | YES/NO balances per market |
 | `/leaderboard` | Weekly top-N forecasters (with **friends-only filter**) |
 | `/dispute/[marketId]` | Submit dispute evidence for a market |
-| `/settings` | User profile + agent policy management |
+| `/agent-policy` | On-chain agent policy: create/revoke agent wallet, set DUSDC budget, pause, profile (the old `/settings` route 307-redirects here) |
 | `/admin` | Operator panel (FeeVault withdraw, distribution, resolution) |
 | `/agents` | Live decision feed for all 14 workers |
 | `/auth` | Enoki zkLogin OAuth callback |

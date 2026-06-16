@@ -431,21 +431,73 @@ export default function AgentsPage() {
       </div>
 
       {drift.length > 0 && (
+        // UAT-FN-15 fix: the pre-fix drift
+        // panel was a bright rose-500 alert
+        // box that dominated the page. A
+        // first-time user landing on
+        // /agents would interpret it as a
+        // critical product bug (and the
+        // long technical message about
+        // `pnpm build` and
+        // `NEXT_PUBLIC_*` env is not
+        // actionable for a customer). The
+        // new design:
+        //   - amber instead of rose (the
+        //     same tone the rest of the app
+        //     uses for "operator should look
+        //     at this" hints, e.g. the
+        //     DailyPredictionCard's
+        //     "no DUSDC" amber box)
+        //   - the long drift list is hidden
+        //     behind a "Show details"
+        //     disclosure so the casual
+        //     visitor doesn't see the wall
+        //     of hex-truncated ids
+        //   - the customer-facing copy
+        //     leads with "We're still
+        //     working normally" so the
+        //     user doesn't think the app is
+        //     broken
+        //   - the technical fix message is
+        //     now inside the disclosure
+        //     (only operators who click
+        //     through see it)
         <div
-          role="alert"
-          className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
+          role="status"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100"
         >
-          <p className="font-semibold">Config id drift detected</p>
-          <ul className="mt-1 list-disc pl-5 text-rose-300/80">
-            {drift.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <p className="mt-2 text-xs text-rose-300/70">
-            Redeploy the web bundle (run <code>pnpm build</code> after
-            setting the matching <code>NEXT_PUBLIC_*</code> env) so the
-            bundled ids match the agents runtime.
-          </p>
+          <div className="flex items-start gap-2">
+            <span aria-hidden="true">⚙️</span>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold">
+                Operator note: {drift.length} env id
+                {drift.length === 1 ? "" : "s"} out of sync
+              </p>
+              <p className="mt-1 text-xs text-amber-200/80">
+                The web bundle and the agents service are reading
+                different config ids. The app still works for the
+                current page (read-only diagnostics) but on-chain
+                actions that hit the drifted ids will fail. This is
+                an operator concern, not a customer issue.
+              </p>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs font-semibold text-amber-200 hover:text-amber-100">
+                  Show details ({drift.length})
+                </summary>
+                <ul className="mt-2 list-disc space-y-0.5 pl-5 font-mono text-[11px] text-amber-200/80">
+                  {drift.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[11px] text-amber-200/70">
+                  Fix: redeploy the web bundle (<code>pnpm build</code>
+                  {" "}after setting the matching
+                  {" "}<code>NEXT_PUBLIC_*</code> env) so the bundled ids
+                  match the agents runtime.
+                </p>
+              </details>
+            </div>
+          </div>
         </div>
       )}
 

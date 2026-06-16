@@ -115,21 +115,50 @@ export function RecentActivity() {
             return;
           }
           const data = (await r.json()) as Decision[];
-          // Drop entries whose action is the
-          // everyday churn (noop / skip / monitor
-          // / indexer poll). Keep the first 5
-          // *meaningful* decisions; if every
-          // decision is noise (rare), fall
-          // back to the most recent 5
-          // regardless.
-          const NOISE = new Set([
+          // UAT-FN-10 fix: filter out the
+          // agent-failure actions
+          // (`quote_failed`, `pause_failed`,
+          // `resolve_failed`) from the
+          // customer-facing "Live agent
+          // activity" feed. The pre-fix
+          // build surfaced raw on-chain
+          // errors ("PAUSE FAILED:
+          // insufficient SUI balance",
+          // "QUOTE FAILED: insufficient
+          // SUI balance") on the home
+          // page — a Maya-the-first-time-
+          // user landing on `/` and
+          // reading "QUOTE FAILED" would
+          // reasonably assume the
+          // platform is broken and the
+          // market makers are down. The
+          // failures are still visible on
+          // the operator-facing /agents
+          // page (where they're useful for
+          // diagnosing an under-funded
+          // agent account) but the home
+          // page should only show
+          // successful agent actions.
+          // Keep the everyday-churn
+          // filter (noop / skip /
+          // monitor / indexer_poll) the
+          // pre-fix build had. If every
+          // decision is filtered out
+          // (rare, but possible during a
+          // quiet hour), fall back to
+          // the most recent 5.
+          const HIDDEN = new Set([
             "noop",
             "skip",
             "monitor",
             "indexer_poll",
+            "quote_failed",
+            "pause_failed",
+            "resolve_failed",
+            "create_failed",
           ]);
           const meaningful = data.filter(
-            (d) => !NOISE.has(d.action),
+            (d) => !HIDDEN.has(d.action),
           );
           const slice = (meaningful.length > 0 ? meaningful : data).slice(
             0,

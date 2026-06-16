@@ -2214,6 +2214,75 @@ function MarketDetailBody({
         <RecentTrades marketId={marketId} limit={10} />
 
         <Card title="Trade" className="order-1 lg:order-2" id="trade-card">
+          {/*
+            UAT-FN-03 fix: replace the trade form with a
+            settlement banner when the market is resolved.
+            The on-chain `place_order` would happily submit
+            an order on a settled market (it sits on the
+            book forever; the user holds a position that
+            can never settle) and the previous UI exposed
+            the full Buy/Sell form, price input, and "Buy
+            YES" button as live, clickable controls. Same
+            fix is needed for the mint path (line ~786)
+            and the order path (line ~1000) which already
+            pre-flight `market.status !== "active"`, but
+            rendering the controls in the first place was
+            the user-facing bug. Show the winner, a
+            redeem/dispute hint, and a "back to markets"
+            link. The card title stays "Trade" so the
+            user's muscle memory isn't disrupted — the
+            banner inside tells them the market is done.
+          */}
+          {market.status !== "active" ? (
+            <div className="space-y-4 py-2" data-testid="settled-banner">
+              <div
+                className={`flex items-start gap-3 rounded-lg border p-4 ${
+                  market.status === "resolved"
+                    ? market.outcome === "yes"
+                      ? "border-emerald-500/30 bg-emerald-500/10"
+                      : market.outcome === "no"
+                      ? "border-rose-500/30 bg-rose-500/10"
+                      : "border-amber-500/30 bg-amber-500/10"
+                    : "border-amber-500/30 bg-amber-500/10"
+                }`}
+              >
+                <div className="text-2xl" aria-hidden="true">
+                  {market.status === "resolved" ? "🏁" : "⏸️"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-semibold text-white">
+                    {market.status === "resolved"
+                      ? "Market settled"
+                      : `Market ${market.status}`}
+                  </h3>
+                  <p className="mt-1 text-sm text-zinc-300">
+                    {market.status === "resolved"
+                      ? market.outcome
+                        ? `Winner: ${market.outcome.toUpperCase()}. New orders cannot be placed. Use the position card below to redeem your payout${position.yes > 0 || position.no > 0 ? "" : " if you held winning shares"}.`
+                        : "Outcome recorded. New orders cannot be placed."
+                      : `This market is ${market.status} and is not currently accepting orders. Check back later.`}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Link
+                  href="/markets"
+                  className="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg bg-white/5 px-4 text-sm font-semibold text-white transition hover:bg-white/10"
+                >
+                  ← Back to markets
+                </Link>
+                {market.status === "resolved" && (
+                  <Link
+                    href="/portfolio"
+                    className="inline-flex min-h-11 flex-1 items-center justify-center rounded-lg bg-gradient-to-r from-emerald-600 to-cyan-600 px-4 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 transition hover:scale-[1.02]"
+                  >
+                    Go to portfolio →
+                  </Link>
+                )}
+              </div>
+            </div>
+          ) : (
+          <>
           <div className="mb-4 grid grid-cols-2 gap-2">
             {(["yes", "no"] as const).map((s) => (
               <button
@@ -2266,8 +2335,42 @@ function MarketDetailBody({
             // R39 fixed the same class of bug for qty/deposit; the
             // price input was the only survivor.
             onChange={(e) => setPrice(clampNumberString(e.target.value, 0.5, 0.01, 0.99))}
-            className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
+            // UAT-FN-12 fix (price side): mirror
+            // the size input's aria-invalid +
+            // aria-describedby. The pre-fix price
+            // input had no programmatic signal
+            // for the screen-reader user that
+            // the value was out of bounds; the
+            // `clampNumberString` onChange
+            // silently coerced the value but
+            // the visual state didn't update.
+            // The new `aria-invalid` flips when
+            // the displayed price is below
+            // 0.01 or above 0.99 (the same
+            // range the `clampNumberString`
+            // enforces), and the hint text
+            // below the input gives the user
+            // the same range. Both inputs now
+            // share the same a11y pattern.
+            aria-invalid={displayedPrice < 0.01 || displayedPrice > 0.99}
+            aria-describedby="price-hint"
+            className={`mb-1 w-full rounded-md border bg-black/20 px-3 py-3 text-white outline-none transition ${
+              displayedPrice < 0.01 || displayedPrice > 0.99
+                ? "border-rose-500/50 focus:border-rose-500/70"
+                : "border-white/10 focus:border-emerald-400/70"
+            }`}
           />
+          <p
+            id="price-hint"
+            className={`mb-4 text-[10px] ${
+              displayedPrice < 0.01 || displayedPrice > 0.99
+                ? "text-rose-300"
+                : "text-zinc-500"
+            }`}
+          >
+            0.01 – 0.99. The on-chain order book rejects prices outside
+            this range.
+          </p>
           <label className="mb-1.5 block text-xs font-semibold uppercase text-zinc-500">
             Size
           </label>
@@ -2275,6 +2378,47 @@ function MarketDetailBody({
             type="number"
             step="0.01"
             min="0.01"
+            // UAT-FN-12 fix: cap the
+            // input at 1,000,000
+            // shares. The pre-fix
+            // build had no `max`
+            // attribute; a user
+            // could type `999999`
+            // or `1e10` and click
+            // "Buy YES" with the
+            // button still enabled
+            // (the disabled check
+            // only gated on
+            // `qty <= 0`). The
+            // `clampNumberString`
+            // on the onChange
+            // already silently
+            // truncated the value
+            // to 1M in state but
+            // the browser-side
+            // `max` was missing —
+            // a screen-reader user
+            // had no programmatic
+            // signal that the
+            // input range was
+            // bounded, and a
+            // screen-only user
+            // could paste a value
+            // that the browser
+            // would accept and
+            // only then silently
+            // clamp. The
+            // `aria-invalid` flag
+            // mirrors the price
+            // input's pre-existing
+            // pattern (none yet —
+            // added here as the
+            // first instance) and
+            // turns the border
+            // rose if the user
+            // pastes an out-of-
+            // range value.
+            max="1000000"
             value={qty}
             // R38 audit fix: route through clampNumberString so a
             // paste of "1.2.3", "abc", or "1e9" can't land in state
@@ -2283,8 +2427,23 @@ function MarketDetailBody({
             // the user with a stuck "Submitting..." spinner and
             // no error toast.
             onChange={(e) => setQty(clampNumberString(e.target.value, 0.01, 0.01, 1_000_000))}
-            className="mb-4 w-full rounded-md border border-white/10 bg-black/20 px-3 py-3 text-white outline-none transition focus:border-emerald-400/70"
+            aria-invalid={qty > 1_000_000 || qty < 0.01}
+            aria-describedby="size-hint"
+            className={`mb-1 w-full rounded-md border bg-black/20 px-3 py-3 text-white outline-none transition ${
+              qty > 1_000_000 || qty < 0.01
+                ? "border-rose-500/50 focus:border-rose-500/70"
+                : "border-white/10 focus:border-emerald-400/70"
+            }`}
           />
+          <p
+            id="size-hint"
+            className={`mb-4 text-[10px] ${
+              qty > 1_000_000 ? "text-rose-300" : "text-zinc-500"
+            }`}
+          >
+            0.01 – 1,000,000 shares. The on-chain order book caps the
+            per-order quantity at 1M.
+          </p>
           <div className="mb-4 rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
             <div className="flex justify-between gap-3 text-zinc-400">
               <span>Est. cost</span>
@@ -2387,6 +2546,8 @@ function MarketDetailBody({
               Demo market — configure a DeepBook pool below or deploy contracts and set
               MARKET_REGISTRY_ID for local on-chain orders.
             </p>
+          )}
+          </>
           )}
         </Card>
       </div>

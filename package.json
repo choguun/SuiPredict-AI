@@ -12,9 +12,14 @@
     "contracts:test": "pnpm --filter @suipredict/contracts test",
     "test:sdk": "cd apps/agents && ./node_modules/.bin/tsx --test ../../packages/sdk/tests/*.test.ts",
     "test:agents": "cd apps/agents && ./node_modules/.bin/tsx --test tests/*.test.ts",
-    "test:all": "pnpm test:wc && pnpm test:llm && pnpm test:seed && pnpm test:sdk && pnpm contracts:test"
+    "test:all": "pnpm test:wc && pnpm test:llm && pnpm test:seed && pnpm test:sdk && pnpm contracts:test",
+    "dev:clean": "./scripts/dev-kill-zombies.sh && pnpm dev",
+    "dev:web:clean": "./scripts/dev-kill-zombies.sh && pnpm dev:web",
+    "dev:agents:clean": "./scripts/dev-kill-zombies.sh && pnpm dev:agents",
+    "uat:clean": "./scripts/dev-kill-zombies.sh"
   },
   "devDependencies": {
+    "playwright": "^1.61.0",
     "turbo": "^2.5.4",
     "typescript": "^5.8.3"
   },

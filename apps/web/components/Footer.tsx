@@ -50,7 +50,11 @@ const NAV_GROUPS: Array<{
   {
     title: "Build",
     links: [
-      { label: "Settings", href: "/settings" },
+      // UAT-FN-06 fix: the on-chain agent policy
+      // page is what this link points at; the
+      // pre-fix "Settings" label mismatched the
+      // page content.
+      { label: "Agent policy", href: "/agent-policy" },
       { label: "Submit a dispute", href: "/dispute/wc26-K1v4" },
     ],
   },

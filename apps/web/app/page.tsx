@@ -190,7 +190,25 @@ export default async function HomePage() {
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-              🏆 Now live · 48 teams · 104 matches
+              🏆 Now live · 48 teams · 72 group-stage matches
+              {/* UAT-FN-09 fix: clarify the
+                 match count. The pre-fix
+                 build said "104 matches"
+                 (72 group + 32 knockout)
+                 but the agents' market
+                 creator / resolver / maker
+                 only handle the 72 group-
+                 stage matches — a user
+                 reading "104 matches" on
+                 the home page banner and
+                 visiting the dashboard
+                 would see 72 fixtures and
+                 feel misled. The new copy
+                 says "72 group-stage matches"
+                 which matches what the
+                 agents actually trade.
+                 Knockout matches may be
+                 added post-tournament. */}
               {/* R62 audit fix: include the active
                  WC count in the banner subtitle
                  so the home page surfaces the
@@ -247,14 +265,54 @@ export default async function HomePage() {
         
         <div className="relative z-10 max-w-3xl">
           <Badge variant="success" className="bg-emerald-500/10 text-emerald-300 border-emerald-500/20 mb-6">
-            DeepBook V3 Powered CLOB
+            {/* UAT-FN-05 fix: less jargon for first-time
+                visitors. "DeepBook V3 Powered CLOB" is
+                accurate but incomprehensible to a Maya
+                who knows football and not crypto. The
+                new copy leads with what the platform
+                does (predict World Cup 2026) and pushes
+                the technical detail to the smaller
+                "powered by" sub-line below. */}
+            🏆 FIFA World Cup 2026 · 48 teams · 72 group matches
           </Badge>
           <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-red-200 sm:text-6xl mb-6">
             Predict the future. <br className="hidden sm:block" />
             Trade probability.
           </h1>
           <p className="text-base leading-relaxed text-zinc-400 sm:text-xl mb-8 max-w-2xl">
-            SuiPredict AI is the next-generation prediction market. Every market is backed by DUSDC collateral. Split collateral into matched YES/NO shares and trade with instant settlement.
+            {/* UAT-FN-05 fix: rewrite the hero for a football fan.
+                The pre-fix copy led with "next-generation prediction
+                market" + "DUSDC collateral" + "YES/NO shares" — a
+                Maya-the-marketing-manager reading this on her lunch
+                break would have bounced at "YES/NO shares". The new
+                copy leads with the user-facing value (predict World
+                Cup matches, compete with friends, win the bracket)
+                and the technical terms get relegated to a small
+                "powered by" sub-line for the curious clicker. */}
+            Predict every World Cup 2026 match. Win if you&apos;re right.
+            Invite your friends. Compete on the weekly leaderboard.
+          </p>
+          <p className="-mt-6 mb-8 max-w-2xl text-xs text-zinc-500">
+            Powered by DeepBook V3 CLOB on Sui · Backed by DUSDC collateral
+          </p>
+          {/* UAT-FN-03 fix: a "Browse without
+              wallet" CTA as a secondary
+              option. The pre-fix build's
+              only forward path was
+              "Start Trading Now" (which
+              opens the wallet picker). A
+              first-time user with no Sui
+              wallet ready bounces. The new
+              secondary CTA links to
+              `/markets` which works
+              read-only without a wallet —
+              the user can browse, see
+              prices, and decide later. */}
+          <p className="mb-8 text-sm text-zinc-400">
+            Just curious?{" "}
+            <Link href="/markets" className="font-semibold text-emerald-300 underline decoration-emerald-500/30 underline-offset-4 hover:text-emerald-200">
+              Browse markets without a wallet →
+            </Link>
           </p>
           
           <div className="flex flex-col sm:flex-row gap-4">
@@ -494,7 +552,25 @@ export default async function HomePage() {
                               : "bg-rose-500/20 text-rose-300 border-rose-500/30"
                           }`}
                         >
-                          🏆 {m.outcome.toUpperCase()} won
+                          {/* UAT-FN-11 fix: replace
+                             "🏆 NO won" with "🏆
+                             Winner: NO". The pre-fix
+                             "won" form reads as a
+                             typo of "not won" — a
+                             first-time reader of the
+                             home page would
+                             interpret "NO won" as
+                             "the no side did NOT
+                             win" (i.e. YES won),
+                             the opposite of the
+                             intended meaning. Use
+                             the same "Winner:"
+                             prefix the market detail
+                             page already uses in
+                             its hero pill, so the
+                             two pages are
+                             consistent. */}
+                          🏆 Winner: {m.outcome.toUpperCase()}
                         </span>
                       )}
                       <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs font-medium text-zinc-300">{m.category}</span>

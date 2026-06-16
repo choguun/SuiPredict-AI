@@ -57,7 +57,7 @@ export default function robots(): MetadataRoute.Robots {
           "/portfolio",
           "/friends",
           "/agents",
-          "/settings",
+          "/agent-policy",
         ],
         disallow: [
           "/auth",
@@ -67,6 +67,12 @@ export default function robots(): MetadataRoute.Robots {
           "/_next/",
           "/marketOrders/",
           "/orders/",
+          // UAT-FN-06 fix: /settings
+          // redirects to /agent-policy
+          // (see next.config.ts).
+          // Disallow indexing the
+          // redirect path itself.
+          "/settings",
         ],
       },
       // Googlebot: same rules but
@@ -90,7 +96,7 @@ export default function robots(): MetadataRoute.Robots {
           "/portfolio",
           "/friends",
           "/agents",
-          "/settings",
+          "/agent-policy",
         ],
         disallow: [
           "/auth",
