@@ -334,6 +334,104 @@ public fun init_fee_vault<Q>(
 ///   min_size         - Minimum order size in base units
 ///   deep_coin        - Coin<DEEP> for pool creation fee (500M MIST = 0.5 SUI)
 ///   ctx
+/// R-UAT-23 fix: alternative entry point that reuses an
+/// already-existing DeepBook pool instead of creating a new
+/// one. The `create_market` path calls
+/// `pool::create_permissionless_pool`, which aborts with
+/// `EPoolAlreadyExists` (code 1) when a YES<DUSDC> pool
+/// already exists in the registry — which is the case on
+/// the self-hosted DeepBook after the first market is
+/// created. This entry point skips pool creation and
+/// accepts a `&mut Pool<YES<Q>, Q>` reference. Use case:
+/// the agents' `bootstrap-wc-markets.mjs` script first
+/// attempts `create_market`; on `EPoolAlreadyExists` it
+/// looks up the existing pool from the registry (by base
+/// + quote TypeName) and calls this instead. The on-chain
+/// signature is otherwise identical to `create_market`
+/// minus the `coin_registry` and `deep_coin` arguments
+/// (the pool was created earlier; the registry is also
+/// not needed since we don't register a new pool).
+public fun create_market_with_pool<Q>(
+    coin_registry: &mut CoinRegistry,
+    pool: &mut Pool<YES<Q>, Q>,
+    title: vector<u8>,
+    resolution_source: vector<u8>,
+    expiry_ms: u64,
+    category: u8,
+    ctx: &mut TxContext,
+): (ID, ID) {
+    // Note: this entry point intentionally does NOT take
+    // a `deepbook_registry` argument. The `create_market`
+    // path needs the registry to call
+    // `pool::create_permissionless_pool`; this path
+    // reuses an already-registered pool, so the registry
+    // is not touched. (Registry is only consulted for
+    // *creating* pools, not for sharing existing ones.)
+    let creator = ctx.sender();
+    let pool_id = object::id(pool);
+
+    // 1. Create BalanceManager for this market (shared object)
+    let balance_manager = balance_manager::new_with_custom_owner(
+        creator,
+        ctx,
+    );
+    let balance_manager_id = object::id(&balance_manager);
+    transfer::public_share_object(balance_manager);
+
+    // 2. Create YES and NO coin currencies via coin_registry
+    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
+        coin_registry, 0,
+        string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
+        ctx,
+    );
+    let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
+    transfer::public_transfer(yes_meta_cap, creator);
+
+    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
+        coin_registry, 0,
+        string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
+        ctx,
+    );
+    let no_meta_cap = coin_registry::finalize(no_init, ctx);
+    transfer::public_transfer(no_meta_cap, creator);
+
+    // 3. Create the PredictionMarket
+    let market = PredictionMarket<Q> {
+        id: object::new(ctx),
+        title,
+        yes_cap,
+        no_cap,
+        collateral: balance::zero(),
+        resolved: false,
+        outcome: 0,
+        expiry_ms,
+        resolution_source,
+        creator,
+        pool_id,
+        balance_manager_id,
+        referral_id: option::none(),
+        created_ms: ctx.epoch_timestamp_ms(),
+        disputed: false,
+        dispute_evidence_uri: vector[],
+        dispute_count: 0,
+        resolved_ms: 0,
+    };
+
+    let market_id = object::id(&market);
+    event::emit(MarketCreatedEvent {
+        market_id,
+        pool_id,
+        balance_manager_id,
+        title: market.title,
+        expiry_ms,
+        creator,
+        category,
+    });
+
+    transfer::share_object(market);
+    (market_id, balance_manager_id)
+}
+
 public fun create_market<Q>(
     coin_registry: &mut CoinRegistry,
     deepbook_registry: &mut Registry,

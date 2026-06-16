@@ -302,6 +302,122 @@ export function buildCreateMarketTx(params: {
 }
 
 /**
+ * R-UAT-23 fix: build `create_market_with_pool` transaction.
+ *
+ * Alternative entry point that reuses an already-existing DeepBook
+ * pool instead of creating a new one. The standard
+ * `buildCreateMarketTx` calls `pool::create_permissionless_pool`,
+ * which aborts with `EPoolAlreadyExists` (code 1) when a
+ * YES<DUSDC> pool is already in the registry — which is the
+ * case on the self-hosted DeepBook after the first market is
+ * created. This builder wraps `create_market_with_pool`:
+ * - Skips pool creation (no 500 DEEP fee required)
+ * - Skips the deepbook_registry argument (not needed)
+ * - Takes a `&mut Pool<YES<Q>, Q>` reference instead
+ * - Otherwise identical signature: creates BalanceManager +
+ *   YES/NO TreasuryCaps + PredictionMarket in one PTB
+ *
+ * Use case: `apps/agents/scripts/bootstrap-wc-markets.mjs` first
+ * attempts `buildCreateMarketTx`; on `EPoolAlreadyExists` it
+ * looks up the existing pool by base/quote TypeName and calls
+ * this builder instead. Multiple markets can share the same
+ * DeepBook pool (different YES/NO TreasuryCaps per market),
+ * which is the canonical Polymarket-style design.
+ *
+ * @param params.title            - Market question
+ * @param params.resolutionSource - How the market resolves
+ * @param params.expiryMs        - Unix timestamp (ms) when
+ *                                 resolution becomes allowed
+ * @param params.poolId          - Object ID of the existing
+ *                                 Pool<YES<Q>, Q>
+ * @param params.category        - Off-chain topic code (0..3)
+ */
+export function buildCreateMarketWithPoolTx(params: {
+  title: string;
+  resolutionSource: string;
+  expiryMs: bigint;
+  poolId: string;
+  category?: number;
+}): Transaction {
+  // R62 audit fixes (mirrored from buildCreateMarketTx):
+  // validate `expiryMs` is a future bigint, title and
+  // resolution source are non-empty, and the poolId is a
+  // valid Sui object id. The on-chain
+  // `create_market_with_pool<Q>(coin_registry, pool, ...)`
+  // does NOT validate the title / resolution-source
+  // lengths on-chain (the `vector<u8>` is unbounded), so
+  // enforcing 256 / 1024-byte caps client-side keeps
+  // event payloads bounded.
+  if (!params.poolId) {
+    throw new Error("buildCreateMarketWithPoolTx: poolId is required");
+  }
+  if (typeof params.expiryMs !== "bigint") {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: expiryMs must be bigint, got ${typeof params.expiryMs}`,
+    );
+  }
+  if (params.expiryMs <= 0n) {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: expiryMs must be > 0 (got ${params.expiryMs})`,
+    );
+  }
+  if (params.expiryMs <= BigInt(Date.now())) {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: expiryMs must be in the future ` +
+        `(got ${params.expiryMs}, now=${BigInt(Date.now())})`,
+    );
+  }
+  const MAX_TITLE_BYTES = 256;
+  const MAX_RESOLUTION_SOURCE_BYTES = 1024;
+  if (!params.title || !params.title.trim()) {
+    throw new Error("buildCreateMarketWithPoolTx: title is required");
+  }
+  const titleBytes = encodeUtf8(params.title).length;
+  if (titleBytes > MAX_TITLE_BYTES) {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: title length ${titleBytes} bytes exceeds ${MAX_TITLE_BYTES} (max)`,
+    );
+  }
+  if (!params.resolutionSource || !params.resolutionSource.trim()) {
+    throw new Error("buildCreateMarketWithPoolTx: resolutionSource is required");
+  }
+  const resBytes = encodeUtf8(params.resolutionSource).length;
+  if (resBytes > MAX_RESOLUTION_SOURCE_BYTES) {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: resolutionSource length ${resBytes} bytes exceeds ${MAX_RESOLUTION_SOURCE_BYTES} (max)`,
+    );
+  }
+  // R52 audit fix: clamp `category` to [0, 3] like
+  // buildCreateMarketTx.
+  const category = params.category ?? 0;
+  if (!Number.isInteger(category) || category < 0 || category > 3) {
+    throw new Error(
+      `buildCreateMarketWithPoolTx: category must be 0..3, got ${category}`,
+    );
+  }
+  // Sui's system CoinRegistry is at the well-known
+  // address `0xc`. The on-chain
+  // `create_market_with_pool<Q>(coin_registry, pool, ...)`
+  // uses the registry only to call
+  // `coin_registry::new_currency` for the YES/NO coin
+  // types; the registry is shared with the system.
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::create_market_with_pool`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [
+      tx.object("0xc"),  // Sui system CoinRegistry
+      tx.object(normalizeObjectId(params.poolId)),
+      tx.pure.vector("u8", encodeUtf8(params.title)),
+      tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),
+      tx.pure.u64(params.expiryMs),
+      tx.pure.u8(category),
+    ],
+  });
+  return tx;
+}
+
+/**
  * Build `mint_shares` transaction.
  *
  * Deposits collateral (DUSDC) and receives equal YES + NO tokens.
