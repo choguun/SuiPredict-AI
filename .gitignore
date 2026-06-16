@@ -40,6 +40,5 @@ apps/agents/dist/
 *.db-wal
 *.db-shm
 *.db-journal
-uat-*
 
 packages/sdk/dist
