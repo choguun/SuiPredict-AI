@@ -228,9 +228,9 @@ export default async function HomePage() {
                  and that's covered by the
                  markets-list error banner
                  already. */}
-              {activeWc > 0 && (
+              {active > 0 && (
                 <span className="ml-2 text-emerald-300">
-                  · {activeWc} active market{activeWc === 1 ? "" : "s"}
+                  · {active} active market{active === 1 ? "" : "s"}
                 </span>
               )}
             </div>
