@@ -2,6 +2,7 @@
   "name": "suipredict-ai",
   "private": true,
   "scripts": {
+    "predev": "bash ./scripts/dev-kill-zombies.sh",
     "dev": "turbo dev",
     "dev:web": "turbo dev --filter=@suipredict/web",
     "dev:agents": "turbo dev --filter=@suipredict/agents",

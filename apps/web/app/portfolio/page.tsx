@@ -198,14 +198,21 @@ export default function PortfolioPage() {
           </p>
         </div>
         <EmptyState
+          icon="wallet"
           title="Wallet Disconnected"
-          description="Connect your Sui wallet to view your active prediction positions."
+          description="Connect your Sui wallet to view your active prediction positions. Your portfolio tracks YES/NO shares across every market you've traded."
           actionLabel="Connect Wallet"
           onAction={() => {
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("open-connect-modal"));
             }
           }}
+          previews={[
+            "Active YES/NO share balances per market",
+            "Current mark-to-market value in DUSDC",
+            "Redeemable winners (one click → on-chain)",
+            "Daily P&L streak from your predictions",
+          ]}
         />
       </div>
     );

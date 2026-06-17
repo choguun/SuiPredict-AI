@@ -17,6 +17,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Card, Badge } from "@/components/ui";
+import { AgentsDownBanner } from "@/components/AgentsDownBanner";
 
 interface WcTeam {
   code: string;
@@ -142,6 +143,27 @@ export default function WorldCupPage() {
     `${AGENTS_URL}/wc/upcoming?windowMs=${7 * 24 * 60 * 60 * 1000}`,
   );
 
+  // UAT-FN-07 fix: surface the agents-down
+  // banner on the WC dashboard when all
+  // three upstream endpoints are
+  // unreachable. Pre-fix the user saw an
+  // empty page with no explanation when
+  // the agents service was down. We only
+  // show the full banner if all three
+  // fail; a partial failure (e.g. the
+  // /wc/upcoming endpoint returns 500
+  // but the others are fine) renders a
+  // compact one-liner next to the
+  // affected section instead of the full
+  // banner.
+  const allDown =
+    !groupsQ.loading &&
+    !scheduleQ.loading &&
+    !upcomingQ.loading &&
+    groupsQ.error &&
+    scheduleQ.error &&
+    upcomingQ.error;
+
   const matchesByGroup = useMemo(() => {
     const map = new Map<string, WcMatch[]>();
     for (const m of scheduleQ.data?.matches ?? []) {
@@ -186,6 +208,26 @@ export default function WorldCupPage() {
 
   return (
     <div className="space-y-6 pb-12">
+      {/* UAT-FN-07 fix: full agents-down
+         banner when all three WC endpoints
+         are unreachable. The banner sits
+         above the hero so a user lands on
+         the WC dashboard with a clear
+         "agents service is down" hint
+         instead of a page full of empty
+         states. Partial failures (one of
+         three endpoints 5xx) render
+         inline near the affected section
+         via the per-section error states
+         in the `useJson` hook's `error`
+         field. */}
+      {allDown && (
+        <AgentsDownBanner
+          message={
+            (groupsQ.error ?? scheduleQ.error ?? upcomingQ.error) ?? undefined
+          }
+        />
+      )}
       {/* Hero */}
       <section className="relative overflow-hidden rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-900/40 via-[#0B0E14] to-[#0B0E14] p-6 sm:p-10">
         <div className="absolute -top-32 -right-32 h-80 w-80 rounded-full bg-emerald-500/20 blur-[100px] -z-10" />

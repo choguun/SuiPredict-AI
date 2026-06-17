@@ -430,10 +430,55 @@ export default async function MarketsPage({
           return (
             <Link
               key={c.value || "all"}
+              // UAT-FN-18 fix: prefetch
+              // the destination so a
+              // click on a category
+              // pill navigates
+              // instantly. The pre-fix
+              // build had no prefetch
+              // and the user perceived
+              // the click as a no-op
+              // (it took ~600ms for
+              // the new HTML to arrive
+              // from the server before
+              // the page re-rendered).
+              // `prefetch={true}` makes
+              // Next.js fetch the
+              // RSC payload as soon
+              // as the link is in the
+              // viewport (hovering
+              // triggers the same
+              // fetch in non-link
+              // contexts). For the
+              // 5 filter pills that's
+              // ~6 cached RSC payloads
+              // sitting in the link
+              // cache, so a click
+              // always feels instant.
+              prefetch={true}
+              // UAT-FN-18 fix: use
+              // `scroll={true}` so
+              // the user lands at
+              // the top of the new
+              // filtered list. The
+              // pre-fix build scrolled
+              // to the card that was
+              // at the previous scroll
+              // position (a category
+              // click from a deep-
+              // scrolled state left
+              // the user looking at a
+              // section that was no
+              // longer relevant after
+              // the filter narrowed
+              // the list).
+              scroll={true}
               href={marketsHref(
                 { category: c.value, q: searchQuery, sort: sortKey, status: statusFilter, page: safePage },
                 { category: c.value, page: 1 },
               )}
+              aria-current={isActive ? "page" : undefined}
+              data-testid={`filter-pill-${c.value || "all"}`}
               className={`shrink-0 rounded-full px-4 py-2 text-xs font-bold transition ${
                 isActive
                   ? "bg-emerald-500 text-emerald-950"

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AGENT_POLICY_PACKAGE_ID } from "@suipredict/sdk";
+import { toast } from "sonner";
 import { Badge, Card } from "@/components/ui";
 
 interface Decision {
@@ -308,6 +309,18 @@ export default function AgentsPage() {
   const [manifest, setManifest] = useState<AgentManifestEntry[]>([]);
   const [error, setError] = useState("");
   const [drift, setDrift] = useState<string[]>([]);
+  // UAT-FN-02 fix: keep the most recent health
+  // envelope and web-config snapshot in state so the
+  // DriftDetails component can render structured
+  // key/value rows (one per drifted env) and a
+  // "Copy .env line" button per row. Without this
+  // state the disclosure would only see the
+  // pre-formatted drift strings and could not
+  // surface the env var name + the runtime value
+  // (the env var name is the only key the operator
+  // needs to paste into `.env.local`).
+  const [healthSnapshot, setHealthSnapshot] = useState<HealthEnvelope | null>(null);
+  const [webConfigSnapshot, setWebConfigSnapshot] = useState<WebConfig | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -390,6 +403,17 @@ export default function AgentsPage() {
         } catch {
           /* keep WEB_CONFIG fallback */
         }
+        // UAT-FN-02 fix: stash the latest
+        // health envelope + web config in
+        // state so the DriftDetails
+        // component (rendered inside the
+        // disclosure) can show structured
+        // rows with copy buttons. The
+        // existing `setDrift(...)` still
+        // drives the row count and the
+        // "out of sync" header copy.
+        setHealthSnapshot(h);
+        setWebConfigSnapshot(webCfg);
         setDrift(driftLinesForWebConfig(h, webCfg));
       }
     }
@@ -557,6 +581,32 @@ export default function AgentsPage() {
         //     now inside the disclosure
         //     (only operators who click
         //     through see it)
+        //
+        // UAT-FN-02 fix: the disclosure
+        // previously listed drift as a
+        // bare text line like
+        //   `AGENT_POLICY_PACKAGE_ID: web=0x23b78ca… runtime=0xb1777f16…`
+        // with no way for the operator to
+        // act on it short of manually
+        // diffing the values and typing
+        // them into `.env.local`. The new
+        // panel renders each drift as a
+        // structured `env_key` / web value
+        // / runtime value row with a
+        // "Copy .env line" button. A
+        // "Copy all .env lines" button
+        // at the top of the disclosure
+        // builds a single block of
+        // `<KEY>=<RUNTIME_VALUE>` lines
+        // the operator can paste into
+        // `apps/web/.env.local` (or feed
+        // to the matching agents-side
+        // var). The drift detection now
+        // also surfaces a single "missing
+        // runtime value" row in the
+        // same shape, so the operator
+        // knows exactly which env the
+        // agents service is missing.
         <div
           role="status"
           className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100"
@@ -579,11 +629,11 @@ export default function AgentsPage() {
                 <summary className="cursor-pointer text-xs font-semibold text-amber-200 hover:text-amber-100">
                   Show details ({drift.length})
                 </summary>
-                <ul className="mt-2 list-disc space-y-0.5 pl-5 font-mono text-[11px] text-amber-200/80">
-                  {drift.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
+                <DriftDetails
+                  drift={drift}
+                  health={healthSnapshot}
+                  webConfig={webConfigSnapshot}
+                />
                 <p className="mt-2 text-[11px] text-amber-200/70">
                   Fix: redeploy the web bundle (<code>pnpm build</code>
                   {" "}after setting the matching
@@ -670,6 +720,189 @@ export default function AgentsPage() {
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * Structured per-drift table rendered inside the
+ * `Operator note` disclosure. UAT-FN-02: the pre-fix
+ * disclosure listed drift as a flat text line per entry
+ * (e.g. `AGENT_POLICY_PACKAGE_ID: web=0x23b78ca… runtime=0xb1777f16…`)
+ * which left the operator with two things to do by hand:
+ *   1. Identify which env var to add/change.
+ *   2. Compose the `KEY=value` line for `.env.local`.
+ * The new component renders a table with one row per
+ * drift entry, the env var name in the first column
+ * (copy-pastable), the web value in the second, the
+ * runtime value in the third, and a "Copy .env line"
+ * button in the fourth. A "Copy all .env lines" button
+ * at the top of the disclosure builds a single block of
+ * `KEY=RUNTIME_VALUE` lines the operator can paste
+ * into `.env.local` and then run `pnpm build` to
+ * re-inline the values into the web bundle.
+ *
+ * Renders nothing on the rare path where the drift
+ * strings are present but the health / webConfig
+ * snapshots haven't been captured yet (the parent
+ * already renders an empty disclosure in that case).
+ */
+function DriftDetails({
+  drift,
+  health,
+  webConfig,
+}: {
+  drift: string[];
+  health: HealthEnvelope | null;
+  webConfig: WebConfig | null;
+}) {
+  if (!health || !webConfig || drift.length === 0) {
+    // Fallback to the original flat list when the
+    // structured snapshots aren't available.
+    return (
+      <ul className="mt-2 list-disc space-y-0.5 pl-5 font-mono text-[11px] text-amber-200/80">
+        {drift.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  // Build the structured rows by walking ENV_IDS and
+  // matching each drifted line to the corresponding
+  // entry. We use the same `runtimeKey` lookup the
+  // drift detector uses, so a row is "drifted" iff the
+  // web value differs from the runtime value (or one
+  // side is empty). Render the full id (not the
+  // pre-truncated slice) in the table; the operator
+  // needs the full id to paste into `.env.local`.
+  const rows: Array<{
+    env: string;
+    label: string;
+    webVal: string;
+    runtimeVal: string;
+  }> = [];
+  for (const { env, label, runtimeKey } of ENV_IDS) {
+    const runtimeVal = String(health[runtimeKey] ?? "");
+    const webVal =
+      label === "AGENT_POLICY_PACKAGE_ID"
+        ? AGENT_POLICY_PACKAGE_ID
+        : (webConfig[runtimeKey as keyof WebConfig] ?? "");
+    const isWebEmpty = !webVal;
+    const isRuntimeEmpty = !runtimeVal;
+    const isMismatch =
+      !isWebEmpty && !isRuntimeEmpty && webVal.toLowerCase() !== runtimeVal.toLowerCase();
+    if (!(isWebEmpty || isRuntimeEmpty || isMismatch)) continue;
+    rows.push({ env, label, webVal, runtimeVal });
+  }
+
+  // Sort: web-empty first (the operator needs to add a
+  // brand-new line), then runtime-empty, then mismatches.
+  // The original `drift` array preserves this order too
+  // (driftLinesForWebConfig checks in the same sequence),
+  // but re-sorting here keeps the structured table in
+  // lock-step with the disclosure title's count.
+  rows.sort((a, b) => {
+    const aKey = a.webVal ? (a.runtimeVal ? 2 : 1) : 0;
+    const bKey = b.webVal ? (b.runtimeVal ? 2 : 1) : 0;
+    return aKey - bKey;
+  });
+
+  if (rows.length === 0) return null;
+
+  // Build a single .env block for the "Copy all" button.
+  // The .env file format requires `KEY=VALUE` with no
+  // spaces around `=`; the runtime value is the
+  // canonical source of truth so the operator is
+  // aligning the web bundle to the agents runtime, not
+  // the other way around.
+  const envBlock = rows
+    .filter((r) => r.runtimeVal)
+    .map((r) => `${r.env}=${r.runtimeVal}`)
+    .join("\n");
+
+  return (
+    <div className="mt-2 space-y-2">
+      {envBlock && (
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(envBlock)
+              .then(() => {
+                toast.success(
+                  `Copied ${rows.filter((r) => r.runtimeVal).length} .env lines to clipboard`,
+                );
+              })
+              .catch(() => {
+                toast.error("Clipboard write failed — copy manually below");
+              });
+          }}
+          className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-100 hover:bg-amber-500/30 transition"
+        >
+          📋 Copy all .env lines
+        </button>
+      )}
+      <div className="overflow-x-auto rounded-md border border-amber-500/20">
+        <table className="w-full text-[11px]">
+          <thead className="bg-amber-500/10 text-amber-200">
+            <tr>
+              <th className="px-2 py-1 text-left font-semibold uppercase tracking-wider">
+                Env var
+              </th>
+              <th className="px-2 py-1 text-left font-semibold uppercase tracking-wider">
+                Web bundle
+              </th>
+              <th className="px-2 py-1 text-left font-semibold uppercase tracking-wider">
+                Agents runtime
+              </th>
+              <th className="px-2 py-1 text-right font-semibold uppercase tracking-wider">
+                Action
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-amber-500/10 font-mono text-amber-200/90">
+            {rows.map((r) => {
+              const envLine = r.runtimeVal ? `${r.env}=${r.runtimeVal}` : r.env;
+              return (
+                <tr key={r.env} className="hover:bg-amber-500/5">
+                  <td className="px-2 py-1.5 whitespace-nowrap font-semibold text-amber-100">
+                    {r.env}
+                  </td>
+                  <td className="px-2 py-1.5 break-all text-amber-300/70">
+                    {r.webVal ? (
+                      <code>{r.webVal}</code>
+                    ) : (
+                      <span className="text-amber-300/50 italic">unset</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 break-all text-amber-300/70">
+                    {r.runtimeVal ? (
+                      <code>{r.runtimeVal}</code>
+                    ) : (
+                      <span className="text-amber-300/50 italic">missing</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(envLine)
+                          .then(() => toast.success(`Copied ${r.env}`))
+                          .catch(() => toast.error("Clipboard write failed"));
+                      }}
+                      className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-500/20 transition"
+                    >
+                      Copy
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -64,6 +64,7 @@ export {
   buildMintSharesBatchTx,
   buildSetupReferralTx,
   buildCreateMarketTx,
+  buildCreateMarketWithPoolTx,
   buildResolveMarketTx,
   buildRedeemTx,
   buildRedeemNoTx,

@@ -623,14 +623,21 @@ export default function ParlayPage() {
           Parlay Builder
         </h1>
         <EmptyState
+          icon="parlay"
           title="Wallet Disconnected"
-          description="Connect your Sui wallet to build and place multi-leg parlays."
+          description="Connect your Sui wallet to build and place multi-leg parlays. Combine 2-8 YES/NO positions across markets and earn multiplied payouts when every leg wins."
           actionLabel="Connect Wallet"
           onAction={() => {
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("open-connect-modal"));
             }
           }}
+          previews={[
+            "Pick 2-8 markets, choose YES or NO on each",
+            "Combined payout multiplier (legs × odds)",
+            "Single on-chain PTB submits all legs atomically",
+            "Daily-parlay bonus + leaderboard rank",
+          ]}
         />
       </div>
     );

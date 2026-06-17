@@ -49,10 +49,28 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
  *  and `types`; `PREDICT_MARKET_PACKAGE_ID` is re-exported here for
  *  backwards compatibility with the previous (and now-stale) name.
  *
- *  Override at deploy time via `NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID`
- *  (Next.js) or `AGENT_POLICY_PACKAGE_ID` (server/agents).
+ *  R-UAT-23 follow-up: at module-init time, prefer the
+ *  env-configurable `MARKET_PACKAGE_ID` over the
+ *  `AGENT_POLICY_PACKAGE_ID` so a deploy can point the SDK
+ *  at a *separate* `prediction_market` package (e.g. the
+ *  historical `0x23b78ca…` that owns the on-chain YES<DUSDC>
+ *  pool) rather than the co-located `agent_policy` package
+ *  (0xb1777f…). Without this, every `buildCreateMarket*Tx`
+ *  call would target a `prediction_market::YES<Q>` whose
+ *  type is *different* from the YES type of the on-chain
+ *  pool the bootstrap script shares, and Move's type
+ *  system would reject the call with a "pool type
+ *  mismatch" error. The previous `AGENT_POLICY_PACKAGE_ID`
+ *  default is preserved as a fallback for older deploys
+ *  where the two packages were the same.
+ *
+ *  Override at deploy time via `NEXT_PUBLIC_MARKET_PACKAGE_ID`
+ *  (Next.js) or `MARKET_PACKAGE_ID` (server/agents).
  */
-export const PREDICT_MARKET_PACKAGE_ID = AGENT_POLICY_PACKAGE_ID;
+export const PREDICT_MARKET_PACKAGE_ID =
+  (process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+    process.env.MARKET_PACKAGE_ID ??
+    AGENT_POLICY_PACKAGE_ID).trim();
 
 // R56.12 audit fix: route the local `PKG()` getter through
 // `resolveAgentPolicyPackageId()` so it actually picks up a

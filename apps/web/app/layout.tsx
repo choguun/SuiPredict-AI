@@ -12,11 +12,39 @@ import "./globals.css";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+  // UAT-FN-14 fix: `next/font/google` defaults
+  // to `display: "optional"`, which is the
+  // strictest policy (FOIT/FOUT depends on
+  // 100ms render-time budget; a slow first
+  // network round-trip skips the font
+  // entirely and renders the fallback).
+  // The LCP element on the home page is the
+  // hero h1 (text), so the font swap-or-skip
+  // policy determines the LCP. Switching to
+  // `"swap"` always paints with the fallback
+  // (system-ui) and swaps in the real Geist
+  // Sans once the network font arrives —
+  // improves LCP at the cost of a single
+  // ~50ms re-layout, which is the right
+  // trade-off for a dApp where the user has
+  // to interact with the page immediately.
+  display: "swap",
+  // `preload: true` adds the woff2 file to
+  // the document head as a <link rel=preload>
+  // so the browser fetches the font in
+  // parallel with the HTML/CSS, not after.
+  // Cuts the font-availability window by
+  // ~100-200ms on a 3G connection (the gap
+  // between the first byte of the HTML and
+  // the resolved font URL).
+  preload: true,
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
+  preload: true,
 });
 
 export const metadata: Metadata = {

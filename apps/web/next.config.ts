@@ -1,23 +1,23 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import withPWAInit from "@ducanh2912/next-pwa";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// R48 audit fix: disable PWA entirely in production too. R43 added
-// an `unregister` effect in `providers-inner.tsx` to tear down the
-// legacy Workbox SW on first mount, but the unregister only fires
-// *after* hydration — a network race on the very first navigation
-// of a session can still hit the SW and serve stale HTML. The
-// unregister-then-flash path is the worst of both worlds: an SW
-// gets registered (and can intercept) before it's killed. Skip
-// `sw.js` generation entirely so the browser never sees it.
-const withPWA = withPWAInit({
-  dest: "public",
-  disable: true,
-  register: false,
-});
+// UAT-FN-17 fix: the pre-fix build wired in
+// `@ducanh2912/next-pwa` with `disable: true` (per the R48
+// audit, which found that the legacy Workbox SW served
+// 24h-stale HTML via a `NetworkFirst` cache). The
+// `disable: true` configuration means next-pwa is
+// effectively a no-op wrapper that does nothing, so the
+// `public/sw.js` file we ship with the bundle is the
+// source of truth and the registration happens in
+// `providers-inner.tsx`. Drop the import to avoid
+// shipping unused dependencies; the next-pwa package
+// remains in `package.json` for now because removing it
+// would require a separate yarn/pnpm resolution test,
+// and the no-op wrapper has no runtime cost (the
+// import-only path doesn't trigger a build step).
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@suipredict/sdk"],
@@ -42,6 +42,25 @@ const nextConfig: NextConfig = {
       { source: "/settings", destination: "/agent-policy", permanent: false },
     ];
   },
+  async headers() {
+    // UAT-FN-17 fix: the offline-shell SW at /sw.js
+    // must be served without any long-lived cache
+    // headers so the browser always picks up the
+    // latest SW on a redeploy. Next.js's static
+    // asset defaults would otherwise cache the SW
+    // for 1y (immutable) which is correct for
+    // hashed asset bundles but wrong for the SW
+    // itself.
+    return [
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "cache-control", value: "no-cache, no-store, must-revalidate" },
+          { key: "service-worker-allowed", value: "/" },
+        ],
+      },
+    ];
+  },
 };
 
-export default withPWA(nextConfig);
+export default nextConfig;

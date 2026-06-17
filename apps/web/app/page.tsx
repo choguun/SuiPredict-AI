@@ -190,25 +190,40 @@ export default async function HomePage() {
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-              🏆 Now live · 48 teams · 72 group-stage matches
-              {/* UAT-FN-09 fix: clarify the
-                 match count. The pre-fix
-                 build said "104 matches"
-                 (72 group + 32 knockout)
-                 but the agents' market
-                 creator / resolver / maker
-                 only handle the 72 group-
-                 stage matches — a user
-                 reading "104 matches" on
-                 the home page banner and
-                 visiting the dashboard
-                 would see 72 fixtures and
-                 feel misled. The new copy
-                 says "72 group-stage matches"
-                 which matches what the
-                 agents actually trade.
-                 Knockout matches may be
-                 added post-tournament. */}
+              {/* UAT-FN-08 fix: render a real
+                 space between the static
+                 "72 group-stage matches"
+                 suffix and the dynamic
+                 "active markets" counter.
+                 The pre-fix build relied on
+                 `ml-2` to provide the gap,
+                 but `ml-2` is a CSS margin —
+                 a screen reader, a copy-
+                 paste from textContent, or
+                 a non-CSS-aware consumer
+                 (search snippets, link
+                 previews, "share to X"
+                 cards) would see
+                 "MATCHES· 20 ACTIVE MARKETS"
+                 with no space. The new
+                 build puts a literal space
+                 in the textContent so the
+                 copy reads correctly in
+                 every consumer. The visual
+                 `ml-2` is preserved so the
+                 styled gap matches the
+                 pre-fix appearance. */}
+              <span>
+                🏆 Now live · 48 teams · 72 group-stage matches
+                {active > 0 && (
+                  <>
+                    {" · "}
+                    <span className="ml-1 text-emerald-300">
+                      {active} active market{active === 1 ? "" : "s"}
+                    </span>
+                  </>
+                )}
+              </span>
               {/* R62 audit fix: include the active
                  WC count in the banner subtitle
                  so the home page surfaces the
@@ -228,11 +243,6 @@ export default async function HomePage() {
                  and that's covered by the
                  markets-list error banner
                  already. */}
-              {active > 0 && (
-                <span className="ml-2 text-emerald-300">
-                  · {active} active market{active === 1 ? "" : "s"}
-                </span>
-              )}
             </div>
             <h2 className="mt-1 text-xl sm:text-2xl font-extrabold text-white">
               World Cup 2026 prediction markets

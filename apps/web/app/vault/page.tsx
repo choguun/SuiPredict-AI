@@ -411,14 +411,21 @@ export default function VaultPage() {
           </p>
         </div>
         <EmptyState
+          icon="vault"
           title="Wallet Disconnected"
-          description="Connect your Sui wallet to view and manage your vault allocations."
+          description="Connect your Sui wallet to view and manage your vault allocations. Your deposit powers the autonomous market-making agents that earn the protocol's spread."
           actionLabel="Connect Wallet"
           onAction={() => {
             if (typeof window !== "undefined") {
               window.dispatchEvent(new CustomEvent("open-connect-modal"));
             }
           }}
+          previews={[
+            "Deposit DUSDC → mint VLP at the current share price",
+            "Agents market-make across all CLOB markets",
+            "Realized yield from maker fees, rebated to VLP holders",
+            "Withdraw burns VLP for the proportional DUSDC",
+          ]}
         />
       </div>
     );

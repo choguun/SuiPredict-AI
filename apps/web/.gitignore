@@ -43,11 +43,14 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Workbox / PWA — regenerated on every `next build`. Tracking them
-# creates churn in diffs without value (the source of truth is the
-# Workbox config in next.config.js). The PWA runtime still works
-# from a fresh `pnpm build` — these files are produced, not edited.
-/public/sw.js
+# Workbox / PWA — Workbox was disabled in the R48 audit and the
+# legacy /public/sw.js was a hand-rolled network-first cache that
+# served 24h-stale HTML. The new /public/sw.js (added with UAT-FN-17)
+# is the source of truth for the offline-shell SW and IS tracked
+# below. The Workbox-generated files (sw.js.map, workbox-*.js) are
+# no longer produced by the build and the ignore rules are kept as
+# documentation for anyone grepping for the historical setup.
+!/public/sw.js
 /public/sw.js.map
 /public/workbox-*.js
 /public/workbox-*.js.map

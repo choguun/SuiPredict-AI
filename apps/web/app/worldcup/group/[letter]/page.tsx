@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Card, Badge } from "@/components/ui";
+import { AgentsDownBanner } from "@/components/AgentsDownBanner";
 
 interface WcTeam {
   code: string;
@@ -38,9 +39,16 @@ interface WcMatch {
 const AGENTS_URL =
   process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
 
-function useJson<T>(url: string): { data: T | null; loading: boolean } {
+function useJson<T>(url: string): { data: T | null; loading: boolean; error: string | null } {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
+  // UAT-FN-07 fix: capture the fetch
+  // error so the caller can render the
+  // agents-down banner. The pre-fix
+  // hook only set `loading: false` on
+  // error and silently rendered an
+  // empty page.
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let mounted = true;
     fetch(url, { headers: { accept: "application/json" } })
@@ -48,17 +56,22 @@ function useJson<T>(url: string): { data: T | null; loading: boolean } {
       .then((j: T) => {
         if (mounted) {
           setData(j);
-          setLoading(false);
+          setError(null);
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        if (mounted) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
         if (mounted) setLoading(false);
       });
     return () => {
       mounted = false;
     };
   }, [url]);
-  return { data, loading };
+  return { data, loading, error };
 }
 
 function matchdayLabel(md: number): string {
@@ -139,6 +152,23 @@ export default function GroupPage() {
 
   return (
     <div className="space-y-6 pb-12">
+      {/* UAT-FN-07 fix: agents-down banner
+         on the group page when both
+         upstream endpoints fail. Pre-fix
+         the user saw a "Group F" page
+         with no teams and no fixtures
+         and no explanation. The banner
+         renders above the group header
+         so the user gets a clear "agents
+         service is unreachable" hint. */}
+      {!groupsQ.loading &&
+        !scheduleQ.loading &&
+        groupsQ.error &&
+        scheduleQ.error && (
+          <AgentsDownBanner
+            message={groupsQ.error ?? scheduleQ.error ?? undefined}
+          />
+        )}
       <div className="flex items-start justify-between gap-3">
         <div>
           <Link
