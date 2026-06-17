@@ -636,6 +636,72 @@ export function getMarket(id: string): MarketInfo | null {
   return row ? rowToMarket(row) : null;
 }
 
+/**
+ * Count how many markets in the SQLite mirror are bound to a
+ * `PredictionMarket` whose on-chain package matches the given id.
+ *
+ * Used by the pool-provisioner (R-WC-1.8) to detect "is this the
+ * first market on this package?" — if zero markets on the current
+ * `MARKET_PACKAGE_ID` have an `onchain_market_id`, the provisioner
+ * must pay the 500 DEEP `POOL_CREATION_FEE_DEEP` for the first
+ * market's pool-creation fee. For every subsequent market,
+ * `create_market_with_pool` reuses the existing pool and no DEEP
+ * fee is required.
+ *
+ * Implementation: scan every market row's `onchain_market_id` and
+ * `sui_getObject` to read the type tag. SQLite stores the
+ * `onchain_market_id` but not the originating package, so the
+ * provider needs to dereference each one. With the typical
+ * SQLite mirror holding <100 markets this is fine for a 15-min
+ * cadence, but if the mirror grows past ~500 markets consider
+ * caching the package-id lookup in a separate column.
+ *
+ * Returns -1 if the packageId argument is empty (caller forgot to
+ * pass it) so the provisioner can treat that as "unknown" rather
+ * than always assuming "first market".
+ */
+export async function countMarketsWithOnchainByPackage(
+  packageId: string,
+  rpcUrl: string,
+): Promise<number> {
+  if (!packageId) return -1;
+  const rows = getDb()
+    .prepare(
+      `SELECT onchain_market_id FROM markets
+       WHERE onchain_market_id IS NOT NULL AND onchain_market_id != ''`,
+    )
+    .all() as Array<{ onchain_market_id: string }>;
+  let count = 0;
+  // Sequential to avoid hammering the public RPC. With <100 rows
+  // this completes in a few hundred ms on testnet.
+  for (const r of rows) {
+    try {
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "sui_getObject",
+          params: [r.onchain_market_id, { showType: true }],
+          id: 1,
+        }),
+      });
+      const j = (await res.json()) as {
+        result?: { data?: { type?: string } };
+      };
+      const t = j.result?.data?.type ?? "";
+      // type looks like `<pkg>::prediction_market::PredictionMarket<…>`.
+      const m = t.match(/^(0x[0-9a-fA-F]+)::prediction_market::/);
+      if (m && m[1] && m[1].toLowerCase() === packageId.toLowerCase()) {
+        count++;
+      }
+    } catch {
+      // RPC blip — skip this row; the count is best-effort.
+    }
+  }
+  return count;
+}
+
 export function markMarketResolved(
   marketId: string,
   outcome: "yes" | "no",

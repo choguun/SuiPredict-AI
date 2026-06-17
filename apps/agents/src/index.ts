@@ -64,6 +64,9 @@ import { runPrizeAdmin } from "./agents/prize-admin.js";
 import { runReferralKeeper } from "./agents/referral-keeper.js";
 import { runPositionIndexer } from "./agents/position-indexer.js";
 import { runParlayWorker } from "./agents/parlay-worker.js";
+// R-WC-1.8: keep the agent wallet funded + auto-provision DeepBook pools
+import { runPoolProvisioner } from "./agents/pool-provisioner.js";
+import { runAutoFunder } from "./agents/auto-funder.js";
 import type { AgentContext } from "./lib.js";
 import type { AgentResult } from "./lib.js";
 import { closeSharedClient, resetSharedJsonRpcClient, safeInt } from "./lib.js";
@@ -197,6 +200,13 @@ function validateBootConfig(): void {
     { name: "StreakAdmin",      envVar: "STREAK_ADMIN_ID",               agent: "PositionIndexer", required: false },
     { name: "ParlayPoolAdmin",  envVar: "PARLAY_POOL_ADMIN_ID",          agent: "ParlayWorker",   required: false },
     { name: "DeepBookRegistry", envVar: "DEEPBOOK_REGISTRY_ID",          agent: "PositionIndexer", required: false },
+    // R-WC-1.8: auto-funder thresholds. All optional — the agents fall back
+    // to sensible defaults (100 USDC floor / 10,000 USDC topup / 500 DEEP
+    // floor) when these are unset. The defaults are surfaced in the boot
+    // config print and the README's env-var table.
+    { name: "AutoFunderMinDUSDC", envVar: "AUTO_FUNDER_MIN_DUSDC_ATOMS",  agent: "AutoFunder",      required: false },
+    { name: "AutoFunderTopupDUSDC", envVar: "AUTO_FUNDER_TOPUP_DUSDC_ATOMS", agent: "AutoFunder",   required: false },
+    { name: "AutoFunderMinDEEP",  envVar: "AUTO_FUNDER_MIN_DEEP_ATOMS",  agent: "AutoFunder",      required: false },
   ];
 
   const missing: VarCheck[] = [];
@@ -492,6 +502,10 @@ function buildSchedule() {
     { name: "ParlayWorker",      cron: env("AGENT_CRON_PARLAY_WORKER",      "*/1 * * * *"), fn: runParlayWorker },
     { name: "RiskMonitor",       cron: env("AGENT_CRON_RISK_MONITOR",       "*/5 * * * *"), fn: runRiskMonitor },
     { name: "MarketMaker",       cron: env("AGENT_CRON_MARKET_MAKER",       "*/1 * * * *"), fn: runMarketMaker },
+    // R-WC-1.8: keep the agent wallet topped up (DUSDC auto-mint, DEEP surfaced as a noop with the operator-actionable funding URL).
+    { name: "AutoFunder",        cron: env("AGENT_CRON_AUTO_FUNDER",        "*/10 * * * *"), fn: runAutoFunder },
+    // R-WC-1.8: provision DeepBook pools for any active market that doesn't have one (writes ids back to SQLite so the UI's amber "no pool" warning disappears).
+    { name: "PoolProvisioner",   cron: env("AGENT_CRON_POOL_PROVISIONER",   "*/15 * * * *"), fn: runPoolProvisioner },
   ];
   for (const entry of entries) {
     if (entry.cron.trim().split(/\s+/).length !== 5) {
