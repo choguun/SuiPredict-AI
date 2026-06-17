@@ -297,38 +297,62 @@ export async function getBalanceManagerBalance(
     typeArguments: [coinType],
     arguments: [tx.object(normalizeObjectId(balanceManagerId))],
   });
-  // R-WC-1.8 fix: the gRPC `core.simulateTransaction`
-  // returns a different shape than the JSON-RPC
-  // `dryRunTransactionBlock`. Use the JSON-RPC
-  // path which is more reliable on the public
-  // testnet. The SuiClient type is `SuiGrpcClient`
-  // but it exposes a `jsonRpc` field that mirrors
-  // the same RPC namespace.
-  const jsonRpc = (client as unknown as { jsonRpc?: { dryRunTransactionBlock: (input: { transactionBlock: Transaction }) => Promise<{ results?: { returnValues?: { returnValueBytes?: string }[] }[] }> } }).jsonRpc;
-  if (!jsonRpc) {
-    // SuiClient = SuiGrpcClient doesn't expose
-    // jsonRpc by default. Fall back to 0n (the
-    // pre-flight will allow the order through and
-    // the user will see the on-chain abort in the
-    // wallet — a degraded but safe UX).
+  // R-WC-1.8 follow-up: the dapp-kit hands us a
+  // SuiGrpcClient which doesn't expose a `jsonRpc`
+  // field by default. The gRPC `core.simulateTransaction`
+  // is the supported path. The response shape is:
+  //   { $kind: "Transaction", Transaction: { ... },
+  //     commandResults: [{ returnValues: [{ bcs: base64 }] }] }
+  // where `bcs` is the base64-encoded BCS value
+  // (for a u64, that's 8 bytes little-endian).
+  // The `$kind === "Transaction"` discriminator
+  // is what the SDK's own `executeTransaction` checks
+  // for; a `$kind === "FailedTransaction"` would
+  // mean the moveCall aborted (the BM doesn't
+  // exist, or the type argument is wrong). In
+  // that case we fall back to 0n and the on-chain
+  // error is surfaced separately by the user's
+  // wallet.
+  try {
+    const result = (await (client as unknown as {
+      core: {
+        simulateTransaction: (options: {
+          transaction: Transaction;
+          include?: { commandResults?: boolean };
+        }) => Promise<{
+          $kind: string;
+          commandResults?: { returnValues?: { bcs?: string }[] }[];
+        }>;
+      };
+    }).core.simulateTransaction({
+      transaction: tx,
+      include: { commandResults: true },
+    })) as {
+      $kind: string;
+      commandResults?: { returnValues?: { bcs?: string }[] }[];
+    };
+    if (result.$kind !== "Transaction") {
+      return 0n;
+    }
+    const b64 = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
+    if (!b64) return 0n;
+    const bytes = Buffer.from(b64, "base64");
+    if (bytes.length < 8) return 0n;
+    let value = 0n;
+    for (let i = 0; i < 8; i++) {
+      const byte = bytes[i] ?? 0;
+      value |= BigInt(byte) << BigInt(i * 8);
+    }
+    return value;
+  } catch {
+    // gRPC transient errors are common on the
+    // public testnet (HTTP 429, 503, etc.). Fall
+    // back to 0n so the user isn't blocked; the
+    // on-chain `EBalanceManagerBalanceTooLow` abort
+    // will surface a clear error inside the wallet
+    // spinner if the BM really is empty.
     return 0n;
   }
-  const result = await jsonRpc.dryRunTransactionBlock({ transactionBlock: tx });
-  const returnValues = result.results?.[0]?.returnValues;
-  if (!returnValues?.length) {
-    return 0n;
-  }
-  const b64 = returnValues[0]?.returnValueBytes;
-  if (!b64) return 0n;
-  const bytes = Buffer.from(b64, "base64");
-  if (bytes.length < 8) return 0n;
-  // little-endian u64
-  let value = 0n;
-  for (let i = 0; i < 8; i++) {
-    const byte = bytes[i] ?? 0;
-    value |= BigInt(byte) << BigInt(i * 8);
-  }
-  return value;
 }
 
 export type OrderBookDepth = { bids: [number, number][]; asks: [number, number][] };
