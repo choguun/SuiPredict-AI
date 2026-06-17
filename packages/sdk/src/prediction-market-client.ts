@@ -1812,3 +1812,352 @@ export function buildRegisterMarketTx(
   });
   return tx;
 }
+
+// ─── Per-market on-chain market lifecycle helpers ─────────────────────────
+
+/**
+ * R-WC-1 fix: find an existing `Pool<YES<Q>, Q>` in the
+ * DeepBook registry, if any. Used to bootstrap N markets
+ * that all share one DeepBook pool (the design the
+ * `world-cup-creator` now uses after the R-WC-1 refactor).
+ *
+ * Walks the registry's dynamic fields and returns the
+ * first pool whose `BaseType` matches `<PKG>::prediction_market::YES<Q>`.
+ *
+ * @param client              - Sui client
+ * @param deepbookRegistryId  - DeepBook `Registry` object id
+ * @param marketPackageId     - The published prediction_market package
+ *                              (defaults to the SDK's resolved PKG)
+ * @param quoteType           - Quote coin Q (defaults to DUSDC_TYPE)
+ * @returns Pool object id, or null if no YES<Q>/Q pool exists yet
+ */
+export async function findExistingYesPool(
+  client: SuiClient,
+  deepbookRegistryId: string,
+  marketPackageId: string = PKG(),
+  quoteType: string = DUSDC_TYPE,
+): Promise<string | null> {
+  // The dynamic-field name for a Pool<YES<Q>, Q> in the
+  // DeepBook registry serialises as a `TypeName` struct
+  // with `name: string` (the fully-qualified Move type
+  // name). We can't query by name directly because the
+  // gRPC dynamic-field filter is dynamic-field-key
+  // typed, not by string match; instead, we iterate the
+  // registry's dynamic fields and pick the one whose
+  // rendered `name` starts with our expected prefix.
+  //
+  // The SuiGrpcClient exposes the dynamic-fields API
+  // at `client.core.getDynamicFields` (not on the top-
+  // level `client`). The legacy JSON-RPC client has
+  // `client.getDynamicFields` directly; the gRPC client
+  // has it on `core`. We prefer `core.getDynamicFields`
+  // (the gRPC path) and fall back to the top-level
+  // call for older fullnodes.
+  //
+  // Limit: 50 dynamic fields is enough for a single
+  // registry — the DeepBook registry on testnet has at
+  // most a handful of pools. If a deploy ever exceeds
+  // 50, paginate via `cursor`.
+  const expectedPrefix = `${marketPackageId}::prediction_market::YES<`;
+  // The rendered pool key looks like
+  //   "<pkg>::prediction_market::YES<0x…::dusdc::DUSDC>, 0x…::dusdc::DUSDC>"
+  // The base-type `<0x…::dusdc::DUSDC>` part ends with `>`
+  // (after the closing `>` of the `YES<…>` type), and the
+  // rendered TypeName for `DUSDC` itself is just
+  // `0x…::dusdc::DUSDC` (no `::` prefix — the package id
+  // is part of the TypeName string, not a separate
+  // segment). So the matching substring is
+  // `${quoteType}>` (closing `>` after the DUSDC type
+  // name), not `::${quoteType}>`.
+  const expectedSuffix = `${quoteType}>`;
+  // R-WC-1 fix: gRPC-first, JSON-RPC fallback. The
+  // `SuiGrpcClient` types don't expose `getDynamicFields`
+  // at the top level, but `core` has it. We use
+  // `client.core?.getDynamicFields` and fall back to
+  // the legacy API (cast through `unknown` because
+  // legacy `getDynamicFields` is not on the gRPC
+  // client's type).
+  const g = client as SuiClient & {
+    core?: {
+      getDynamicFields?: (args: {
+        parentId: string;
+        limit?: number;
+        cursor?: string | null;
+      }) => Promise<{
+        dynamicFields: Array<{ objectId: string; name?: unknown }>;
+        hasNextPage: boolean;
+        cursor?: string | null;
+      }>;
+    };
+    getDynamicFields?: (args: {
+      parentId: string;
+      limit?: number;
+      cursor?: string | null;
+    }) => Promise<{ data: Array<{ objectId: string; name?: unknown }>; hasNextPage: boolean; nextCursor?: string | null }>;
+  };
+  type DynamicFieldRow = { objectId: string; name?: unknown };
+  let rows: DynamicFieldRow[] = [];
+  if (g.core?.getDynamicFields) {
+    const r = await g.core.getDynamicFields({ parentId: deepbookRegistryId, limit: 50 });
+    rows = r.dynamicFields;
+  } else if (g.getDynamicFields) {
+    const r = await g.getDynamicFields({ parentId: deepbookRegistryId, limit: 50 });
+    rows = r.data;
+  } else {
+    throw new Error(
+      "findExistingYesPool: client exposes neither core.getDynamicFields nor getDynamicFields",
+    );
+  }
+  for (const f of rows) {
+    const name = f.name;
+    // The dynamic-field name for a TypeName key is
+    // an object with a `name: string` field (Sui's
+    // TypeName BCS encoding). The full pool key looks
+    // like `name: "<pkg>::prediction_market::YES<DUSDC>, <pkg>::...::DUSDC"`
+    // — we check the YES<…> portion.
+    if (
+      typeof name === "object" &&
+      name !== null &&
+      "name" in name &&
+      typeof (name as { name: unknown }).name === "string"
+    ) {
+      const rendered = (name as { name: string }).name;
+      if (rendered.startsWith(expectedPrefix) && rendered.includes(expectedSuffix)) {
+        return f.objectId;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * R-WC-1 fix: result of a successful market creation. The
+ * `marketId` is the new on-chain `PredictionMarket<Q>`
+ * object id; the `poolId` is the DeepBook pool the market
+ * is bound to (created by `create_market` or reused from
+ * the registry by `create_market_with_pool`); the
+ * `balanceManagerId` is a fresh `BalanceManager` for this
+ * market's trading.
+ */
+export interface CreatedMarket {
+  marketId: string;
+  poolId: string;
+  balanceManagerId: string;
+  /** "create_market" (new pool) or "create_market_with_pool"
+   *  (reused pool). Operators can tell from the agent
+   *  log which path was taken on each tick. */
+  source: "create_market" | "create_market_with_pool";
+}
+
+/**
+ * R-WC-1 fix: try `create_market` first, fall back to
+ * `create_market_with_pool` on `EPoolAlreadyExists`. The
+ * single entry point that the `world-cup-creator` (and
+ * the operator's `bootstrap-wc-markets.mjs` script) use
+ * to mint a per-market on-chain `PredictionMarket`. Replaces
+ * the pre-fix "always `create_market`, catch the abort,
+ * write a SQLite-only demo row" path that left 46 of 47
+ * WC markets with no on-chain backing.
+ *
+ * **Why this exists (and not just a try/catch at the
+ * call site):** the call site needs the *new* market id
+ * and pool id regardless of which path was taken, and the
+ * `create_market_with_pool` path requires a pool id at
+ * PTB build time. Centralising the lookup + retry
+ * keeps the agent code to a single `await` and
+ * guarantees both paths are exercised in the same way
+ * (idempotent, logged, with a single structured return
+ * type for the agent's decision feed).
+ *
+ * **Wallet-funding gate:** the caller is responsible for
+ * funding the wallet with enough SUI for gas + (on the
+ * first market) 500 DEEP for the pool-creation fee. This
+ * helper does NOT check the wallet balance — the agents
+ * gate this themselves before calling, with a clear
+ * operator-visible error if underfunded (see
+ * `world-cup-creator.ts`).
+ *
+ * @param client            - Sui client
+ * @param signer            - Agent keypair
+ * @param deepbookRegistry  - DeepBook registry id (or null
+ *                            if no registry configured)
+ * @param params            - Market creation params
+ * @param params.title            - Market question
+ * @param params.resolutionSource - How the market resolves
+ * @param params.expiryMs         - Unix ms when resolution allowed
+ * @param params.category         - 0..3 topic code
+ * @param params.deepCoinId       - Coin<DEEP> for the pool-creation
+ *                                  fee (only consumed on the
+ *                                  first market; subsequent
+ *                                  markets don't touch it)
+ * @param params.coinRegistry     - Sui system CoinRegistry id
+ *                                  (defaults to "0xc")
+ * @param params.tickSize         - Pool tick size (only on
+ *                                  create_market path)
+ * @param params.lotSize          - Pool lot size (only on
+ *                                  create_market path)
+ * @param params.minSize          - Pool min size (only on
+ *                                  create_market path)
+ */
+export async function ensureMarketCreated(
+  client: SuiClient,
+  signer: Ed25519Keypair,
+  deepbookRegistry: string | null,
+  params: {
+    title: string;
+    resolutionSource: string;
+    expiryMs: bigint;
+    category?: number;
+    deepCoinId: string;
+    coinRegistry?: string;
+    tickSize?: bigint;
+    lotSize?: bigint;
+    minSize?: bigint;
+  },
+): Promise<CreatedMarket> {
+  // R-WC-1 fix: route both paths through the SDK's
+  // `executeTransaction` helper, which already handles
+  // `setSender` + `waitForTransaction` + transient-error
+  // retry. The previous direct call to
+  // `client.signAndExecuteTransaction` skipped the wait
+  // and could return a digest for a tx that was still
+  // propagating (the indexer would then `extractCreatedObjectId`
+  // against an empty `effects` array).
+  const { executeTransaction } = await import("./predict-client.js");
+  // R-WC-1 fix: the `coinRegistry` is a Sui system
+  // shared object at the well-known address `0xc`.
+  // `create_market_with_pool` takes it as the first
+  // argument (used to call `coin_registry::new_currency`
+  // for the YES/NO TreasuryCaps). The `create_market`
+  // path doesn't need it but doesn't error if it's
+  // missing.
+  const coinRegistry = params.coinRegistry ?? "0xc";
+  // Try `create_market` first (it creates a new pool +
+  // BalanceManager + market). The `tickSize` / `lotSize` /
+  // `minSize` are required for the pool's first
+  // registration; defaults match the world-cup-creator's
+  // historical 1_000_000 (1 YES minimum) sizing.
+  const tickSize = params.tickSize ?? 1_000_000n;
+  const lotSize = params.lotSize ?? 1_000_000n;
+  const minSize = params.minSize ?? 1_000_000n;
+
+  if (deepbookRegistry) {
+    try {
+      const tx = buildCreateMarketTx({
+        title: params.title,
+        resolutionSource: params.resolutionSource,
+        expiryMs: params.expiryMs,
+        tickSize,
+        lotSize,
+        minSize,
+        deepCoinId: params.deepCoinId,
+        category: params.category ?? 0,
+      });
+      const result = await executeTransaction(client, tx, signer);
+      const marketId = await extractCreatedObjectId(
+        client,
+        result.digest,
+        "PredictionMarket",
+      );
+      if (marketId) {
+        // Also extract the pool id and balance manager id
+        // from the same effects. The shared object is
+        // named `Pool<YES<Q>, Q>` on-chain; the
+        // gRPC `objectChanges` array (when included)
+        // lists every created object with its type
+        // string. The first `Pool<YES<DUSDC>, DUSDC>` in
+        // the array is the new market's pool.
+        const poolId = await extractCreatedObjectId(
+          client,
+          result.digest,
+          "Pool",
+        );
+        const balanceManagerId = await extractCreatedObjectId(
+          client,
+          result.digest,
+          "BalanceManager",
+        );
+        if (poolId && balanceManagerId) {
+          return {
+            marketId,
+            poolId,
+            balanceManagerId,
+            source: "create_market",
+          };
+        }
+      }
+      // Fall through to the `create_market_with_pool` path
+      // if we couldn't extract ids (the Sui gRPC rendering
+      // doesn't always carry them in the effects blob).
+    } catch (err) {
+      // Only swallow `EPoolAlreadyExists`. Re-throw any
+      // other failure so the caller can react (e.g. low
+      // SUI, missing DEEP, RPC outage).
+      const msg = err instanceof Error ? err.message : String(err);
+      const isPoolExists =
+        /EPoolAlreadyExists/.test(msg) ||
+        /register_pool.*abort code: 1/i.test(msg) ||
+        (msg.includes("abort code: 1") && msg.includes("register_pool"));
+      if (!isPoolExists) {
+        throw err;
+      }
+      // Pool already exists — fall through to the
+      // create_market_with_pool path.
+    }
+  }
+
+  // Fallback path: find the existing YES<DUSDC> pool in the
+  // registry, then call `create_market_with_pool`. The
+  // caller MUST have set up `deepbookRegistry` for the
+  // findExistingYesPool call to succeed.
+  if (!deepbookRegistry) {
+    throw new Error(
+      "ensureMarketCreated: pool already exists but no deepbookRegistry configured; " +
+        "set NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID and re-run. " +
+        "The first market must use `create_market` (with a DEEP coin) to bootstrap the pool.",
+    );
+  }
+  const existingPoolId = await findExistingYesPool(
+    client,
+    deepbookRegistry,
+  );
+  if (!existingPoolId) {
+    throw new Error(
+      "ensureMarketCreated: pool already exists (per abort) but findExistingYesPool " +
+        `returned null. The DeepBook registry ${deepbookRegistry} may not actually ` +
+        `contain a YES<DUSDC> pool. Inspect the registry's dynamic fields manually.`,
+    );
+  }
+  const tx = buildCreateMarketWithPoolTx({
+    title: params.title,
+    resolutionSource: params.resolutionSource,
+    expiryMs: params.expiryMs,
+    poolId: existingPoolId,
+    category: params.category ?? 0,
+  });
+  const result = await executeTransaction(client, tx, signer);
+  // `create_market_with_pool` returns the same object shape
+  // as `create_market` minus the `Pool` (it reuses the
+  // existing one). The balanceManager is always fresh.
+  const marketId = await extractCreatedObjectId(
+    client,
+    result.digest,
+    "PredictionMarket",
+  );
+  if (!marketId) {
+    throw new Error(
+      `ensureMarketCreated: PredictionMarket object not found in effects (digest ${result.digest})`,
+    );
+  }
+  const balanceManagerId = await extractCreatedObjectId(
+    client,
+    result.digest,
+    "BalanceManager",
+  );
+  return {
+    marketId,
+    poolId: existingPoolId,
+    balanceManagerId: balanceManagerId ?? "",
+    source: "create_market_with_pool",
+  };
+}

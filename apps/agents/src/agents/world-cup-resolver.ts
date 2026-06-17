@@ -525,11 +525,26 @@ async function commitResolution(
 ): Promise<boolean> {
   if (!market) return false;
   const outcome = outcomeFor(result);
-  // Demo path: no on-chain pool id means the market
-  // was inserted as a SQLite stub by `wc-demo-seed` or
-  // the WorldCupCreator's demo fallback. Just update
-  // the mirror.
+  // R-WC-1 fix: the pre-fix demo path handled
+  // markets that were inserted as SQLite stubs by
+  // the old WorldCupCreator's `EPoolAlreadyExists`
+  // fallback (which left 46 of 47 markets with no
+  // on-chain backing). After R-WC-1 the creator
+  // always emits a real on-chain `PredictionMarket`
+  // for every WC match, so the demo path is only
+  // hit for pre-R-WC-1 rows that are still in the
+  // SQLite mirror from a prior deploy. Keep the
+  // demo path as a defensive migration aid: it
+  // updates the mirror so the home page shows
+  // consistent resolved state, but the warning
+  // tells the operator to re-run the bootstrap
+  // script to backfill the on-chain markets.
   if (market.id.startsWith("demo-") || !market.pool_id) {
+    console.warn(
+      `[wc-resolver] ${match.id} has no on-chain market (pool_id=${market.pool_id ?? "null"}, ` +
+        `onchain_market_id=${market.onchain_market_id ?? "null"}); updating SQLite mirror only. ` +
+        `Run \`node scripts/bootstrap-wc-markets.mjs\` to backfill the on-chain market for this match.`,
+    );
     upsertMarket({
       ...market,
       status: "resolved",

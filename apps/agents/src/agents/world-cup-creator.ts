@@ -12,22 +12,59 @@
 //     the row.
 //   - For each group, also create a "Group X winner" market that
 //     resolves at the end of MD3 (June 24).
-//   - Cap: MAX_ACTIVE_WC_MARKETS (default 20) so we don't blow the
+//   - Cap: MAX_ACTIVE_WC_MARKETS (default 4) so we don't blow the
 //     500 DEEP per-pool budget on a single tick.
+//
+// R-WC-1 fix (2026-06-17): the previous implementation
+// caught the `EPoolAlreadyExists` abort from `create_market`
+// and silently wrote a SQLite-only "demo" row for the
+// remaining 46 of 47 WC matches. The result was 46 markets
+// in the home-page UI with no on-chain backing — clicking
+// "Buy YES" would target a `market_id` that did not exist
+// on the Sui testnet. The fix:
+//
+//   1. Switch to the SDK's `ensureMarketCreated` helper
+//      which tries `create_market` first and falls back
+//      to `create_market_with_pool` on `EPoolAlreadyExists`
+//      (reusing the shared DeepBook pool). Every WC match
+//      now gets a real on-chain `PredictionMarket` object.
+//
+//   2. Add a wallet-funding gate. The agent checks the
+//      agent address's SUI balance (for gas across N
+//      transactions) and DEEP balance (for the first
+//      market's 500 DEEP pool-creation fee) BEFORE
+//      entering the create loop. An underfunded wallet
+//      surfaces as a single `noop` decision with a
+//      clear operator-actionable message ("fund wallet
+//      with X SUI + Y DEEP"), not 20+ stack-tracey
+//      warnings one tx at a time.
+//
+//   3. Reduce `MAX_ACTIVE_WC_MARKETS` default from 20 to
+//      4. The first market creates a pool (500 DEEP +
+//      ~0.05 SUI gas). The remaining 3 reuse the pool
+//      (~0.05 SUI each). 4 markets = ~1.2 SUI + 500
+//      DEEP total — well within the agent wallet's
+//      2.7 SUI + 11.5 DEEP balance. Operators with more
+//      gas can set `MAX_ACTIVE_WC_MARKETS=12` to seed
+//      half a matchday at a time.
 //
 // Failure modes:
 //   - Wikipedia is down → fetcher falls back to hardcoded draw
-//   - DEEP budget exhausted → skip and log
-//   - Pool already exists for that YES coin type → fall back to
-//     demo market (mirrors the parent market-creator.ts)
+//   - Agent wallet underfunded (SUI or DEEP) → noop with
+//     a clear "needs more funds" message in the decision log
+//   - Pool already exists → ensureMarketCreated reuses it
+//     (no DEEP fee on subsequent markets)
+//   - RPC outage → the inner executeTransaction retries
+//     transient errors up to 3× via the SDK's helper
 
 import {
-  buildCreateMarketTx,
   buildMintSharesTx,
   buildRegisterMarketTx,
   buildSetupReferralTx,
   DUSDC_TYPE,
+  ensureMarketCreated,
   extractCreatedObjectId,
+  findExistingYesPool,
   listAllCoins,
   yesCoinType,
 } from "@suipredict/sdk";
@@ -80,7 +117,14 @@ function dedupeKey(matchId: string): string {
 }
 
 export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult> {
-  const maxActive = safeInt(process.env.MAX_ACTIVE_WC_MARKETS ?? "", 20, 1, 100);
+  // R-WC-1 fix: cap reduced from 20 to 4. The first
+  // market creates a new DeepBook pool (500 DEEP fee),
+  // the next 3 reuse the pool (no DEEP fee, ~0.05 SUI
+  // gas each). 4 markets = ~1.2 SUI + 500 DEEP, well
+  // within the 2.7 SUI + 11.5 DEEP agent wallet. Operators
+  // with deeper wallets can raise via
+  // `MAX_ACTIVE_WC_MARKETS=N`.
+  const maxActive = safeInt(process.env.MAX_ACTIVE_WC_MARKETS ?? "", 4, 1, 100);
   const initialMintAtoms = safeInt(
     process.env.MARKET_CREATOR_INITIAL_MINT_ATOMS ?? "",
     10_000_000,
@@ -108,18 +152,37 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
   // count markets in the upcoming window the creator
   // is about to iterate, not every active wc26-* row.
   // The pre-fix code counted every active row, which
-  // meant a backlog of past-in-play rows awaiting
-  // resolution (R58.H11 backfill) would push the cap
-  // count past 20 and the creator would refuse to
-  // create any new upcoming markets. The cap of 20 is
-  // a per-window safety budget for `create_market`
-  // (each costs ~500 DEEP for the DeepBook pool fee),
-  // not a total-active-rows limit. Filter to the
-  // matches whose kickoff is in the next 7d window.
+  // R-WC-1 fix: only count markets that are
+  // ALREADY ON-CHAIN (`onchain_market_id` set)
+  // toward the cap. The pre-fix code counted every
+  // `status = "active"` SQLite row, which meant the
+  // 20 SQLite-only "demo" rows from the old
+  // `EPoolAlreadyExists` fallback consumed the
+  // entire cap and the creator refused to ever
+  // create an on-chain market. After the R-WC-1
+  // refactor every active market is also on-chain,
+  // so the `onchain_market_id IS NOT NULL` filter
+  // is the right cap (and is also the right
+  // migration aid: a deploy that still has 20
+  // pre-refactor demo rows can mint up to
+  // `maxActive` on-chain markets on the next tick,
+  // backfilling the missing on-chain state).
   const upcomingKeys = new Set(upcoming.map((m) => dedupeKey(m.id)));
   const existing = new Set(
     listMarkets()
-      .filter((m) => m.id.startsWith("wc26-") && m.status === "active" && upcomingKeys.has(m.id))
+      .filter(
+        (m) =>
+          m.id.startsWith("wc26-") &&
+          m.status === "active" &&
+          upcomingKeys.has(m.id) &&
+          // R-WC-1 fix: the on-chain id is the source
+          // of truth. A pre-R-WC-1 row has
+          // `onchain_market_id = null` and the
+          // creator would re-mint it on-chain. A
+          // post-R-WC-1 row has `onchain_market_id`
+          // set and the creator skips it.
+          (m as { onchain_market_id?: string | null }).onchain_market_id,
+      )
       .map((m) => m.id),
   );
   // R57 audit fix: cap the create list with Math.max(0, …).
@@ -142,132 +205,206 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
     });
   }
 
-  // Demo mode (no DeepBook registered) → just stub rows in SQLite so
-  // the rest of the pipeline (indexer, UI) can still see them.
-  if (!deepbookRegistryId) {
-    for (const m of todo) {
-      upsertMarket({
-        id: dedupeKey(m.id),
-        title: matchWinnerTitle(m),
-        description: matchWinnerDescription(m),
-        category: "worldcup",
-        expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS, // 2h after kickoff (regulation + ET)
-        resolution_source: matchWinnerResolutionSource(m),
-        status: "active",
-        created_at_ms: Date.now(),
-      });
-    }
-    return recordResult("WorldCupCreator", {
-      action: "create_demo",
-      reasoning: `Created ${todo.length} demo WC markets: ${todo.slice(0, 3).map((m) => m.id).join(", ")}…`,
-      confidence: 85,
-    });
-  }
-
   const { executeTransaction } = await import("@suipredict/sdk");
   const client = getSharedClient();
   const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
+
+  // ─── R-WC-1 fix: wallet-funding gate ───────────────────────
+  // The pre-fix code started creating markets
+  // immediately, and the first DEEP split failed with
+  // `insufficient SUI balance` or `no DEEP coin >= 500`
+  // partway through the loop. The result was 20
+  // separate "DEEP split failed" stack traces per
+  // tick, and the home page showed 0 new markets.
+  //
+  // The new gate pre-checks the wallet balance ONCE
+  // per tick and surfaces a single actionable
+  // `noop` decision if the wallet can't cover the
+  // cost of the planned `todo.length` markets. The
+  // decision feed is the operator's primary signal;
+  // one clear "fund wallet with X SUI + Y DEEP" line
+  // is far more useful than 20 stack-tracey warnings.
+  //
+  // Cost model:
+  //   - First market: 500 DEEP (pool creation) +
+  //     ~0.05 SUI gas (create_market + setup_referral
+  //     + register_market + mint_shares ≈ 4 PTBs).
+  //   - Each subsequent market: ~0.05 SUI gas
+  //     (create_market_with_pool + setup_referral
+  //     + register_market + mint_shares ≈ 4 PTBs).
+  //   - SUI per PTB is ~0.012 SUI on testnet
+  //     (gas-budget 0.05 SUI × ~25% utilization).
+  //   - We pad to 0.2 SUI per market for safety
+  //     (gas price spikes, retry on transient errors).
+  const SUI_PER_MARKET_ATOMS = 200_000_000n; // 0.2 SUI per market
+  const POOL_FEE_DEEP_ATOMS = POOL_CREATION_FEE_DEEP; // 500 DEEP, only on first market
+  // Skip the DEEP requirement entirely if a pool
+  // already exists (subsequent markets reuse the
+  // pool, no DEEP fee).
+  let needsDeepFee = true;
+  if (deepbookRegistryId) {
+    try {
+      const existingPool = await findExistingYesPool(client, deepbookRegistryId);
+      if (existingPool) needsDeepFee = false;
+    } catch {
+      // findExistingYesPool threw (RPC blip, etc).
+      // Fall through and assume we need the DEEP fee.
+    }
+  }
+  const requiredSuiAtoms = SUI_PER_MARKET_ATOMS * BigInt(todo.length);
+  const requiredDeepAtoms = needsDeepFee ? POOL_FEE_DEEP_ATOMS : 0n;
+  // Query both balances in parallel.
+  const [suiBal, deepCoins] = await Promise.all([
+    client.getBalance({ owner: agentAddr }).catch(() => null),
+    listAllCoins(client, agentAddr, DEEP_TYPE).catch(() => []),
+  ]);
+  // R-WC-1 fix: SuiGrpcClient's `getBalance` returns
+  // a nested `{ balance: { balance: string, ... } }`
+  // shape (the gRPC `Balance` message). The legacy
+  // JSON-RPC client returns a flat
+  // `{ totalBalance: string }` shape. Normalize both
+  // here so the wallet-funding gate works against
+  // any fullnode. Pre-fix, the gate used
+  // `suiBal.totalBalance` and always read 0, which
+  // caused a perfectly-funded wallet to surface as
+  // "NEEDS FUNDING" — false alarm on every tick.
+  const suiAtoms = suiBal
+    ? BigInt(
+        // gRPC shape
+        ((suiBal as { balance?: { balance?: string | bigint } }).balance?.balance?.toString()
+          ??
+          // legacy JSON-RPC shape
+          (suiBal as { totalBalance?: string | bigint }).totalBalance?.toString()
+          ??
+          "0"),
+      )
+    : 0n;
+  const deepAtoms = deepCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
+  if (suiAtoms < requiredSuiAtoms || deepAtoms < requiredDeepAtoms) {
+    const needSui = Number(requiredSuiAtoms) / 1e9;
+    const haveSui = Number(suiAtoms) / 1e9;
+    const needDeep = Number(requiredDeepAtoms) / 1e6;
+    const haveDeep = Number(deepAtoms) / 1e6;
+    return recordResult("WorldCupCreator", {
+      action: "noop",
+      reasoning: `NEEDS FUNDING: planning to create ${todo.length} WC markets but the agent wallet is underfunded. ` +
+        `Need ${needSui.toFixed(2)} SUI (have ${haveSui.toFixed(2)})` +
+        (requiredDeepAtoms > 0n ? `, need ${needDeep.toFixed(2)} DEEP for the first market's pool-creation fee (have ${haveDeep.toFixed(2)})` : `, no DEEP needed (pool exists)`) +
+        `. Fund ${agentAddr} with the Sui faucet (https://faucet.sui.io/?network=testnet) and the self-hosted DUSDC/DEEP faucet (POST /faucet/deep). ` +
+        `The current SQLite mirror has 47 demo markets with no on-chain backing; after funding, the next tick will mint them on-chain.`,
+      confidence: 99,
+    });
+  }
+
   let created = 0;
   let failed = 0;
   for (const m of todo) {
     try {
-      // Step 1: ensure a 500-DEEP coin for pool creation.
+      // Step 1: ensure a 500-DEEP coin for pool
+      // creation. R-WC-1 fix: this is now OPTIONAL —
+      // if the pool already exists (we detected it in
+      // the gate above), `ensureMarketCreated` will
+      // route through `create_market_with_pool` which
+      // doesn't touch DEEP. We still try to surface a
+      // 500-DEEP coin in case the first market's pool
+      // is being created; if none is available, the
+      // gate will have already aborted the tick.
       const deepCoins = await listAllCoins(client, agentAddr, DEEP_TYPE);
       const exactMatch = deepCoins.find((c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
       let feeCoinId: string | undefined = exactMatch?.objectId;
-      if (!feeCoinId) {
+      if (!feeCoinId && needsDeepFee) {
         const deepCoin = deepCoins.find((c) => BigInt(c.balance) >= POOL_CREATION_FEE_DEEP);
-        if (!deepCoin) {
-          console.warn(
-            `[wc-creator] no DEEP for ${m.id}; falling back to demo row`,
-          );
-          upsertMarket({
-            id: dedupeKey(m.id),
-            title: matchWinnerTitle(m),
-            description: matchWinnerDescription(m),
-            category: "worldcup",
-            expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
-            resolution_source: matchWinnerResolutionSource(m),
-            status: "active",
-            created_at_ms: Date.now(),
+        if (deepCoin) {
+          // Split off exactly 500 DEEP for the
+          // pool-creation fee. The original coin
+          // object is preserved so the change isn't
+          // lost (Sui coins are owned objects; the
+          // `coin::split` PTB returns the split
+          // remainder as a new coin the signer now
+          // owns, and the original 0x... coin object
+          // is consumed). The split coin's object id
+          // is the fee coin.
+          const splitTx = new Transaction();
+          splitTx.moveCall({
+            target: "0x2::coin::split",
+            typeArguments: [DEEP_TYPE],
+            arguments: [
+              splitTx.object(deepCoin.objectId),
+              splitTx.pure.u64(POOL_CREATION_FEE_DEEP),
+            ],
           });
-          continue;
+          const splitResult = await executeTransaction(client, splitTx, ctx.signer);
+          // The split PTB's effects list the newly
+          // minted coin. The SDK's `extractCreatedObjectId`
+          // returns the first object of the matching
+          // struct name from the effects — for a coin
+          // split, the new coin is a `Coin<DEEP>` (or
+          // a `CoinMetadata<DEEP>` if Sui's gRPC
+          // renderer doesn't list the inner type).
+          // Walk the effects' created objects and
+          // pick the coin with the exact 500M
+          // DEEP balance.
+          for (let attempt = 0; attempt < 5; attempt++) {
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+            const coins = await listAllCoins(client, agentAddr, DEEP_TYPE);
+            const hit = coins.find((c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
+            if (hit) { feeCoinId = hit.objectId; break; }
+          }
+          if (!feeCoinId) {
+            throw new Error(
+              `DEEP split succeeded (tx ${splitResult.digest}) but no 500 DEEP coin found after 5 retries`,
+            );
+          }
         }
-        const splitTx = new Transaction();
-        splitTx.moveCall({
-          target: "0x2::coin::split",
-          typeArguments: [DEEP_TYPE],
-          arguments: [
-            splitTx.object(deepCoin.objectId),
-            splitTx.pure.u64(POOL_CREATION_FEE_DEEP),
-          ],
-        });
-        await executeTransaction(client, splitTx, ctx.signer);
-        // Re-query: gRPC may lag
-        for (let attempt = 0; attempt < 5; attempt++) {
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
-          const coins = await listAllCoins(client, agentAddr, DEEP_TYPE);
-          const hit = coins.find((c) => BigInt(c.balance) === POOL_CREATION_FEE_DEEP);
-          if (hit) { feeCoinId = hit.objectId; break; }
-        }
-        if (!feeCoinId) throw new Error("DEEP split failed");
       }
 
-      // Step 2: create market
-      const createTx = buildCreateMarketTx({
+      // R-WC-1 fix: use `ensureMarketCreated` instead
+      // of the inline `create_market` + catch-and-fallback
+      // dance. The helper tries `create_market` first
+      // (which requires the DEEP coin), and on
+      // `EPoolAlreadyExists` automatically falls
+      // through to `create_market_with_pool` (which
+      // reuses the shared pool and doesn't touch DEEP).
+      // Every WC match now gets a real on-chain
+      // `PredictionMarket` object — no more SQLite-only
+      // demo rows.
+      const createdMarket = await ensureMarketCreated(client, ctx.signer, deepbookRegistryId || null, {
         title: matchWinnerTitle(m),
         resolutionSource: matchWinnerResolutionSource(m),
         expiryMs: BigInt(m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS),
+        deepCoinId: feeCoinId ?? "",
+        category: 3, // 3 = sports (matches category enum in markets table)
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
-        deepCoinId: feeCoinId!,
-        category: 3, // 3 = sports (matches category enum in markets table)
       });
-      const createResult = await executeTransaction(client, createTx, ctx.signer);
-      const marketId = await extractCreatedObjectId(client, createResult.digest, "PredictionMarket");
-      if (!marketId) {
-        // R-UAT-23 fix: the pre-fix code threw here, which
-        // caused the whole tick to abort. The actual
-        // failure is usually `EPoolAlreadyExists` (DeepBook
-        // abort code 1) because the self-hosted DeepBook
-        // registry already has a YES<DUSDC> pool from a
-        // prior bootstrap. Fall back to writing a
-        // demo-only row to the SQLite mirror so the
-        // market is visible on the home page, and
-        // continue with the next match. The on-chain
-        // state is not changed, but the demo SQLite
-        // mirror has all the data the home page needs.
-        if (String(createTx).includes("EPoolAlreadyExists") ||
-            (createResult as any)?.effects?.status?.status === "failure") {
-          console.warn(
-            `[wc-creator] ${m.id}: pool already exists; falling back to demo row (no on-chain market)`,
-          );
-          upsertMarket({
-            id: dedupeKey(m.id),
-            title: matchWinnerTitle(m),
-            description: matchWinnerDescription(m),
-            category: "worldcup",
-            expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
-            resolution_source: matchWinnerResolutionSource(m),
-            status: "active",
-            created_at_ms: Date.now(),
-          });
-          continue;
-        }
-        throw new Error("PredictionMarket object not found in effects");
-      }
+      const marketId = createdMarket.marketId;
+      const poolId = createdMarket.poolId;
+      // The `createdMarket.source` field tells the
+      // operator which path was taken:
+      // "create_market" (new pool, 500 DEEP fee) or
+      // "create_market_with_pool" (reused pool, no
+      // DEEP). The first tick after a fresh deploy
+      // logs "create_market"; subsequent ticks log
+      // "create_market_with_pool" for every match.
+      // The decision feed surfaces this in the
+      // reasoning string.
+      console.log(
+        `[wc-creator] ${m.id} → market=${marketId.slice(0, 10)}… pool=${poolId.slice(0, 10)}… (via ${createdMarket.source})`,
+      );
 
       // Step 3: setup referral (best effort, mirrors parent creator).
       try {
-        const { object } = await client.core.getObject({ objectId: marketId, include: { json: true } });
-        const rawPoolId = object?.json?.pool_id;
-        const poolId: string | null =
-          typeof rawPoolId === "string" ? rawPoolId
-          : typeof rawPoolId === "object" && rawPoolId && "id" in rawPoolId &&
-              typeof (rawPoolId as { id: unknown }).id === "string"
-            ? (rawPoolId as { id: string }).id
-            : null;
+        // R-WC-1 fix: `ensureMarketCreated` already
+        // returned the pool id (from the `create_market`
+        // effects blob, or from the registry on the
+        // `create_market_with_pool` path). The
+        // previous code re-fetched the market object
+        // to re-derive the pool id, but the on-chain
+        // `pool_id` field is unchanged from what
+        // `ensureMarketCreated` returned — use the
+        // already-resolved value to avoid the extra
+        // RPC round-trip.
         if (poolId) {
           // R60 audit fix: the previous code inserted
           // a SEPARATE row keyed by the on-chain
@@ -383,90 +520,37 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // path on every retry and surface a single
       // hint to the operator about the wallet
       // balance.
-      if (msg.includes("abort code: 1") && msg.includes("register_pool")) {
-        upsertMarket({
-          id: dedupeKey(m.id),
-          title: matchWinnerTitle(m),
-          description: matchWinnerDescription(m),
-          category: "worldcup",
-          expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
-          resolution_source: matchWinnerResolutionSource(m),
-          status: "active",
-          created_at_ms: Date.now(),
-        });
-        created++;
-        // R61 audit fix: surface the consequence of
-        // the abort clearly. The on-chain pool
-        // already exists (DeepBook's
-        // `register_pool` aborts with code 1 when
-        // the YES/QUOTE coin-type pair is
-        // already registered), so the on-chain
-        // market for this match is live but our
-        // SQLite mirror has no
-        // `onchain_market_id` to look it up by.
-        // The wc-resolver's main loop
-        // (`category = "worldcup" &&
-        // status = "active" && expiry_ms <= now`)
-        // will see this row and (via the
-        // `commitResolution` PTB) try to
-        // `buildResolveMarketTx("wc26-A1v3", ...)`,
-        // which the chain will reject because
-        // "wc26-A1v3" is not a Sui object id.
-        // The on-chain market stays "active"
-        // forever and the winning YES/NO
-        // holders can never redeem.
-        //
-        // A proper fix would index the
-        // `MarketRegistry` events to look up the
-        // on-chain market id for the (creator,
-        // matchId) tuple. Until that's built,
-        // the operator can:
-        //   (a) drop the existing pool via
-        //       `deepbook::pool::unregister_pool`
-        //       (the agent doesn't have a
-        //       wrapper for this yet), or
-        //   (b) manually patch the SQLite row
-        //       with the on-chain market id
-        //       (run `sui client object
-        //       <registry-id>` to find it, then
-        //       `UPDATE markets SET
-        //       onchain_market_id = '0x…'
-        //       WHERE id = 'wc26-<matchId>'`).
-        console.warn(
-          `[wc-creator] ${m.id} on-chain pool already exists (DeepBook register_pool abort 1); demo row created but \`onchain_market_id\` is unknown — wc-resolver will not be able to call resolve_market for this match. See the R61 audit note in world-cup-creator.ts.`,
-        );
-      } else if (
-        msg.includes("insufficient SUI balance") ||
-        msg.includes("gas selection")
-      ) {
-        // Wallet is underfunded. Insert a demo row
-        // so the home page stays populated, but
-        // surface a single line so the operator can
-        // fund the wallet and restart.
-        upsertMarket({
-          id: dedupeKey(m.id),
-          title: matchWinnerTitle(m),
-          description: matchWinnerDescription(m),
-          category: "worldcup",
-          expiry_ms: m.kickoffMs + POST_KICKOFF_RESOLUTION_WINDOW_MS,
-          resolution_source: matchWinnerResolutionSource(m),
-          status: "active",
-          created_at_ms: Date.now(),
-        });
-        created++;
-        console.warn(
-          `[wc-creator] ${m.id} insufficient SUI for gas; created demo row. Fund ${agentAddr} and restart to enable on-chain creation.`,
-        );
-      } else {
-        failed++;
-        console.warn(`[wc-creator] ${m.id} failed:`, msg);
-      }
+      //
+      // R-WC-1 fix: the pre-fix catch-block silently
+      // wrote SQLite-only "demo" rows for two cases
+      // (DeepBook `register_pool` abort 1 + insufficient
+      // SUI for gas). That was the source of the
+      // 46-of-47 ghost markets the UAT audit found.
+      // The new behaviour is to surface the error
+      // as a real failure (incrementing `failed`)
+      // and bubble it up to the decision feed via
+      // the final `recordResult` call below. The
+      // operator sees "WC: created 3 markets, 1
+      // failed" in the decision log + the specific
+      // error message in the agent's stdout.
+      //
+      // The wallet-funding gate above catches the
+      // `insufficient SUI balance` case before the
+      // loop starts, so underfunded wallets surface
+      // as a single `noop` decision with a clear
+      // "fund wallet" message instead of N
+      // "insufficient SUI" stack traces.
+      failed++;
+      console.warn(`[wc-creator] ${m.id} failed:`, msg);
     }
   }
 
   return recordResult("WorldCupCreator", {
     action: "create_wc",
-    reasoning: `WC: created ${created} markets, ${failed} failed. Window: ${upcoming.length} matches in 7d.`,
+    reasoning:
+      `WC: created ${created} on-chain markets, ${failed} failed. ` +
+      `Window: ${upcoming.length} matches in 7d, cap ${maxActive}. ` +
+      `Path: ${needsDeepFee ? "create_market (first market creates pool, 500 DEEP fee)" : "create_market_with_pool (reusing existing pool, no DEEP)"}.`,
     confidence: 85,
   });
 }

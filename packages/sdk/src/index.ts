@@ -65,6 +65,17 @@ export {
   buildSetupReferralTx,
   buildCreateMarketTx,
   buildCreateMarketWithPoolTx,
+  // R-WC-1 fix: single entry point that tries
+  // `create_market` first and falls back to
+  // `create_market_with_pool` on `EPoolAlreadyExists`.
+  // Used by the world-cup-creator so every WC match
+  // gets a real on-chain `PredictionMarket` (the
+  // pre-fix code wrote a SQLite-only demo row on the
+  // fallback, leaving 46 of 47 markets with no on-chain
+  // backing).
+  ensureMarketCreated,
+  type CreatedMarket,
+  findExistingYesPool,
   buildResolveMarketTx,
   buildRedeemTx,
   buildRedeemNoTx,
