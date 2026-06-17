@@ -2254,71 +2254,189 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
               )}
             </div>
           )}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {(() => {
-              const bids = (book?.bids ?? []).slice(0, 8);
-              const asks = (book?.asks ?? []).slice(0, 8);
-              const maxBidQty = Math.max(...bids.map(l => Number(l.quantity)), 0);
-              const maxAskQty = Math.max(...asks.map(l => Number(l.quantity)), 0);
-              const maxVolume = Math.max(maxBidQty, maxAskQty) || 1;
+              // R-WC-1.9 fix: render BOTH the YES and NO
+              // order books side by side. The on-chain
+              // DeepBook pool is `Pool<YES<Q>, Q>` —
+              // only the YES token has its own
+              // limit-order book. The NO order book
+              // is the COMPLEMENT of the YES book:
+              //   - YES bid @ P (willing to buy YES) ==
+              //     NO offer @ (1 - P) (willing to sell
+              //     NO, since YES + NO = 1 DUSDC).
+              //   - YES ask @ P (willing to sell YES) ==
+              //     NO bid @ (1 - P) (willing to buy
+              //     NO).
+              // So we derive the NO book from the YES
+              // book by inverting prices and swapping
+              // the bid/ask sides. Each book is shown
+              // as a 2-column card (Bids | Asks) so
+              // the depth visualization is consistent
+              // across sides.
+              const yesBids = (book?.bids ?? []).slice(0, 8);
+              const yesAsks = (book?.asks ?? []).slice(0, 8);
+              // YES bid @ P -> NO ask @ (1 - P);
+              // sort NO asks ascending by price
+              // (cheapest first, the standard ask book
+              // ordering).
+              const noAsks = yesBids
+                .map((l) => ({
+                  price_bps: 10_000 - l.price_bps,
+                  quantity: l.quantity,
+                }))
+                .filter((l) => l.price_bps > 0)
+                .sort((a, b) => a.price_bps - b.price_bps)
+                .slice(0, 8);
+              // YES ask @ P -> NO bid @ (1 - P);
+              // sort NO bids descending by price
+              // (highest first, the standard bid book
+              // ordering).
+              const noBids = yesAsks
+                .map((l) => ({
+                  price_bps: 10_000 - l.price_bps,
+                  quantity: l.quantity,
+                }))
+                .filter((l) => l.price_bps > 0)
+                .sort((a, b) => b.price_bps - a.price_bps)
+                .slice(0, 8);
+              // Aggregate the YES and NO quantities
+              // separately so each book's bar chart
+              // is scaled to its own max (not to the
+              // union — the YES pool is 2x deeper
+              // than the NO book in most markets).
+              const maxYesQty = Math.max(
+                ...yesBids.map((l) => Number(l.quantity)),
+                ...yesAsks.map((l) => Number(l.quantity)),
+                0,
+              );
+              const maxNoQty = Math.max(
+                ...noBids.map((l) => Number(l.quantity)),
+                ...noAsks.map((l) => Number(l.quantity)),
+                0,
+              );
+              const maxYes = maxYesQty || 1;
+              const maxNo = maxNoQty || 1;
 
               return (
                 <>
-                  <div className="overflow-hidden rounded-lg border border-white/10">
-                    <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                  <div
+                    className={`overflow-hidden rounded-lg border ${
+                      side === "yes"
+                        ? "border-emerald-500/50"
+                        : "border-white/10"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between bg-emerald-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-emerald-300">
+                      <span>YES order book</span>
+                      {side === "yes" && (
+                        <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px]">
+                          active
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 border-b border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                       <span>Bids</span>
                       <span className="text-right">Shares</span>
                     </div>
-                    {bids.map((l, idx) => (
+                    {yesBids.map((l, idx) => (
                       <div
-                        // R34 audit fix: keying on price_bps alone is
-                        // unstable — multiple bids at the same price
-                        // level (different sizes, different makers)
-                        // produce duplicate React keys, which silently
-                        // drops or mashes rows on every refetch. Add
-                        // the row index and quantity to disambiguate.
-                        key={`b-${l.price_bps}-${l.quantity}-${idx}`}
-                        className="relative grid grid-cols-2 px-3 py-2 text-sm text-emerald-300 group z-0"
+                        key={`ybid-${l.price_bps}-${l.quantity}-${idx}`}
+                        className="relative grid grid-cols-2 px-3 py-1.5 text-sm text-emerald-300 group z-0"
                       >
                         <div
                           className="absolute inset-y-0 right-0 bg-emerald-500/10 -z-10 transition-all group-hover:bg-emerald-500/20"
-                          style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
+                          style={{ width: `${(Number(l.quantity) / maxYes) * 100}%` }}
                         />
                         <span>{(l.price_bps / 100).toFixed(1)}¢</span>
                         <span className="text-right">{formatShares(l.quantity)}</span>
                       </div>
                     ))}
-                    {bids.length === 0 && (
-                      <p className="px-3 py-6 text-center text-sm text-zinc-500">
-                        No bids yet
+                    {yesBids.length === 0 && (
+                      <p className="px-3 py-3 text-center text-xs text-zinc-500">
+                        No YES bids
                       </p>
                     )}
-                  </div>
-                  <div className="overflow-hidden rounded-lg border border-white/10">
-                    <div className="grid grid-cols-2 bg-white/[0.04] px-3 py-2 text-xs font-semibold uppercase text-zinc-500">
+                    <div className="grid grid-cols-2 border-y border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                       <span>Asks</span>
                       <span className="text-right">Shares</span>
                     </div>
-                    {asks.map((l, idx) => (
+                    {yesAsks.map((l, idx) => (
                       <div
-                        // Same key-uniqueness fix as the bids block
-                        // above. Asks can have multiple orders at the
-                        // same price level; price_bps alone is not
-                        // a stable React key.
-                        key={`a-${l.price_bps}-${l.quantity}-${idx}`}
-                        className="relative grid grid-cols-2 px-3 py-2 text-sm text-rose-300 group z-0"
+                        key={`yask-${l.price_bps}-${l.quantity}-${idx}`}
+                        className="relative grid grid-cols-2 px-3 py-1.5 text-sm text-rose-300 group z-0"
                       >
                         <div
                           className="absolute inset-y-0 right-0 bg-rose-500/10 -z-10 transition-all group-hover:bg-rose-500/20"
-                          style={{ width: `${(Number(l.quantity) / maxVolume) * 100}%` }}
+                          style={{ width: `${(Number(l.quantity) / maxYes) * 100}%` }}
                         />
                         <span>{(l.price_bps / 100).toFixed(1)}¢</span>
                         <span className="text-right">{formatShares(l.quantity)}</span>
                       </div>
                     ))}
-                    {asks.length === 0 && (
-                      <p className="px-3 py-6 text-center text-sm text-zinc-500">
-                        No asks yet
+                    {yesAsks.length === 0 && (
+                      <p className="px-3 py-3 text-center text-xs text-zinc-500">
+                        No YES asks
+                      </p>
+                    )}
+                  </div>
+                  <div
+                    className={`overflow-hidden rounded-lg border ${
+                      side === "no"
+                        ? "border-rose-500/50"
+                        : "border-white/10"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between bg-rose-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-rose-300">
+                      <span>NO order book</span>
+                      {side === "no" && (
+                        <span className="rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[9px]">
+                          active
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 border-b border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                      <span>Bids</span>
+                      <span className="text-right">Shares</span>
+                    </div>
+                    {noBids.map((l, idx) => (
+                      <div
+                        key={`nbid-${l.price_bps}-${l.quantity}-${idx}`}
+                        className="relative grid grid-cols-2 px-3 py-1.5 text-sm text-emerald-300 group z-0"
+                      >
+                        <div
+                          className="absolute inset-y-0 right-0 bg-emerald-500/10 -z-10 transition-all group-hover:bg-emerald-500/20"
+                          style={{ width: `${(Number(l.quantity) / maxNo) * 100}%` }}
+                        />
+                        <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                        <span className="text-right">{formatShares(l.quantity)}</span>
+                      </div>
+                    ))}
+                    {noBids.length === 0 && (
+                      <p className="px-3 py-3 text-center text-xs text-zinc-500">
+                        No NO bids
+                      </p>
+                    )}
+                    <div className="grid grid-cols-2 border-y border-white/10 bg-white/[0.04] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                      <span>Asks</span>
+                      <span className="text-right">Shares</span>
+                    </div>
+                    {noAsks.map((l, idx) => (
+                      <div
+                        key={`noask-${l.price_bps}-${l.quantity}-${idx}`}
+                        className="relative grid grid-cols-2 px-3 py-1.5 text-sm text-rose-300 group z-0"
+                      >
+                        <div
+                          className="absolute inset-y-0 right-0 bg-rose-500/10 -z-10 transition-all group-hover:bg-rose-500/20"
+                          style={{ width: `${(Number(l.quantity) / maxNo) * 100}%` }}
+                        />
+                        <span>{(l.price_bps / 100).toFixed(1)}¢</span>
+                        <span className="text-right">{formatShares(l.quantity)}</span>
+                      </div>
+                    ))}
+                    {noAsks.length === 0 && (
+                      <p className="px-3 py-3 text-center text-xs text-zinc-500">
+                        No NO asks
                       </p>
                     )}
                   </div>
