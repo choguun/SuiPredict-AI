@@ -134,6 +134,7 @@ export {
 export {
   getOrderBookDepth,
   getMidPrice,
+  getBalanceManagerBalance,
   PREDICT_DEEPBOOK_POOL_KEY,
   type DeepBookClient,
   type BalanceManager,

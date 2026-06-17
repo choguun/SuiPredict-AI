@@ -15,6 +15,7 @@ import {
   buildMarketWithdrawSettledTx,
   buildMintSharesTx,
   buildPlaceOrderTx,
+  getBalanceManagerBalance,
   dollarsToDusdc,
   DUSDC_TYPE,
   QUOTE_SCALE,
@@ -1110,6 +1111,34 @@ function MarketDetailBody({
             `Insufficient DUSDC: need ~${(Number(requiredAtoms) / 1_000_000).toFixed(2)} ` +
               `(${(Number(requiredWithBuffer) / 1_000_000).toFixed(2)} with buffer), ` +
               `have ${(Number(totalBalance) / 1_000_000).toFixed(2)}. Request more from the DeepBook testnet form.`,
+          );
+        }
+        // R-WC-1.8 fix: also read the on-chain
+        // BalanceManager balance. A user with DUSDC
+        // in their WALLET but nothing deposited in
+        // the BM would pass the wallet check above
+        // and then see the cryptic
+        // `MoveAbort in balance_manager::withdraw_with_proof
+        //  abort code 3 (EBalanceManagerBalanceTooLow)`
+        // inside the wallet spinner. The dryRun
+        // here is a view-only call (no PTB is
+        // submitted); the SDK's `getBalanceManagerBalance`
+        // builds a single moveCall and reads back
+        // the u64 return value.
+        const bmBalance = await getBalanceManagerBalance(
+          client,
+          balanceManagerId,
+          DUSDC_TYPE,
+        );
+        if (bmBalance < requiredWithBuffer) {
+          const needDeposit = requiredWithBuffer - bmBalance;
+          throw new Error(
+            `Insufficient DUSDC in your Trading Account: ` +
+              `have ${(Number(bmBalance) / 1_000_000).toFixed(2)}, need ~` +
+              `${(Number(requiredAtoms) / 1_000_000).toFixed(2)} ` +
+              `(${(Number(requiredWithBuffer) / 1_000_000).toFixed(2)} with buffer). ` +
+              `Deposit ~${(Number(needDeposit) / 1_000_000).toFixed(2)} DUSDC into your Trading Account first ` +
+              `(use the "Deposit" button below).`,
           );
         }
       }

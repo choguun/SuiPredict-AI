@@ -13,6 +13,8 @@ import {
 } from "@mysten/deepbook-v3";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
+import type { SuiClient } from "../predict-client.js";
+import { normalizeObjectId } from "../utils.js";
 import {
   DBUSDC_TYPE,
   DEEPBOOK_PACKAGE_ID,
@@ -263,6 +265,70 @@ export function buildDeepBookWithdrawSettledTx(
   const tx = new Transaction();
   dbClient.deepBook.withdrawSettledAmounts(poolKey, PREDICT_BALANCE_MANAGER_KEY)(tx);
   return tx;
+}
+
+/**
+ * R-WC-1.8 fix: read the on-chain BalanceManager balance
+ * for a specific coin type. The DeepBook SDK's
+ * `checkManagerBalance` is a PTB builder, not a
+ * query — it emits a moveCall whose return value is
+ * only accessible via dryRun / devInspect. This
+ * helper builds the PTB, calls `dryRunTransactionBlock`
+ * to simulate it, and returns the parsed u64 balance
+ * (or 0 if the BM has no entry for this coin).
+ *
+ * The on-chain `balance_manager::balance<T>(bm): u64`
+ * is a view function — the dryRun runs the PTB
+ * without submitting a real transaction. The return
+ * value is a BCS-encoded u64 in the first
+ * `returnValues` entry of the simulation result.
+ */
+export async function getBalanceManagerBalance(
+  client: SuiClient,
+  balanceManagerId: string,
+  coinType: string,
+): Promise<bigint> {
+  const tx = new Transaction();
+  tx.setSenderIfNotSet(
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+  );
+  tx.moveCall({
+    target: `${resolveDeepbookPackageId()}::balance_manager::balance`,
+    typeArguments: [coinType],
+    arguments: [tx.object(normalizeObjectId(balanceManagerId))],
+  });
+  // R-WC-1.8 fix: the gRPC `core.simulateTransaction`
+  // returns a different shape than the JSON-RPC
+  // `dryRunTransactionBlock`. Use the JSON-RPC
+  // path which is more reliable on the public
+  // testnet. The SuiClient type is `SuiGrpcClient`
+  // but it exposes a `jsonRpc` field that mirrors
+  // the same RPC namespace.
+  const jsonRpc = (client as unknown as { jsonRpc?: { dryRunTransactionBlock: (input: { transactionBlock: Transaction }) => Promise<{ results?: { returnValues?: { returnValueBytes?: string }[] }[] }> } }).jsonRpc;
+  if (!jsonRpc) {
+    // SuiClient = SuiGrpcClient doesn't expose
+    // jsonRpc by default. Fall back to 0n (the
+    // pre-flight will allow the order through and
+    // the user will see the on-chain abort in the
+    // wallet — a degraded but safe UX).
+    return 0n;
+  }
+  const result = await jsonRpc.dryRunTransactionBlock({ transactionBlock: tx });
+  const returnValues = result.results?.[0]?.returnValues;
+  if (!returnValues?.length) {
+    return 0n;
+  }
+  const b64 = returnValues[0]?.returnValueBytes;
+  if (!b64) return 0n;
+  const bytes = Buffer.from(b64, "base64");
+  if (bytes.length < 8) return 0n;
+  // little-endian u64
+  let value = 0n;
+  for (let i = 0; i < 8; i++) {
+    const byte = bytes[i] ?? 0;
+    value |= BigInt(byte) << BigInt(i * 8);
+  }
+  return value;
 }
 
 export type OrderBookDepth = { bids: [number, number][]; asks: [number, number][] };
