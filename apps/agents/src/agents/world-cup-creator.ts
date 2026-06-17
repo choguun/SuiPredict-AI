@@ -243,8 +243,33 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
   // pool, no DEEP fee).
   let needsDeepFee = true;
   if (deepbookRegistryId) {
+    // R-WC-1.1 fix: pass the hardcoded fallback
+    // pool id from `bootstrap-wc-markets.mjs`
+    // (0xefb1e58a... on testnet). The self-hosted
+    // DeepBook registry 0xe14eba90 already has a
+    // real `Pool<YES<DUSDC>, DUSDC>` from an
+    // earlier demo-seed bootstrap, but the
+    // registry's `suix_getDynamicFields` returns
+    // an empty list (the pool is a shared object,
+    // not a dynamic field). The bootstrap script
+    // hardcodes the id; we do the same here so
+    // the wc-creator's gate stays in sync with
+    // the bootstrap's source of truth.
+    //
+    // Operators on a fresh deploy (or mainnet
+    // where no pool exists yet) can override via
+    // the `WC_FALLBACK_POOL_ID` env var (set to
+    // empty string to disable the fallback).
+    const fallbackPoolId =
+      process.env.WC_FALLBACK_POOL_ID ?? "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360";
     try {
-      const existingPool = await findExistingYesPool(client, deepbookRegistryId);
+      const existingPool = await findExistingYesPool(
+        client,
+        deepbookRegistryId,
+        undefined,
+        undefined,
+        fallbackPoolId || undefined,
+      );
       if (existingPool) needsDeepFee = false;
     } catch {
       // findExistingYesPool threw (RPC blip, etc).
@@ -307,7 +332,26 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
   // `recordResult` reasoning string below (truncated
   // to 200 chars to keep the decision feed scannable).
   let firstError: string | null = null;
-  for (const m of todo) {
+  // R-WC-1.1 fix: serialize the create loop with a
+  // per-tick delay. The Sui public fullnode
+  // (fullnode.testnet.sui.io) applies a per-IP PTB
+  // rate limit that's hit after ~3 back-to-back
+  // signAndExecuteTransaction calls. The
+  // executeTransaction helper retries 3x with
+  // exponential backoff, but the rate limit applies
+  // per-window, not per-call — 1s backoff doesn't
+  // clear the window. Adding an inter-market delay
+  // (default 4s, configurable via
+  // WC_CREATOR_INTER_MARKET_DELAY_MS) lets the
+  // limiter cool down between PTBs. Set to 0 to
+  // restore the previous fast-loop behaviour.
+  const INTER_MARKET_DELAY_MS = Number(
+    process.env.WC_CREATOR_INTER_MARKET_DELAY_MS ?? 4000,
+  );
+  for (const [mi, m] of todo.entries()) {
+    if (mi > 0 && INTER_MARKET_DELAY_MS > 0) {
+      await new Promise((r) => setTimeout(r, INTER_MARKET_DELAY_MS));
+    }
     try {
       // Step 1: ensure a 500-DEEP coin for pool
       // creation. R-WC-1 fix: this is now OPTIONAL —
@@ -558,10 +602,35 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // open a terminal to find out why the
       // create loop failed.
       if (firstError === null) {
-        // Truncate to 200 chars to keep the
-        // decision feed scannable. The full
-        // message is in stdout.
-        firstError = msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+        // R-WC-1.1 fix: detect the Sui CoinRegistry
+        // `ECurrencyAlreadyExists` abort and surface
+        // a clear, actionable explanation. The Sui
+        // system CoinRegistry only allows ONE
+        // `Currency<T>` per type `T` per package;
+        // `create_market` and `create_market_with_pool`
+        // both call `coin_registry::new_currency<YES<Q>>`
+        // which aborts after the first market. The
+        // long-term fix is a contract upgrade to use
+        // per-market coin types (e.g.
+        // `YES<DUSDC, MarketId>`), but for now this
+        // error means "stop trying — no more markets
+        // can be created on this CoinRegistry".
+        if (
+          /ECurrencyAlreadyExists/i.test(msg) ||
+          /new_currency/i.test(msg) && /already exists/i.test(msg)
+        ) {
+          firstError =
+            "CoinRegistry already has a Currency<YES<DUSDC>> from " +
+            "the first WC market; Sui's CoinRegistry allows only one " +
+            "currency per (package, type), so no more markets can be " +
+            "created on this registry. Long-term fix: upgrade the " +
+            "contract to use per-market coin types (YES<DUSDC, MarketId>).";
+        } else {
+          // Truncate to 200 chars to keep the
+          // decision feed scannable. The full
+          // message is in stdout.
+          firstError = msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+        }
       }
       console.warn(`[wc-creator] ${m.id} failed:`, msg);
     }

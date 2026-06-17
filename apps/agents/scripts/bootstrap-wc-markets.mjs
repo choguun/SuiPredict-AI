@@ -150,7 +150,7 @@ async function main() {
   // saves a registry query (which the SDK's broken
   // dynamic-field filter can't reliably answer for
   // versioned registry objects).
-  const EXISTING_POOL_ID = "0xefb1e58a6337f1f33020f9bdefd07efd00a5b42be4920d0b40b7bdd2a3fe079a";
+  const EXISTING_POOL_ID = "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360";
   let existingPoolId = EXISTING_POOL_ID;
   console.log(`\nR-UAT-23: using existing pool ${existingPoolId.slice(0, 18)}...`);
 

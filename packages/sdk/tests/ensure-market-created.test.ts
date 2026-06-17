@@ -261,6 +261,61 @@ test("findExistingYesPool: throws on infinite-loop (hasNextPage=true without cur
   );
 });
 
+test("findExistingYesPool: returns the fallback pool id when the registry has no dynamic fields (self-hosted DeepBook)", async () => {
+  // R-WC-1.1 fix: the self-hosted DeepBook registry
+  // 0xe14eba90fc8cc14a2eac1199b207d4e664931f8196f612b5aacf0c4a7f7d7a6f
+  // exposes its `Pool<YES<DUSDC>, DUSDC>` as a
+  // directly-shared object, not as a dynamic field
+  // on the registry. The previous helper threw when
+  // it couldn't find a matching dynamic field, which
+  // surfaced in the wc-creator's decision feed as
+  // "findExistingYesPool returned null". The new
+  // behaviour: if a `fallbackPoolId` is provided,
+  // return it after exhausting all pages. The
+  // operator can override the default by setting
+  // `WC_FALLBACK_POOL_ID` in the env.
+  const FALLBACK = "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360";
+  const mockClient = {
+    listDynamicFields: async () => ({
+      hasNextPage: false,
+      cursor: null,
+      dynamicFields: [],
+    }),
+  } as unknown as Parameters<typeof findExistingYesPool>[0];
+  const result = await findExistingYesPool(
+    mockClient,
+    "0x123",
+    AGENT_POLICY_PACKAGE_ID,
+    DUSDC_TYPE,
+    FALLBACK,
+  );
+  assert.equal(result, FALLBACK);
+});
+
+test("findExistingYesPool: still returns null when no fallback is provided and no dynamic fields match", async () => {
+  // R-WC-1.1 fix: if the caller does NOT provide a
+  // fallback (e.g. a fresh deploy where no pool
+  // exists yet), the helper returns `null` (not
+  // throws) so the wc-creator can fall back to
+  // `create_market` to bootstrap a new pool. This
+  // pins the contract: missing fallback + missing
+  // dynamic fields => null, not throw.
+  const mockClient = {
+    listDynamicFields: async () => ({
+      hasNextPage: false,
+      cursor: null,
+      dynamicFields: [],
+    }),
+  } as unknown as Parameters<typeof findExistingYesPool>[0];
+  const result = await findExistingYesPool(
+    mockClient,
+    "0x123",
+    AGENT_POLICY_PACKAGE_ID,
+    DUSDC_TYPE,
+  );
+  assert.equal(result, null);
+});
+
 /**
  * Test helpers for BCS encoding. The TypeName struct
  * is `{ name: String }` so its BCS is one ULEB128-encoded
