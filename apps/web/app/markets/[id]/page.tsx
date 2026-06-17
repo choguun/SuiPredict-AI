@@ -1046,12 +1046,29 @@ function MarketDetailBody({
     // R56.18 audit fix: millisecond-granularity `Date.now()`
     // collisions are unlikely but possible (a programmatic
     // submit, or two tabs the same user opens for the same
-    // market). Append a 6-char random suffix so the
+    // market). Append a 6-digit random suffix so the
     // on-chain `client_order_id` is unique even for
     // back-to-back submits in the same millisecond. The
     // `chain_orders` de-duplication in the indexer would
     // otherwise attribute the second order to the first.
-    const clientOrderId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    //
+    // R-WC-1.5 fix: pre-fix, the id was a string of the
+    // form `${Date.now()}-${randomBase36}` (e.g.
+    // `1781688021595-dtf6z5`). The DeepBook SDK then
+    // passed this string to `tx.pure.u64(...)` which
+    // internally calls `BigInt(string)` — but `BigInt`
+    // rejects non-numeric characters and threw the
+    // cryptic "Cannot convert 1781688021595-dtf6z5 to a
+    // BigInt" error inside the wallet spinner. The fix
+    // is to keep the id a numeric-only BigInt: use the
+    // timestamp (ms since epoch, ~13 digits) for the
+    // high 41 bits and a 23-bit random counter for the
+    // low bits. Both are well within `u64`'s 19-digit
+    // range, and back-to-back submits always get
+    // distinct ids.
+    const clientOrderId =
+      (BigInt(Date.now()) << BigInt(23)) |
+      BigInt(Math.floor(Math.random() * 0x7fffff));
     const toastId = toast.loading("Submitting DeepBook V3 limit order...");
     try {
       // R55 audit fix: pre-flight DUSDC balance for a
@@ -1121,7 +1138,7 @@ function MarketDetailBody({
         marketId: market.onchain_market_id ?? market.id,
         poolId: deepBookMarket.poolId,
         balanceManagerId,
-        clientOrderId: BigInt(clientOrderId),
+        clientOrderId, // already a bigint (R-WC-1.5 fix)
         // R50 audit fix: scale the 0..1 dollar price
         // to the on-chain 1e9-scaled quote units the
         // wrapper expects (the
@@ -1189,7 +1206,17 @@ function MarketDetailBody({
       // finding #10).
       const placed = await waitForOrderInBook(
         market.id,
-        clientOrderId,
+        // R-WC-1.5 fix: clientOrderId is now a bigint
+        // (was a string like "1781688021595-dtf6z5" but
+        // the BigInt() conversion inside the wallet
+        // adapter rejected the hyphen). Convert to
+        // string for the waitForOrderInBook comparison
+        // (the on-chain chain_orders.client_order_id is
+        // stored as a number; the bigint->string
+        // conversion is lossless for values that fit in
+        // u64, which our ms-timestamp + 23-bit-counter
+        // scheme always does).
+        clientOrderId.toString(),
         65_000,
         abortRef.current?.signal,
       );
