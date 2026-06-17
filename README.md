@@ -6,13 +6,14 @@
 
 > **MVP vertical:** FIFA World Cup 2026 (June 11 – July 19, 2026, USA/Canada/Mexico). 48 teams, 12 groups, 72 group matches, all of which are scraped from Wikipedia and priced by an Elo-based market maker — zero human in the loop.
 
-## Quality status (post-UAT 2026-06-17)
+## Quality status (post-UAT 2026-06-17, post-deploy 2026-06-18)
 
 - **130 / 130** Move contracts tests pass
 - **38 / 38** agents tests pass
 - **28 / 28** SDK tests pass (23 pre + 5 new for `ensureMarketCreated` / `findExistingYesPool`)
 - **14 routes** (`/`, `/markets`, `/markets/[id]`, `/worldcup`, `/worldcup/group/[letter]`, `/leaderboard`, `/portfolio`, `/parlay`, `/vault`, `/agents`, `/friends`, `/agent-policy`, `/auth`, `/admin`) all return HTTP 200
 - **All 19 UAT findings resolved** (FN-01 through FN-19, see [UAT-REPORT-FIXES.md](UAT-REPORT-FIXES.md))
+- **Production deploys live** (post-R-WC-1.7): web on `https://suipredict-web.vercel.app`, agents on `https://agents-production-11fd.up.railway.app`, 1 on-chain WC market created, MM correctly skips stale-pool markets
 - **Per-WC-match on-chain markets** — the `world-cup-creator` mints a real on-chain `PredictionMarket` for every upcoming match (per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`, shared DeepBook pool) instead of falling back to SQLite-only ghost rows
 - **Wallet-funding gate** — underfunded agent wallets surface as a single `noop` decision with a clear "fund with X SUI + Y DEEP" message instead of N stack-tracey warnings per tick
 - **Offline-shell SW** — `public/sw.js` registered on first mount; offline navigation serves `/offline.html` instead of a blank `chrome-error://chromewebdata/` page
@@ -329,6 +330,7 @@ See **[.env.example](.env.example)** for the full list. Key groups:
 | `RESOLVER_CONFIDENCE` | market-resolver | LLM confidence gate (0-100, default 85) |
 | `WC_MM_QUOTE_SIZE` | WC maker | 5_000_000 = 5 YES shares per side |
 | `MAX_ACTIVE_WC_MARKETS` | WC creator | Cap on simultaneous WC markets (default **4**; reduced from 20 to fit the 2.7 SUI + 11.5 DEEP agent wallet after the R-WC-1 wallet-funding gate was added) |
+| `WC_FALLBACK_POOL_ID` | WC creator | **R-WC-1.6**: pool id to use when the registry doesn't expose a `YES<Q>` dynamic field. Set to the literal sentinel `__DISABLED__` to skip the fallback entirely and pay 500 DEEP for the first market's pool-creation fee. Railway's CLI rejects empty env values, so `__DISABLED__` is the operator-friendly opt-out. |
 | `AGENT_CRON_<NAME>` | all | Override any agent's cron schedule (e.g. `AGENT_CRON_WC_CREATOR=*/1 * * * *` for faster iteration) |
 | `MARKET_CREATOR_INITIAL_MINT_ATOMS` | WC creator | Initial YES+NO mint per new market (default 10_000_000 = 10 shares) |
 
@@ -381,6 +383,56 @@ See **[docs/SOP-DEPLOYMENT.md](docs/SOP-DEPLOYMENT.md)** for the full procedure 
 - `verify-config` re-reads every shared-object ID on-chain and exits non-zero on any mismatch
 - Web deploys to Vercel (see `apps/web/vercel.json`); agents to any Node 20 host with persistent disk for the SQLite DBs
 - `AGENT_PRIVATE_KEY` and `PRIZE_ADMIN_PRIVATE_KEY` are the two secrets that grant on-chain write authority — never commit, never log, rotate via `rotate-prize-pubkey.ts` / `rotate-prize-admin-address.ts`
+
+### Production stack (post-R-WC-1.7)
+
+The deployment script in `docs/SOP-DEPLOYMENT.md` walks through the
+canonical single-package flow, but the **current production
+deployment** uses five distinct Move package ids across the shared
+objects (see "Multi-package deployment reality" in
+[AGENTS.md](AGENTS.md#multi-package-deployment-reality-post-r-wc-17)).
+The deployed services:
+
+| Component | URL | Stack |
+|---|---|---|
+| **Web (Vercel)** | `https://suipredict-web.vercel.app` | Next.js 15 + React 19, 52 production env vars mirrored from local `.env` (skipping the four secrets: `AGENT_PRIVATE_KEY`, `PRIZE_ADMIN_PRIVATE_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`) |
+| **Agents (Railway)** | `https://agents-production-11fd.up.railway.app` | Node 20 + `pnpm start` via Railpack (the `railpack.json` at repo root rebuilds SDK + agents at container start so `dist/` is always fresh). 5 GB persistent volume at `/data` mounted as `DATA_DIR` so the SQLite mirror survives redeploys. |
+| **Vercel → agents wire** | `NEXT_PUBLIC_AGENTS_URL=https://agents-production-11fd.up.railway.app` on Vercel | CORS locked to `https://suipredict-web.vercel.app` via `ALLOWED_ORIGIN` on Railway (`apps/agents/src/http-cors.ts:90-97` hard-fails the boot in `NODE_ENV=production` if unset) |
+
+To redeploy after a code change:
+
+```bash
+# 1. Build locally to make sure nothing is broken
+pnpm build
+
+# 2. Push the changes to Railway (auto-deploys the latest git tree)
+railway up --detach -m "<short message>"
+
+# 3. Vercel auto-deploys the web on git push. Manual redeploy:
+cd apps/web && vercel --prod
+```
+
+### Operator scripts (post-R-WC-1.6)
+
+These four one-shot operators are the on-call toolkit. Run them from
+`apps/agents` with the standard env load order
+(`set -a; source ../../.env; set +a`):
+
+| Script | Symptom it solves |
+|---|---|
+| `npx tsx scripts/create-fresh-policy.ts` | RiskMonitor shows `Policy spent $X / $Y` with `Y` reached; maker starts aborting with `EBudgetExceeded` (code 5). The `agent_policy.move` module has no `rotate_budget` — only `create_policy`. Output: prints new policy id + writes to `apps/agents/data/agent-policy-id.txt`. Update `AGENT_POLICY_ID` + `NEXT_PUBLIC_AGENT_POLICY_ID` on Railway + Vercel. |
+| `npx tsx scripts/topup-bm-dusdc.ts` | MarketMaker's per-tick `quote_failed` pattern repeats with `EBalanceManagerBalanceTooLow` (code 3) at `balance_manager::withdraw_with_proof`. The maker's self-mint path is silently failing. Mints 10k USDC → deposit to BM directly. |
+| `npx tsx scripts/test-create-market.ts` | wc-creator's `create_market` aborts at Sui gRPC simulation time. Runs the SDK call locally and prints the uncut `SimulationError` (Railway logs truncate at the apostrophe in the error string, hiding the abort code + Move location). |
+| `npx tsx scripts/diag-mm-setup.ts` | MarketMaker's setup PTB (deposit + authorize_spend) aborts with `arg_idx: 0, TypeMismatch` etc. Same approach as above for the maker's path — uncut gRPC error. |
+
+### R-WC-1.6 + R-WC-1.7 fixes
+
+The production deploy relied on these two stops-gap fixes to
+recover from a multi-package deployment that the original
+`AGENTS.md` claim of "single canonical package" no longer matched.
+See [AGENTS.md](AGENTS.md#uats-and-audit-fixes) for the full
+audit-table entries and the "Multi-package deployment reality"
+section above for the long-term resolution plan.
 
 ## Hackathon submission
 

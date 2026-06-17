@@ -256,6 +256,10 @@ See `.env.example` for the full list. The most critical:
 | `wc-creator` creates 0 markets on a fresh deploy | `existing` count includes pre-R-WC-1 SQLite-only demo rows | The R-WC-1 fix only counts `onchain_market_id IS NOT NULL` markets; the first tick after deploy can backfill up to `MAX_ACTIVE_WC_MARKETS` (default 4) on-chain markets |
 | `wc-creator` creates 1 market then `ECurrencyAlreadyExists` for every subsequent market | Sui CoinRegistry allows only one `Currency<YES<DUSDC>>` per package | R-WC-1.2 fix: the agent trips a circuit-breaker (`apps/agents/data/wc-creator-circuit-breaker.json`) and short-circuits subsequent ticks. The `/agents` page renders a banner with the trip details + a one-click reset. Long-term fix: upgrade the contract to per-market coin types (`YES<DUSDC, MarketId>`). See `docs/SOP-DEPLOYMENT.md#coinregistry-limit`. |
 | `/wc/circuit-breaker` returns `{coinRegistryFull: true, resetAt: null}` after a contract upgrade | The breaker is sticky; the agent doesn't auto-reset until a market is successfully created | R-WC-1.2 fix: POST `{action: "reset"}` to `/wc/circuit-breaker` (or click `Reset breaker` on `/agents`). The wc-creator will retry on the next tick; if the contract still aborts the breaker re-trips. |
+| `wc-creator` aborts `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }` on every `create_market` tick | Stale `WC_FALLBACK_POOL_ID` from a previous publish whose `YES<Q>` generic lives in a different package | R-WC-1.6 fix: set `WC_FALLBACK_POOL_ID=__DISABLED__` to skip the fallback entirely. The wc-creator pays 500 DEEP for the first market's pool-creation fee; subsequent markets reuse the pool via `create_market_with_pool`. Railway's CLI rejects empty env values, so `__DISABLED__` is the operator-friendly opt-out (honoured in both the agent's local call site and the SDK's `ensureMarketCreated`). |
+| MarketMaker aborts `EBalanceManagerBalanceTooLow` (code 3 in `balance_manager::withdraw_with_proof`) for every bid even though the BM has DUSDC | Agent wallet has 11 zero-balance DUSDC coin objects but no actual DUSDC balance; the maker's per-tick self-mint path is silently failing in the catch block | R-WC-1.7 fix: run `apps/agents/scripts/topup-bm-dusdc.ts` to mint 10k USDC → deposit to the BM directly. The maker resumes quoting on the next tick. Long-term: the `agent_policy::authorize_spend` budget must be high enough to cover the per-tick cost (raise `AGENT_MAX_BUDGET_USDC`). |
+| MarketMaker aborts `CommandArgumentError { arg_idx: 0, TypeMismatch }` in command 1 of the order PTB | The SQLite mirror holds non-worldcup markets whose `deepbook_pool_id` was registered against a previous `prediction_market` package whose `YES<Q>` type lives in a different Move package | R-WC-1.7 fix: the maker now does a pool-type pre-flight before submitting the PTB — it queries the on-chain type via `sui_getObject` and skips markets whose `YES` coin type doesn't match the current `MARKET_PACKAGE_ID`'s `prediction_market::YES<Q>`. The skip decision surfaces the pool's full type + the expected prefix in the `/decisions` feed. |
+| AgentPolicy silently stops authorising after `spent == max_budget` | The `agent_policy` Move module has no `rotate_budget` — only `create_policy`. The `authorize_spend` abort with `EBudgetExceeded` (code 5) is non-recoverable until `policy.expires_at`. | Run `apps/agents/scripts/create-fresh-policy.ts` to issue a new `AgentPolicy` with a fresh budget + 90-day expiry. The new policy id is written to `apps/agents/data/agent-policy-id.txt` for operator copy-paste into `AGENT_POLICY_ID` + `NEXT_PUBLIC_AGENT_POLICY_ID` on Railway + Vercel. |
 | `pnpm build` fails on `tsx` | The `dist/` is stale | `rm -rf apps/agents/dist && pnpm build` |
 | Port 3000/3001 already in use on `pnpm dev` | Zombie `next-server` / `tsx watch` from a prior session | `pnpm uat:clean` (or `pnpm dev:clean`) runs `scripts/dev-kill-zombies.sh`. The `predev` hook auto-cleans on every `pnpm dev`. |
 | Offline reload shows `chrome-error://chromewebdata/` | No service worker registered | R-UAT-FN-17 fix: `public/sw.js` is registered on first mount; offline navigation now serves `/offline.html` with a "Retry" button. |
@@ -291,6 +295,63 @@ production-critical ones:
 | **R-WC-1** | **Refactor** | **`world-cup-creator` always mints per-match on-chain `PredictionMarket` (no SQLite-only ghost rows); wallet-funding gate pre-checks SUI + DEEP** | **`apps/agents/src/agents/world-cup-creator.ts`, `packages/sdk/src/prediction-market-client.ts`** |
 | **R-WC-1.1** | **Fix** | **6 post-R-WC-1 gaps: `openConnectModal` exports wired to all 3 call sites; `sw.js` SW_VERSION=1.0.0 (was `__SW_VERSION__`); first-error surfaced in `recordResult` reasoning; `@ducanh2912/next-pwa` dead dep removed; `findExistingYesPool` paginates + decodes SDK-wrapper gRPC shape + defaults to `PREDICT_MARKET_PACKAGE_ID`** | **`apps/web/{app/parlay,app/portfolio,app/vault}/page.tsx`, `apps/web/public/sw.js`, `apps/agents/src/agents/world-cup-creator.ts`, `packages/sdk/src/prediction-market-client.ts`** |
 | **R-WC-1.2** | **Fix** | **CoinRegistry limit handled: `world-cup-creator` trips a circuit-breaker on first `ECurrencyAlreadyExists` and short-circuits subsequent ticks (no gas spend on 44 identical MoveAborts). Hardcoded the real self-hosted testnet pool id `0xddd7cbe…` (not `0xefb1e58a…` — that one was from the old market package and would cause a Move-level type mismatch). Per-market inter-PTB delay (5s default) to clear the Sui public-RPC rate-limit window. UI: unified `MarketStatusBadge` on home/markets/markets-[id]/worldcup, `CoinRegistryLimitBanner` with localStorage dismiss, `/wc/circuit-breaker` REST endpoint + `/agents` reset button. `bootstrap-wc-markets.mjs` short-circuits on the first `ECurrencyAlreadyExists`. Docs: `docs/SOP-DEPLOYMENT.md#coinregistry-limit` full recovery checklist.** | **`apps/agents/src/agents/wc-creator-circuit-breaker.ts`, `apps/agents/src/agents/world-cup-creator.ts`, `apps/agents/src/index.ts`, `apps/agents/scripts/bootstrap-wc-markets.mjs`, `apps/web/components/{MarketStatusBadge,CoinRegistryLimitBanner}.tsx`, `apps/web/app/{page,markets/page,markets/[id]/page,worldcup/page,agents/page}.tsx`, `docs/SOP-DEPLOYMENT.md`, `README.md`, `AGENTS.md`** |
+| **R-WC-1.6** | **Fix** | **`WC_FALLBACK_POOL_ID=__DISABLED__` sentinel: skip the orphan-pool fallback entirely (the SDK was re-reading `process.env` directly, so the wc-creator's local guard wasn't enough). The agent and the SDK both honour the sentinel and pay 500 DEEP for the first market's pool-creation fee instead. Operator-friendly opt-out for Railway's CLI which rejects empty env values. Companion helpers: `apps/agents/scripts/create-fresh-policy.ts` (issue a fresh `AgentPolicy` with a fresh budget — the module has no `rotate_budget`) and `apps/agents/scripts/topup-bm-dusdc.ts` (mint 10k USDC → deposit to BM directly when the maker's per-tick self-mint silently fails).** | **`apps/agents/src/agents/world-cup-creator.ts`, `packages/sdk/src/prediction-market-client.ts`, `apps/agents/scripts/create-fresh-policy.ts`, `apps/agents/scripts/topup-bm-dusdc.ts`, `docs/SOP-DEPLOYMENT.md`, `README.md`, `AGENTS.md`** |
+| **R-WC-1.7** | **Fix** | **Two stale-state classes of errors on multi-package deployments. (1) The gRPC client's `SimulationError` rendering formats the `MoveAbort` as `MoveAbort in 1st command, abort code: 1, in '<pkg>::registry::register_pool'` — without the literal `EPoolAlreadyExists` abort name. The SDK's `ensureMarketCreated` filter only matched the JSON-RPC rendering shape, so the wc-creator's catch block silently re-threw on every gRPC call and the create_market_with_pool recovery path was never reached. (2) The MarketMaker's `place_limit_order` aborts with `CommandArgumentError { arg_idx: 0, TypeMismatch }` when the SQLite mirror carries pool ids from older `prediction_market` publishes (different `YES<Q>` package). The maker now does a pool-type pre-flight (queries the on-chain type via `sui_getObject`, skips markets whose `YES` coin type doesn't match the current `MARKET_PACKAGE_ID`'s `prediction_market::YES<Q>`). Companion diagnostic scripts: `apps/agents/scripts/test-create-market.ts` + `apps/agents/scripts/diag-mm-setup.ts` (the Railway log line truncates at the apostrophe, so these scripts surface the uncut gRPC SimulationError for debugging).** | **`apps/agents/src/agents/market-maker.ts`, `packages/sdk/src/prediction-market-client.ts`, `apps/agents/scripts/test-create-market.ts`, `apps/agents/scripts/diag-mm-setup.ts`, `docs/SOP-DEPLOYMENT.md`, `README.md`, `AGENTS.md`** |
+
+## Multi-package deployment reality (post-R-WC-1.7)
+
+The original `AGENTS.md` / `README.md` claim that `MARKET_PACKAGE_ID`
+and `AGENT_POLICY_PACKAGE_ID` are aliases of the same Move package
+**is no longer true for the current on-chain state**. Partial
+republishes have left the deployment pointing at five different
+package ids across shared objects:
+
+| Object | Env var | On-chain type's package |
+|---|---|---|
+| `AGENT_POLICY_ID` (now `0xb624f2fc…`) | `AGENT_POLICY_ID` / `NEXT_PUBLIC_AGENT_POLICY_ID` | `0xb1777f16…` (only `agent_policy` module deployed) |
+| `MARKET_REGISTRY_ID`, `VAULT_OBJECT_ID`, `NEXT_PUBLIC_PROFILE_REGISTRY_ID` | per-id envs | `0x23b78cab…` (`registry::MarketRegistry`, `vault::ProtocolVault`, `user_profile::ProfileRegistry`) |
+| `FEE_VAULT_ID` | `FEE_VAULT_ID` | `0x822d7123…` (`prediction_market::FeeVault`) |
+| `AGENT_MANAGER_ID` | `AGENT_MANAGER_ID` | `0xf5ea2b37…` (`predict_manager::PredictManager`) |
+| `DEEPBOOK_REGISTRY_ID` | `DEEPBOOK_REGISTRY_ID` | `0xc93ae84…` (Sui system DeepBook V3 — `registry::Registry`) |
+| `WC_FALLBACK_POOL_ID` (orphan pool) | `WC_FALLBACK_POOL_ID` | `0xed3e3613…` (`prediction_market::YES<DUSDC>`) |
+
+**Implications for the wc-creator + mm:**
+
+- `MARKET_PACKAGE_ID=0xed3e3613…` aligns `buildCreateMarketTx` /
+  `create_market_with_pool` with the orphan pool's `YES<Q>` type.
+  This is the canonical alignment; the wc-creator's first tick
+  after deploy now successfully creates a WC market via
+  `create_market_with_pool` against the orphan pool, then trips
+  the R-WC-1.2 CoinRegistry circuit-breaker.
+- `AGENT_POLICY_PACKAGE_ID=0xb1777f16…` remains separate because
+  the existing `AgentPolicy` was created against this package.
+  The MM's `authorize_spend` Move call uses `process.env.AGENT_POLICY_PACKAGE_ID`
+  directly (not the SDK's `PKG()` resolver), so the two-package
+  split works without conflict.
+- `agent_policy.move` has no `rotate_budget` — once the policy's
+  `spent` hits `max_budget`, you must create a new policy
+  (use `apps/agents/scripts/create-fresh-policy.ts`). Raise
+  `AGENT_MAX_BUDGET_USDC` to a 6-figure value before going to
+  production to avoid per-day resets.
+
+**Long-term resolution:** publish a fresh, single Move package
+where `prediction_market`, `agent_policy`, `vault`, `registry`,
+`user_profile`, etc. all live at one address with matching shared
+objects. The R-WC-1 / R-WC-1.6 / R-WC-1.7 fixes above are the
+**stop-gap** for the current deployment.
+
+## Operator scripts (post-R-WC-1.6)
+
+| Script | When to run |
+|---|---|
+| `apps/agents/scripts/create-fresh-policy.ts` | After `authorize_spend` starts aborting with `EBudgetExceeded` (code 5). Issues a new `AgentPolicy` with `$100k` budget + 90-day expiry. Output: prints new policy id + writes to `apps/agents/data/agent-policy-id.txt` for operator copy-paste. |
+| `apps/agents/scripts/topup-bm-dusdc.ts` | After MarketMaker's `quote_failed` pattern repeats with `EBalanceManagerBalanceTooLow` (code 3). Mints 10k USDC → deposit to BM directly. The maker resumes on next tick. |
+| `apps/agents/scripts/test-create-market.ts` | When the wc-creator's `create_market` aborts at Sui gRPC simulation time. Runs the SDK call locally and prints the uncut `SimulationError` (Railway logs truncate at the apostrophe in the error string). |
+| `apps/agents/scripts/diag-mm-setup.ts` | When the MarketMaker's setup PTB (deposit + authorize_spend) aborts. Same as above for the maker's path — uncut gRPC error. |
+
+All four scripts honour the standard env load order
+(`set -a; source ../../.env; set +a`) and run via
+`cd apps/agents && npx tsx scripts/<name>.ts`.
 
 ## Hackathon submission
 
