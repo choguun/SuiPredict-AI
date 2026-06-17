@@ -674,6 +674,22 @@ function startHealthServer() {
         JSON.stringify({
           status: "ok",
           package_id: process.env.AGENT_POLICY_PACKAGE_ID ?? "",
+          // R-WC-1.3 fix: surface DEEPBOOK_PACKAGE_ID
+          // in the /health payload so the web bundle's
+          // drift detector can catch a missing
+          // `NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID` before a
+          // user hits the "Setup Trading Account" flow
+          // and gets the cryptic "Encountered unexpected
+          // token when parsing type args for
+          // ::balance_manager::BalanceManager" BCS error.
+          // The value is also needed by the SDK's
+          // `createDeepBookClient` pre-flight (see
+          // `packages/sdk/src/deepbook/client.ts`); the
+          // agents runtime is the source of truth.
+          deepbook_package_id:
+            process.env.DEEPBOOK_PACKAGE_ID ??
+            process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ??
+            "",
           deepbook_registry_id:
             process.env.DEEPBOOK_REGISTRY_ID ?? "",
           vault_id: process.env.VAULT_OBJECT_ID ?? "",

@@ -53,6 +53,23 @@ const PUBLIC_ENV = {
     process.env.NEXT_PUBLIC_DEEPBOOK_POOL_ID ?? "",
   NEXT_PUBLIC_DEEPBOOK_POOL_KEY:
     process.env.NEXT_PUBLIC_DEEPBOOK_POOL_KEY ?? "",
+  // R-WC-1.3 fix: include DEEPBOOK_PACKAGE_ID in the
+  // drift-detector surface. Pre-fix, this var was
+  // missing from the web's `.env.local` and the
+  // SDK's createDeepBookClient silently passed an
+  // empty string into the moveCall `typeArguments`,
+  // which the on-chain BCS resolver rejected with
+  // the cryptic "Encountered unexpected token when
+  // parsing type args for ::balance_manager::BalanceManager"
+  // error every time a user clicked "Setup Trading
+  // Account". The new defensive check in
+  // createDeepBookClient throws a clear "set
+  // NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID" message at SDK
+  // init time, and this drift-detector entry ensures
+  // the missing value is visible on the /agents page
+  // before a user hits the wallet spinner.
+  NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID:
+    process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ?? "",
 } as const;
 
 export function GET() {

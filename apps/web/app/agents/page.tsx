@@ -26,6 +26,13 @@ interface AgentManifestEntry {
 
 interface HealthEnvelope {
   package_id?: string;
+  // R-WC-1.3 fix: deepbook_package_id is the
+  // source-of-truth DEEPBOOK_PACKAGE_ID for the
+  // SDK's createDeepBookClient. Pre-fix this was
+  // missing from the agents /health payload, so the
+  // web bundle's drift detector couldn't catch a
+  // missing NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID.
+  deepbook_package_id?: string;
   deepbook_registry_id?: string;
   vault_id?: string;
   prize_pool_id?: string;
@@ -135,6 +142,21 @@ const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(
 const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvelope }> = [
   { env: "NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID", label: "AGENT_POLICY_PACKAGE_ID", runtimeKey: "package_id" },
+  // R-WC-1.3 fix: track DEEPBOOK_PACKAGE_ID. Pre-fix,
+  // this env var was missing from the web's
+  // `.env.local` and the SDK silently passed an empty
+  // string into the moveCall `typeArguments` for
+  // `shareBalanceManager`, which the on-chain BCS
+  // resolver rejected with the cryptic
+  // "Encountered unexpected token when parsing type
+  // args for ::balance_manager::BalanceManager"
+  // error every time a user clicked "Setup Trading
+  // Account". The new ENV_IDS entry surfaces a
+  // missing/empty `NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID`
+  // in the `/agents` drift panel so a fresh deploy
+  // catches the omission before the user hits the
+  // wallet spinner.
+  { env: "NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID", label: "DEEPBOOK_PACKAGE_ID", runtimeKey: "deepbook_package_id" },
   { env: "NEXT_PUBLIC_DEEPBOOK_REGISTRY_ID", label: "DEEPBOOK_REGISTRY_ID", runtimeKey: "deepbook_registry_id" },
   { env: "NEXT_PUBLIC_VAULT_OBJECT_ID", label: "VAULT_OBJECT_ID", runtimeKey: "vault_id" },
   { env: "NEXT_PUBLIC_PRIZE_POOL_ID", label: "PRIZE_POOL_ID", runtimeKey: "prize_pool_id" },

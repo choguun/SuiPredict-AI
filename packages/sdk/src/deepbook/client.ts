@@ -49,6 +49,33 @@ export function createDeepBookClient(
     ?? (process.env.SUI_NETWORK === "mainnet" ? "mainnet" : "testnet");
   const defaultCoins = network === "mainnet" ? mainnetCoins : testnetCoins;
   const defaultPools = network === "mainnet" ? mainnetPools : testnetPools;
+  // R-WC-1.3 fix: fail loud at the SDK boundary when
+  // DEEPBOOK_PACKAGE_ID is unset. Pre-fix, the empty
+  // string silently propagated into the
+  // `shareBalanceManager` moveCall's `typeArguments`
+  // (`${DEEPBOOK_PACKAGE_ID}::balance_manager::BalanceManager`),
+  // which the on-chain BCS resolver rejected with the
+  // cryptic "Encountered unexpected token when parsing
+  // type args for ::balance_manager::BalanceManager"
+  // error. An operator at the SuiVision link couldn't
+  // tell that the root cause was a missing env var in
+  // `apps/web/.env.local` — the error pointed at the
+  // type name, not the missing config. The new
+  // pre-flight throws a clear "set
+  // NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID" message at
+  // `createDeepBookClient` time, before any PTB is built.
+  const resolvedDeepbookPackageId =
+    options.packageIds?.DEEPBOOK_PACKAGE_ID ?? resolveDeepbookPackageId();
+  if (!resolvedDeepbookPackageId) {
+    throw new Error(
+      "createDeepBookClient: DEEPBOOK_PACKAGE_ID is not configured. " +
+        "Set NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID (or DEEPBOOK_PACKAGE_ID) " +
+        "to the deployed DeepBook V3 package id " +
+        "(testnet default: 0xc93ae840671495202260c7afb93c820bf11c081b884b660106399208871dec5a). " +
+        "This is required for every moveCall the DeepBook client builds — the package id is " +
+        "baked into the `typeArguments` for `BalanceManager`, `Pool`, `TradeProof`, etc.",
+    );
+  }
   // Support custom DeepBook deployments via env vars or explicit options
   const packageIds = options.packageIds ?? {
     DEEPBOOK_PACKAGE_ID: resolveDeepbookPackageId(),
@@ -135,6 +162,24 @@ export function buildDeepBookCreateBalanceManagerTx(
   dbClient: DeepBookClient,
   owner?: string,
 ): Transaction {
+  // R-WC-1.3 fix: redundant defensive check. The
+  // `createDeepBookClient` pre-flight now catches a
+  // missing DEEPBOOK_PACKAGE_ID, but a caller that
+  // constructed the DeepBookClient via a custom
+  // path (e.g. a test that bypasses the factory)
+  // could still pass an unconfigured client here.
+  // This guard makes the error message slightly
+  // more specific (mentions `createBalanceManager` /
+  // `shareBalanceManager` by name) and surfaces the
+  // same root cause + remediation.
+  const pkg = resolveDeepbookPackageId();
+  if (!pkg) {
+    throw new Error(
+      "buildDeepBookCreateBalanceManagerTx: DEEPBOOK_PACKAGE_ID is not configured. " +
+        "Set NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID before constructing the DeepBook client " +
+        "(see createDeepBookClient for the full message).",
+    );
+  }
   // R49 audit fix: validate `owner` at the build boundary. An
   // empty string would fall through to the no-arg branch below
   // (the previous code treated `""` as "no owner", which is
