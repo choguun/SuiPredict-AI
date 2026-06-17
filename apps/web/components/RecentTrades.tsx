@@ -31,10 +31,29 @@
  * runs on mount, not on a timer, so
  * the first paint always shows real
  * data.
+ *
+ * R-FIX-RT layout: the component no
+ * longer renders its own outer <Card>.
+ * Previously it was rendered as a
+ * nested Card inside the YES ORDER
+ * BOOK card's footer flex row, which
+ * produced a broken layout where the
+ * "Recent trades" Card competed for
+ * flex-row space with the "Updated
+ * HH:MM:SS" timestamp and the
+ * "↻ Refresh" button. The card now
+ * renders a self-contained <section>
+ * with its own title row, and the
+ * call site wraps it in a border-t
+ * divider inside the order book
+ * card. This makes the panel usable
+ * both as a subsection of the order
+ * book card and as a standalone
+ * panel if a future page wants to
+ * drop it in.
  */
 import { useQuery } from "@tanstack/react-query";
 import { getMarketTrades } from "@suipredict/sdk";
-import { Card } from "@/components/ui";
 
 function timeAgo(ms: number): string {
   const diff = Date.now() - ms;
@@ -47,6 +66,29 @@ function timeAgo(ms: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+/**
+ * Shorten a Sui order id (a 0x-prefixed
+ * hex string) to its last 6 hex chars.
+ * The full id is 66+ chars and would
+ * overflow the narrow Order column on
+ * mobile. The hash-prefixed form
+ * (`#a1b2c3`) is enough for a user to
+ * cross-reference against the indexer
+ * / SuiVision if they need to dig
+ * deeper.
+ */
+function shortOrderId(id: string): string {
+  if (!id) return "—";
+  // `0x` prefix + at least 4 hex chars
+  // → keep the last 6 hex chars.
+  if (id.startsWith("0x") && id.length > 8) {
+    return `#${id.slice(-6)}`;
+  }
+  // Demo / SQLite ids like `wc26-A1v4`
+  // — already short, render verbatim.
+  return `#${id}`;
 }
 
 export function RecentTrades({
@@ -71,9 +113,21 @@ export function RecentTrades({
   const trades = data ?? [];
 
   return (
-    <Card title="Recent trades" className="border-white/10">
+    <section aria-label="Recent trades" className="space-y-2">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+          Recent trades
+          {!isLoading && !error && trades.length > 0 && (
+            <span className="ml-1.5 text-zinc-600">({trades.length})</span>
+          )}
+        </h3>
+        {isFetching && !isLoading && (
+          <span className="text-[10px] text-zinc-600">Refreshing…</span>
+        )}
+      </div>
+
       {isLoading && (
-        <div className="space-y-2">
+        <div className="space-y-2" aria-label="Loading recent trades">
           {[1, 2, 3].map((i) => (
             <div
               key={i}
@@ -89,8 +143,8 @@ export function RecentTrades({
       )}
       {!isLoading && !error && trades.length === 0 && (
         <p className="rounded-md border border-dashed border-white/10 bg-white/[0.02] px-3 py-4 text-center text-xs text-zinc-500">
-          No trades yet. The first fill on the CLOB will appear here within
-          ~60 seconds of the market going live.
+          No trades yet. The first fill will appear here within ~60 seconds
+          of the market going live.
         </p>
       )}
       {trades.length > 0 && (
@@ -116,12 +170,12 @@ export function RecentTrades({
                 key={`${t.order_id}-${t.timestamp_ms}-${idx}`}
                 className="grid grid-cols-12 gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-white/[0.04] transition-colors"
               >
-                <span className="col-span-2 text-zinc-500">
+                <span className="col-span-2 text-zinc-500 tabular-nums">
                   {timeAgo(t.timestamp_ms)}
                 </span>
                 <span className="col-span-2">
                   <span
-                    className={`inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                    className={`inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
                       isBid
                         ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
                         : "bg-rose-500/15 text-rose-300 border border-rose-500/30"
@@ -131,26 +185,26 @@ export function RecentTrades({
                   </span>
                 </span>
                 <span
-                  className={`col-span-3 text-right font-mono ${
+                  className={`col-span-3 text-right font-mono tabular-nums ${
                     isBid ? "text-emerald-300" : "text-rose-300"
                   }`}
                 >
                   {priceCents}¢
                 </span>
-                <span className="col-span-3 text-right font-mono text-zinc-300">
+                <span className="col-span-3 text-right font-mono tabular-nums text-zinc-300">
                   {Number(t.quantity).toLocaleString()}
                 </span>
-                <span className="col-span-2 text-right font-mono text-[10px] text-zinc-600">
-                  #{t.order_id}
+                <span
+                  className="col-span-2 truncate text-right font-mono text-[10px] text-zinc-500"
+                  title={t.order_id}
+                >
+                  {shortOrderId(t.order_id)}
                 </span>
               </div>
             );
           })}
-          {isFetching && !isLoading && (
-            <p className="text-center text-[10px] text-zinc-600">Refreshing…</p>
-          )}
         </div>
       )}
-    </Card>
+    </section>
   );
 }

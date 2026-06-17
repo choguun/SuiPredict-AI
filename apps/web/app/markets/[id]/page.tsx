@@ -2296,8 +2296,8 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
              uses `toLocaleTimeString` for
              a 24h-format local time
              string. */}
-          <div className="mt-2 flex items-center justify-between text-[10px] text-zinc-500">
-            <span>
+          <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+            <span className="whitespace-nowrap tabular-nums">
               Updated {new Date(lastBookRefreshMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </span>
             <button
@@ -2323,35 +2323,59 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
             >
               ↻ Refresh
             </button>
+          </div>
 
-            {/* R32 sweep fix: surface a "Recent
-                trades" panel below the order book
-                so a user landing on a market mid-
-                session has a single-glance signal of
-                recent activity (price drift, fill
-                rate, "is this a quiet book?"). The
-                panel wraps the new `RecentTrades`
-                client component which calls
-                `getMarketTrades(marketId, 10)` on
-                mount and refreshes every 10s when
-                the tab is visible. The trades are
-                populated by the agents'
-                position-indexer (from
-                `DeepBookOrderFilled` events) so
-                demo / pre-launch markets show the
-                friendly empty state.
+          {/* R32 sweep fix: surface a "Recent
+              trades" panel below the order book
+              so a user landing on a market mid-
+              session has a single-glance signal of
+              recent activity (price drift, fill
+              rate, "is this a quiet book?"). The
+              panel calls `getMarketTrades(marketId,
+              10)` on mount and refreshes every
+              10s when the tab is visible. The
+              trades are populated by the agents'
+              position-indexer (from
+              `DeepBookOrderFilled` events) so
+              demo / pre-launch markets show the
+              friendly empty state.
 
-                R-WC-2 fix: moved INSIDE the
-                order book card so the page grid
-                has only 2 children (order book +
-                trade wrapper) and the `order-*`
-                classes place them in the
-                intended columns. The pre-R-WC-2
-                build had RecentTrades as a
-                sibling of the order book, which
-                made it the first auto-placed
-                cell and pushed the trade card
-                to a new row on the left. */}
+              R-WC-2 fix: moved INSIDE the
+              order book card so the page grid
+              has only 2 children (order book +
+              trade wrapper) and the `order-*`
+              classes place them in the
+              intended columns. The pre-R-WC-2
+              build had RecentTrades as a
+              sibling of the order book, which
+              made it the first auto-placed
+              cell and pushed the trade card
+              to a new row on the left.
+
+              R-FIX-RT layout fix: separated
+              from the "Updated / ↻ Refresh"
+              footer row by a border-t divider.
+              Pre-fix the `<RecentTrades>`
+              component was rendered INSIDE
+              the footer flex row as a sibling
+              of the timestamp and the refresh
+              button, and the component itself
+              rendered its own outer <Card> —
+              producing a nested-card-in-a-
+              flex-row layout where the
+              "RECENT TRADES" title and content
+              competed for flex-row space with
+              "Updated HH:MM:SS" and
+              "↻ REFRESH" and overflowed on
+              both desktop and mobile. The
+              component now renders a self-
+              contained <section> with its own
+              title row, and the border-t +
+              pt-4 wrapper below establishes
+              it as a distinct subsection of
+              the order book card without
+              nested-card visual noise. */}
+          <div className="mt-4 border-t border-white/10 pt-4">
             <RecentTrades marketId={marketId} limit={10} />
           </div>
         </Card>
