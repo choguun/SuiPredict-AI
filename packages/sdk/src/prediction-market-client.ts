@@ -2330,10 +2330,21 @@ export async function ensureMarketCreated(
       // other failure so the caller can react (e.g. low
       // SUI, missing DEEP, RPC outage).
       const msg = err instanceof Error ? err.message : String(err);
+      // R-WC-1.7 fix: the gRPC client's `SimulationError`
+      // rendering formats the MoveAbort as
+      // `MoveAbort in Nth command, abort code: 1, in '<pkg>::registry::register_pool' (instruction N)`
+      // — without the `EPoolAlreadyExists` literal name.
+      // The JSON-RPC client renders it with the literal
+      // name. Match both shapes so the helper falls
+      // through to `create_market_with_pool` regardless
+      // of which transport the wc-creator is using.
       const isPoolExists =
         /EPoolAlreadyExists/.test(msg) ||
         /register_pool.*abort code: 1/i.test(msg) ||
-        (msg.includes("abort code: 1") && msg.includes("register_pool"));
+        (msg.includes("abort code: 1") && msg.includes("register_pool")) ||
+        // gRPC SimulationError: "MoveAbort in 1st command,
+        // abort code: 1, in '0xc93ae84...::registry::register_pool'"
+        /MoveAbort in \d+\w+ command, abort code: 1, in '[^']*::registry::register_pool'/.test(msg);
       if (!isPoolExists) {
         throw err;
       }

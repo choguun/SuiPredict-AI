@@ -133,7 +133,18 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
 
   // Find an active market that has a DeepBook pool
   const target = listMarkets().find(
-    (m) => m.status === "active" && m.deepbook_pool_id && m.category !== "worldcup",
+    (m) =>
+      m.status === "active" &&
+      typeof m.deepbook_pool_id === "string" &&
+      m.deepbook_pool_id.length === 66 &&
+      // R-WC-1.7 fix: a stale SQLite mirror may carry a
+      // pool id that no longer exists on-chain (e.g. an
+      // orphan pool from a previous package publish).
+      // Skip markets whose on-chain pool type doesn't
+      // match the DeepBook package we're calling
+      // `place_limit_order` against. The full on-chain
+      // type check happens below (after we have DB).
+      m.category !== "worldcup",
   );
   if (!target) {
     return recordResult("MarketMaker", {
@@ -153,6 +164,76 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
       action: "skip",
       reasoning: "No active market with pool or no BalanceManager configured.",
     });
+  }
+
+  // R-WC-1.7 fix: verify the pool's on-chain type matches
+  // `${DB}::pool::Pool<YES<DUSDC>, DUSDC>` — but a
+  // deeper check is needed for the YES coin's owning
+  // package. The SDK's `yesCoinType()` returns
+  // `${MARKET_PACKAGE_ID}::prediction_market::YES<DUSDC>`,
+  // which only matches pools whose YES type was
+  // registered by the current `prediction_market`
+  // package. On multi-package deployments where the
+  // SQLite mirror carries pools from older publishes
+  // (different `prediction_market::YES` types), the
+  // guard must compare the pool's YES-type package to
+  // the SDK's expected YES package and skip mismatches.
+  try {
+    const expectedPoolTypePrefix = `${DB}::pool::Pool<`;
+    const expectedYesTypePrefix = `${process.env.MARKET_PACKAGE_ID ?? ""}::prediction_market::YES<`;
+    const RPC =
+      process.env.SUI_RPC_URL ??
+      (process.env.SUI_NETWORK === "mainnet"
+        ? "https://fullnode.mainnet.sui.io:443"
+        : process.env.SUI_NETWORK === "devnet"
+          ? "https://fullnode.devnet.sui.io:443"
+          : "https://fullnode.testnet.sui.io:443");
+    const typeRes = await fetch(RPC, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "sui_getObject",
+        params: [poolId, { showType: true }],
+        id: 1,
+      }),
+    });
+    const typeJson = (await typeRes.json()) as {
+      result?: { data?: { type?: string } };
+    };
+    const onChainType = typeJson.result?.data?.type ?? "";
+    // Pool object must live under the DeepBook package
+    if (!onChainType.startsWith(expectedPoolTypePrefix)) {
+      return recordResult("MarketMaker", {
+        action: "skip",
+        reasoning:
+          `Pool ${poolId.slice(0, 18)}… on-chain type "${onChainType || "<missing>"}" ` +
+          `does not start with "${expectedPoolTypePrefix}". Stale SQLite row — clear deepbook_pool_id ` +
+          `and let the wc-creator / market-creator tick rebuild the market.`,
+      });
+    }
+    // R-WC-1.7 follow-up: the pool's YES coin must live
+    // in the same package as `prediction_market::YES<Q>`.
+    // On multi-package deployments where older markets
+    // were published from a different package, the YES
+    // type lives elsewhere and `place_limit_order`
+    // aborts with `TypeMismatch` on the Pool arg.
+    if (
+      expectedYesTypePrefix &&
+      !onChainType.includes(expectedYesTypePrefix)
+    ) {
+      return recordResult("MarketMaker", {
+        action: "skip",
+        reasoning:
+          `Pool ${poolId.slice(0, 18)}… has YES coin from a different package ` +
+          `(expected "${expectedYesTypePrefix}" inside the pool type). ` +
+          `The SDK's yesCoinType() will type-mismatch against this pool.`,
+      });
+    }
+  } catch (err) {
+    console.warn(
+      `[MarketMaker] pool-type pre-flight failed for ${poolId.slice(0, 18)}…: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // Skip order book depth query — use fixed spread quoting
