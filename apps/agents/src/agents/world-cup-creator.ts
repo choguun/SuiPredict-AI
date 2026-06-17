@@ -94,6 +94,11 @@ import {
   matchWinnerTitle,
   type WcMatch,
 } from "./world-cup-fetcher.js";
+import {
+  isCoinRegistryFull,
+  tripCoinRegistryFull,
+  resetCoinRegistryFull,
+} from "./wc-creator-circuit-breaker.js";
 
 /**
  * SQLite-backed dedupe for "did we already create a market for this
@@ -202,6 +207,31 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       action: "noop",
       reasoning: `${upcoming.length} upcoming WC matches in 7d window; ${existing.size} already listed (cap ${maxActive}).`,
       confidence: 95,
+    });
+  }
+
+  // R-WC-1.2 fix: short-circuit when the CoinRegistry
+  // is full. The Sui system CoinRegistry only allows
+  // ONE Currency<T> per type T per package; the
+  // on-chain `create_market` aborts with
+  // `ECurrencyAlreadyExists` after the first market.
+  // Re-trying every 15 min just produces N identical
+  // MoveAborts. The circuit-breaker trips on the first
+  // failure (below) and resets when the contract is
+  // upgraded to use per-market coin types
+  // (`YES<DUSDC, MarketId>`).
+  if (isCoinRegistryFull()) {
+    return recordResult("WorldCupCreator", {
+      action: "noop",
+      reasoning:
+        `CoinRegistry is FULL: only 1 market can exist on the current ` +
+        `Sui testnet contract (the Sui system CoinRegistry allows one ` +
+        `Currency<YES<DUSDC>> per package). ${todo.length} markets pending ` +
+        `(cap ${maxActive}). The contract must be upgraded to use per-market ` +
+        `coin types (YES<DUSDC, MarketId>) for more. Until then, run ` +
+        `\`node scripts/bootstrap-wc-markets.mjs\` to manually create the one ` +
+        `WC market if it's not already on-chain. See docs/SOP-DEPLOYMENT.md.`,
+      confidence: 100,
     });
   }
 
@@ -544,6 +574,18 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       }
 
       created++;
+      // R-WC-1.2 fix: a successful on-chain
+      // `create_market` proves the registry is not
+      // full. If the circuit-breaker was tripped
+      // from a prior tick (false positive, or the
+      // operator manually cleared it), reset the
+      // flag now. Without this, a successful market
+      // would still short-circuit on the next tick
+      // until an operator manually ran
+      // `resetCoinRegistryFull("manual")`.
+      if (isCoinRegistryFull()) {
+        resetCoinRegistryFull("new-market");
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // R58.H5 audit fix: every WC match market uses the same
@@ -625,6 +667,17 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             "currency per (package, type), so no more markets can be " +
             "created on this registry. Long-term fix: upgrade the " +
             "contract to use per-market coin types (YES<DUSDC, MarketId>).";
+          // R-WC-1.2 fix: trip the circuit-breaker so
+          // subsequent ticks short-circuit (the
+          // `noop` branch above). Without this, the
+          // agent keeps retrying every 15 minutes,
+          // producing N identical MoveAborts in the
+          // decision feed and burning the agent's
+          // SUI on gas for every attempt (each
+          // call to `create_market` / `create_market_with_pool`
+          // charges ~0.05 SUI even though it aborts
+          // before any state change).
+          tripCoinRegistryFull(m.id);
         } else {
           // Truncate to 200 chars to keep the
           // decision feed scannable. The full

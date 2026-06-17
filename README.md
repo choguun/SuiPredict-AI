@@ -138,6 +138,19 @@ draw) and applies the standard logistic with a draw adjustment.
 See **[docs/worldcup-2026.md](docs/worldcup-2026.md)** for the full
 architecture.
 
+> **Production note (CoinRegistry limit, R-WC-1.2):** Sui v1.73's
+> `coin_registry::new_currency<T>` is the only production-grade way
+> to create a `TreasuryCap<T>`, and it allows only ONE `Currency<T>`
+> per type T per package. The current contract uses `YES<DUSDC>` for
+> all WC markets, so **only one WC market can be on-chain at a time**
+> (the `wc26-A1v4` demo on testnet). The `world-cup-creator` agent
+> short-circuits after the first `ECurrencyAlreadyExists` and the
+> remaining 44 group matches are SQLite-only previews. The long-term
+> fix is a contract upgrade to per-market coin types
+> (`YES<DUSDC, MarketId>`); see
+> **[docs/SOP-DEPLOYMENT.md#coinregistry-limit](docs/SOP-DEPLOYMENT.md#coinregistry-limit)**
+> for the full deploy story and recovery checklist.
+
 ## Quick start
 
 ### Prerequisites

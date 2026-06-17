@@ -66,6 +66,20 @@ interface HealthEnvelope {
   ts_ms?: number;
 }
 
+// R-WC-1.2 fix: type the wc-creator's
+// CoinRegistry circuit-breaker state so the
+// /agents page can render a "Registry FULL"
+// banner + first-error details + a manual
+// reset button. Source of truth:
+// apps/agents/src/agents/wc-creator-circuit-breaker.ts
+interface CircuitBreakerState {
+  coinRegistryFull: boolean;
+  firstErrorAt: number | null;
+  firstErrorMarket: string | null;
+  resetAt: number | null;
+  resetReason: string | null;
+}
+
 /** Short description for an agent, shown on the manifest card. Falls
  *  back to a generic line for agents added after the r15 wiring. */
 const AGENT_DESCRIPTIONS: Record<string, string> = {
@@ -321,6 +335,56 @@ export default function AgentsPage() {
   // needs to paste into `.env.local`).
   const [healthSnapshot, setHealthSnapshot] = useState<HealthEnvelope | null>(null);
   const [webConfigSnapshot, setWebConfigSnapshot] = useState<WebConfig | null>(null);
+  // R-WC-1.2 fix: persist the wc-creator
+  // circuit-breaker state. When `coinRegistryFull`
+  // is true the wc-creator is short-circuiting (no
+  // PTB calls, no gas spend) — a much better UX
+  // than spamming 44 identical MoveAborts every
+  // 15 min. The page renders a banner explaining
+  // the trip + a one-click reset.
+  const [circuitBreaker, setCircuitBreaker] = useState<CircuitBreakerState | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  // R-WC-1.2 fix: refresh the circuit-breaker
+  // state on demand (called from the "Reset"
+  // button below the trip banner). The /agents
+  // page re-fetches on every navigation, but
+  // the reset action needs a way to update the
+  // local state without a full page reload.
+  const refreshCircuitBreaker = async () => {
+    const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+    try {
+      const r = await fetch(`${base}/wc/circuit-breaker`);
+      if (r.ok) {
+        setCircuitBreaker((await r.json()) as CircuitBreakerState);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const resetCircuitBreaker = async () => {
+    if (resetting) return;
+    setResetting(true);
+    const base = process.env.NEXT_PUBLIC_AGENTS_URL ?? "http://localhost:3001";
+    try {
+      const r = await fetch(`${base}/wc/circuit-breaker`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset" }),
+      });
+      if (r.ok) {
+        setCircuitBreaker((await r.json()) as CircuitBreakerState);
+        toast.success("CoinRegistry circuit-breaker reset. wc-creator will retry on the next tick.");
+      } else {
+        toast.error(`Reset failed: HTTP ${r.status}`);
+      }
+    } catch (e) {
+      toast.error("Reset failed: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setResetting(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -416,6 +480,13 @@ export default function AgentsPage() {
         setWebConfigSnapshot(webCfg);
         setDrift(driftLinesForWebConfig(h, webCfg));
       }
+      // R-WC-1.2 fix: also fetch the wc-creator
+      // circuit-breaker state. Independent from
+      // /health (a 5xx on /health shouldn't
+      // hide the circuit-breaker banner; the
+      // operator may be debugging exactly that
+      // case).
+      void refreshCircuitBreaker();
     }
     void load();
     // R41 audit fix: backoff the poll when the agents service is
@@ -548,6 +619,82 @@ export default function AgentsPage() {
           </div>
         </div>
       </div>
+
+      {/* R-WC-1.2 fix: CoinRegistry circuit-breaker
+          banner. Sits above the drift panel so a
+          tripped breaker is the first thing the
+          operator sees. The banner explains the
+          CoinRegistry limit, the trip time, the
+          market that hit the limit, and offers a
+          one-click "Reset" action (in case the
+          operator manually cleared the limit by
+          redeploying the contract). The reset
+          action POSTs to /wc/circuit-breaker
+          which clears the local state file. */}
+      {circuitBreaker?.coinRegistryFull && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex-1 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex h-2 w-2 rounded-full bg-amber-400" />
+                <h2 className="text-sm font-extrabold uppercase tracking-wider text-amber-200">
+                  CoinRegistry is FULL
+                </h2>
+              </div>
+              <p className="text-sm text-amber-200/80 leading-relaxed">
+                The Sui system <code className="rounded bg-black/30 px-1 font-mono text-[10px]">CoinRegistry</code> at
+                <code className="mx-1 rounded bg-black/30 px-1 font-mono text-[10px]">0xc</code>
+                allows only one <code className="rounded bg-black/30 px-1 font-mono text-[10px]">Currency&lt;YES&lt;DUSDC&gt;&gt;</code> per package.
+                The <code className="rounded bg-black/30 px-1 font-mono text-[10px]">world-cup-creator</code> agent tripped the circuit-breaker after the first
+                market already registered a <code className="rounded bg-black/30 px-1 font-mono text-[10px]">Currency</code>;
+                every subsequent market aborts with <code className="rounded bg-black/30 px-1 font-mono text-[10px]">ECurrencyAlreadyExists</code>.
+                The agent is now short-circuiting (no PTB calls, no gas spend).
+              </p>
+              <dl className="grid gap-2 text-xs sm:grid-cols-2">
+                <div>
+                  <dt className="text-amber-200/60">Tripped at</dt>
+                  <dd className="font-mono text-amber-200">
+                    {circuitBreaker.firstErrorAt
+                      ? new Date(circuitBreaker.firstErrorAt).toISOString()
+                      : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-amber-200/60">Tripped by market</dt>
+                  <dd className="font-mono text-amber-200">
+                    {circuitBreaker.firstErrorMarket ?? "—"}
+                  </dd>
+                </div>
+                {circuitBreaker.resetAt && (
+                  <>
+                    <div>
+                      <dt className="text-amber-200/60">Last reset</dt>
+                      <dd className="font-mono text-amber-200">
+                        {new Date(circuitBreaker.resetAt).toISOString()} ({circuitBreaker.resetReason})
+                      </dd>
+                    </div>
+                  </>
+                )}
+              </dl>
+              <p className="text-xs text-amber-200/70 leading-relaxed">
+                <strong className="text-amber-200">Long-term fix:</strong> the
+                contract must be upgraded to use per-market coin types
+                (<code className="rounded bg-black/30 px-1 font-mono text-[10px]">YES&lt;DUSDC, MarketId&gt;</code>).
+                Until then, the <code className="rounded bg-black/30 px-1 font-mono text-[10px]">wc26-A1v4</code> demo
+                market is the only tradeable WC market. See <code className="rounded bg-black/30 px-1 font-mono text-[10px]">docs/SOP-DEPLOYMENT.md#coinregistry-limit</code> for the full deploy story.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={resetCircuitBreaker}
+              disabled={resetting}
+              className="self-start rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+            >
+              {resetting ? "Resetting…" : "Reset breaker"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {drift.length > 0 && (
         // UAT-FN-15 fix: the pre-fix drift

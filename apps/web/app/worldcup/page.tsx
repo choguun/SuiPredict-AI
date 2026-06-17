@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Card, Badge } from "@/components/ui";
 import { AgentsDownBanner } from "@/components/AgentsDownBanner";
+import { CoinRegistryLimitBanner } from "@/components/CoinRegistryLimitBanner";
 
 interface WcTeam {
   code: string;
@@ -228,6 +229,22 @@ export default function WorldCupPage() {
           }
         />
       )}
+      {/* R-WC-1.2 fix: CoinRegistry-limit banner.
+          The Sui system CoinRegistry only
+          allows one Currency<YES<DUSDC>> per
+          package, so the contract can publish
+          exactly one tradeable WC market at a
+          time. Pre-fix, a user landing on the
+          /worldcup dashboard saw a 7-day ticker
+          full of "Place your bet →" links that
+          all led to preview pages with no live
+          pool. The banner is a single one-line
+          statement of the system state so the
+          ticker below isn't misleading by
+          omission. The dismiss button is wired
+          to localStorage so the banner doesn't
+          reappear on every page load. */}
+      <CoinRegistryLimitBanner />
       {/* Hero */}
       <section className="relative overflow-hidden rounded-3xl border border-emerald-500/20 bg-gradient-to-br from-emerald-900/40 via-[#0B0E14] to-[#0B0E14] p-6 sm:p-10">
         <div className="absolute -top-32 -right-32 h-80 w-80 rounded-full bg-emerald-500/20 blur-[100px] -z-10" />

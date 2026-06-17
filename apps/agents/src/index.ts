@@ -811,6 +811,41 @@ function startHealthServer() {
       );
       return;
     }
+    if (url.pathname === "/wc/circuit-breaker") {
+      // R-WC-1.2 fix: expose the wc-creator's
+      // CoinRegistry circuit-breaker state so
+      // the /agents drift panel can surface
+      // "registry full" + first-error market
+      // + trip time + reset state. The JSON
+      // file is the source of truth (see
+      // wc-creator-circuit-breaker.ts); this
+      // route just returns the parsed state.
+      // An operator can clear a stale trip by
+      // POSTing `{action:"reset"}` (the handler
+      // is the same path with a different
+      // method).
+      const { getCircuitBreakerState, resetCoinRegistryFull } = await import(
+        "./agents/wc-creator-circuit-breaker.js"
+      );
+      if (req.method === "POST") {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        try {
+          const parsed = JSON.parse(body) as { action?: string };
+          if (parsed.action === "reset") {
+            resetCoinRegistryFull("manual");
+          }
+        } catch {
+          // ignore malformed body
+        }
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        ...corsFor(false),
+      });
+      res.end(JSON.stringify(getCircuitBreakerState()));
+      return;
+    }
     res.writeHead(404);
     res.end();
   })

@@ -281,6 +281,26 @@ async function main() {
     } catch (err) {
       console.error(`  [FAIL] ${id}: ${err.message?.slice(0, 300)}`);
       failed++;
+      // R-WC-1.2 fix: short-circuit the bootstrap
+      // loop on `ECurrencyAlreadyExists` so the
+      // operator doesn't get N identical MoveAborts
+      // for the remaining targets. The Sui system
+      // CoinRegistry allows only one Currency<T> per
+      // type per package; the first market in this
+      // script registers Currency<YES<DUSDC>>, and
+      // every subsequent `create_market` /
+      // `create_market_with_pool` will abort. The
+      // contract must be upgraded to use per-market
+      // coin types (YES<DUSDC, MarketId>) for
+      // multiple markets per registry.
+      if (/ECurrencyAlreadyExists/i.test(err.message ?? "")) {
+        console.error(
+          `\n  [STOP] CoinRegistry is FULL (one Currency<YES<DUSDC>> per package). ` +
+            `Aborting remaining ${targets.length - targets.indexOf(m) - 1} targets. ` +
+            `See docs/SOP-DEPLOYMENT.md for the contract-upgrade path.`,
+        );
+        break;
+      }
     }
   }
 

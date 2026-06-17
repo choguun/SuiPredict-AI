@@ -17,6 +17,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { TopForecasters } from "@/components/TopForecasters";
 import { TournamentCountdown } from "@/components/TournamentCountdown";
 import { StreakAndPredictionCard } from "@/components/StreakAndPredictionCard";
+import { MarketStatusBadge } from "@/components/MarketStatusBadge";
+import { CoinRegistryLimitBanner } from "@/components/CoinRegistryLimitBanner";
 
 export const dynamic = "force-dynamic";
 
@@ -451,6 +453,14 @@ export default async function HomePage() {
       {/* R6X audit fix: Unified main dashboard layout.
          We group these top elements inside a unified grid where Left Column (1/3) and Right Column (2/3)
          contain vertically stacked widgets. This prevents layout gaps and misalignment on desktop. */}
+      {/* R-WC-1.2 fix: CoinRegistry-limit banner.
+          Same banner as the /worldcup dashboard.
+          Dismissed via localStorage so it only
+          shows on the first page load. The
+          banner is small + collapsible so it
+          doesn't compete with the DailyWcCard
+          or the StreakAndPredictionCard. */}
+      <CoinRegistryLimitBanner />
       <section className="grid gap-6 lg:grid-cols-3">
         {/* Left Column - User Info, Countdown, Forecasters leaderboard, and the
             combined Streak + Daily Parlay card (single connect-wallet CTA). */}
@@ -583,6 +593,16 @@ export default async function HomePage() {
                           🏆 Winner: {m.outcome.toUpperCase()}
                         </span>
                       )}
+                      {/* R-WC-1.2 fix: tradeable-state
+                          badge on the home-page
+                          featured cards. Same source
+                          of truth as /markets and
+                          /markets/[id]; a user
+                          landing on the home page
+                          immediately sees that the
+                          44 ghost rows are
+                          previews, not tradeable. */}
+                      <MarketStatusBadge market={m} />
                       <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs font-medium text-zinc-300">{m.category}</span>
                       <span className="text-xs font-medium text-zinc-500">
                         {/* R62 audit fix: same

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { getMarketOrderBook, listMarkets } from "@suipredict/sdk";
 import { Badge } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
+import { MarketStatusBadge } from "@/components/MarketStatusBadge";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
 import { SuivisionLink } from "@/components/SuivisionLink";
 import { WcTeamAnalysisCard } from "@/components/WcTeamAnalysisCard";
@@ -308,6 +309,14 @@ export default async function MarketsPage({
         const bActive = b.status === "active" ? 0 : 1;
         if (aActive !== bActive) return aActive - bActive;
         if (aActive === 0) {
+          // R-WC-1.2 fix: same tradeable-first
+          // ordering as the `expiry` branch —
+          // on-chain markets go to the top of
+          // the active group, then the 44
+          // ghost preview rows.
+          const aTradeable = a.onchain_market_id ? 0 : 1;
+          const bTradeable = b.onchain_market_id ? 0 : 1;
+          if (aTradeable !== bTradeable) return aTradeable - bTradeable;
           // Active: rank by kickoff asc
           // (soonest first), then by
           // created_at desc as a
@@ -325,6 +334,22 @@ export default async function MarketsPage({
         const aActive = a.status === "active" ? 0 : 1;
         const bActive = b.status === "active" ? 0 : 1;
         if (aActive !== bActive) return aActive - bActive;
+        // R-WC-1.2 fix: within the "active" group,
+        // put on-chain tradeable markets first.
+        // Pre-fix, the 44 ghost rows sat at the top
+        // of the list because their kickoff was
+        // sooner than the one live market (the
+        // ghost rows are seeded for the next 7
+        // days). A user landing on /markets with
+        // no filter saw 8 preview rows they
+        // couldn't trade, then 1 row they could.
+        // The new order: 1 tradeable row at the
+        // top, then the 44 preview rows below.
+        if (aActive === 0) {
+          const aTradeable = a.onchain_market_id ? 0 : 1;
+          const bTradeable = b.onchain_market_id ? 0 : 1;
+          if (aTradeable !== bTradeable) return aTradeable - bTradeable;
+        }
         return a.expiry_ms - b.expiry_ms;
       }
     }
@@ -766,7 +791,20 @@ export default async function MarketsPage({
                         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-400" />
                         Live
                       </span>
-                    )}                    <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs font-medium text-zinc-300">
+                    )}
+                    {/* R-WC-1.2 fix: unified tradeable-state
+                        badge. Shows "Tradeable" for the rare
+                        ghost row that has been published
+                        on-chain (onchain_market_id is set)
+                        and "Preview" for the 44 ghost rows
+                        that are SQLite-only because the
+                        Sui CoinRegistry allows only one
+                        Currency<YES<DUSDC>> per package. The
+                        old UI only had the in-play "Live"
+                        badge, which was misleading because
+                        a user reading "Live" thought they
+                        could trade. */}
+                    <MarketStatusBadge market={m} />                    <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-xs font-medium text-zinc-300">
                       {m.category}
                     </span>
                     {/* R61 audit fix: show the kickoff time

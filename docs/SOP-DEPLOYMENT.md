@@ -18,7 +18,8 @@ This document is the runbook for taking SuiPredict-AI from a fresh clone to a li
 10. [Verify after deploy](#verify-after-deploy)
 11. [Rollback](#rollback)
 12. [Common failure modes](#common-failure-modes)
-13. [Operational runbook](#operational-runbook)
+13. [CoinRegistry limit](#coinregistry-limit)
+14. [Operational runbook](#operational-runbook)
 
 ---
 
@@ -554,6 +555,117 @@ For a Move package rollback (strategy B above), the path is:
 | `pnpm build` fails on `contracts` | Move syntax error or missing dependency | `cd packages/contracts && sui move build` for the precise error |
 | `verify-config` says `package not found` | Wrong network: the `AGENT_POLICY_PACKAGE_ID` was published to testnet but the agent is on mainnet | Fix `SUI_NETWORK` and restart |
 | `submitAndWait` times out | RPC node is lagging or down | Switch `SUI_RPC_URL` to a backup; the agents have a single env-var hot-swap path |
+| `world-cup-creator` decision feed says `CoinRegistry is FULL` and the `/wc/circuit-breaker` JSON is `{coinRegistryFull: true}` | Sui CoinRegistry limit: only one `Currency<YES<DUSDC>>` per package. The first WC market registered the Currency; every subsequent market aborts with `ECurrencyAlreadyExists`. | See [CoinRegistry limit](#coinregistry-limit) below. The wc-creator short-circuits (no gas spend) until the contract is upgraded. Manual `node scripts/bootstrap-wc-markets.mjs` will create at most one additional market per registry. |
+
+---
+
+## CoinRegistry limit
+
+### What it is
+
+The Sui system `CoinRegistry` (a shared object at the well-known address
+`0xc`) tracks one `Currency<T>` per Move type `T` per package. The
+`coin_registry::new_currency<T>()` API is the only production-grade way
+to create a `TreasuryCap<T>` in Sui v1.73, and it aborts with
+`ECurrencyAlreadyExists` after the first call for a given `T`.
+
+### Why it affects us
+
+The current `prediction_market.move` contract uses `YES<Q>` and `NO<Q>`
+as the outcome-token types, parameterised only by the quote type `Q`.
+For a single quote asset (DUSDC), `YES<DUSDC>` is the same type for
+every market — so `create_market` can only succeed **once** per package.
+Every subsequent market creation aborts with `ECurrencyAlreadyExists`.
+
+This is why, on the live testnet, only one WC market
+(`wc26-A1v4`) has a real DeepBook pool, and the other 44 group-stage
+markets are SQLite-only "preview" rows.
+
+### What the system does
+
+The `world-cup-creator` agent:
+
+1. Tries `create_market` for the next match in the 7-day window.
+2. On the first `ECurrencyAlreadyExists`, writes a flag to
+   `${DATA_DIR}/wc-creator-circuit-breaker.json` and short-circuits
+   every subsequent tick (no PTB calls, no gas spend).
+3. Surfaces the circuit-breaker state via `GET /wc/circuit-breaker`.
+   The `/agents` page renders a banner explaining the trip + a
+   one-click `Reset breaker` action.
+4. Resets the flag automatically if a market is ever successfully
+   created (i.e., after a contract upgrade).
+
+The `bootstrap-wc-markets.mjs` script:
+
+1. Tries `create_market_with_pool` for each target match.
+2. On the first `ECurrencyAlreadyExists`, prints a clear
+   `[STOP] CoinRegistry is FULL` message and breaks out of the loop
+   (the remaining targets would all abort identically).
+
+### Workaround: per-market coin types (contract upgrade)
+
+The clean fix is to parameterise `YES` and `NO` with a per-market
+unique type so each market gets its own `Currency<T>` and its own
+`DeepBook Pool<YES<T>, T>`. The standard Sui Move 2024 pattern is:
+
+```move
+public struct YES<phantom Q, phantom M> has key, store { ... }
+public struct NO<phantom Q, phantom M> has key, store { ... }
+```
+
+Where `M` is a unique-per-market witness. Because Move doesn't have
+runtime type creation, the production pattern is to either:
+
+- **Per-market modules:** deploy a separate Move module per market.
+  Scales O(N) modules per market; expensive.
+- **Per-market witness with a fixed pool:** pre-declare N
+  `MarketKey0`..`MarketKeyN` witness types and have the wc-creator
+  pick the next available one. Caps total markets per package at N.
+- **Per-market hash witness:** generate a unique
+  `MarketKey<MarketUid>` at market-creation time and use the
+  `MarketUid` itself as the second phantom type. Requires a
+  `tx_context::fresh_object_address` round-trip and breaks a few
+  Sui framework assumptions; not currently possible without a
+  framework upgrade.
+
+We are tracking the per-market hash witness as a follow-up. Until
+it ships, the system operates with one tradeable market per
+CoinRegistry. The 44 ghost rows are clearly badged as "Preview" on
+every page that surfaces them, and the `wc-creator` short-circuits
+cleanly so the operator isn't paying gas for 44 identical aborts.
+
+### Recovery checklist
+
+If a fresh deploy needs a working `world-cup-creator` today:
+
+1. **Confirm the limit, not a transient RPC issue.** Tail
+   `/wc/circuit-breaker` (or curl `GET /wc/circuit-breaker` on the
+   agents service). If `coinRegistryFull: true` and the first-error
+   market is consistent, the registry is full.
+2. **Decide: live with 1 market, or upgrade the contract.** The
+   R-WC-1.2 refactor (this commit) makes "live with 1 market" a
+   clean operational state (short-circuit, clear banner, manual
+   reset button). The contract upgrade is a separate, larger project.
+3. **Reset the breaker after a contract upgrade.** POST
+   `{action: "reset"}` to `/wc/circuit-breaker` (or click the
+   `Reset breaker` button on `/agents`). The wc-creator will retry
+   on the next tick. If the contract still aborts, the breaker
+   re-trips after the next failure.
+
+### Useful queries
+
+```bash
+# How many WC markets are on-chain vs SQLite-only?
+sqlite3 apps/agents/data/markets.db \
+  "SELECT COUNT(*) AS total, COUNT(onchain_market_id) AS onchain
+     FROM markets WHERE id LIKE 'wc26-%';"
+
+# Trip state
+cat apps/agents/data/wc-creator-circuit-breaker.json
+
+# Trip state via the agents service
+curl -s http://localhost:3001/wc/circuit-breaker | jq
+```
 
 ---
 

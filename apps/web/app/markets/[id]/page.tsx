@@ -39,6 +39,7 @@ import {
   type OrderBookSnapshot,
 } from "@suipredict/sdk";
 import { Badge, Card, Stat } from "@/components/ui";
+import { MarketStatusBadge } from "@/components/MarketStatusBadge";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
 import { Tooltip } from "@/components/Tooltip";
@@ -2048,6 +2049,19 @@ function MarketDetailBody({
             <h1 className="max-w-4xl text-3xl font-bold tracking-tight text-white sm:text-4xl leading-tight mb-4">
               {market.title}
             </h1>
+            {/* R-WC-1.2 fix: tradeable-state badge in
+                the detail-page header. Same component
+                the list page uses, so a user always
+                sees the same status for the same
+                market id. The badge sits above the
+                description so a Preview market reads
+                "PREVIEW · Will Brazil win?" instead of
+                just "Will Brazil win?" — the user
+                knows upfront that the order book below
+                is off-chain. */}
+            <div className="mb-3">
+              <MarketStatusBadge market={market} />
+            </div>
             <p className="max-w-3xl text-base leading-relaxed text-zinc-400">
               {market.description}
             </p>
@@ -2083,17 +2097,74 @@ function MarketDetailBody({
                 deploy a DeepBook pool for live order routing.
               </p>
               {/*
-                R-WC-1.1 fix: for the common case where the
-                ghost row was seeded by `wc-demo-seed.ts`
-                (i.e. onchain_market_id is null), surface
-                the fix path inline. Operator / curious user
-                can copy the bootstrap command and run it
-                themselves; no need to dig through SOPs.
-                We deliberately avoid showing this for the
-                demo-* (pre-seeded demo) markets because
-                those rows are intentionally SQLite-only.
+                R-WC-1.2 fix: surface the actual root
+                cause for the 44 ghost WC markets.
+                Pre-fix the warning just said "ask
+                the market creator to deploy a pool"
+                which was misleading because the
+                wc-creator was already trying every
+                15 min and getting `ECurrencyAlreadyExists`
+                — the system constraint, not a missed
+                deploy. The new copy explains:
+                  1. Sui's CoinRegistry allows only one
+                     Currency<YES<DUSDC>> per package.
+                  2. The contract needs a per-market
+                     coin type upgrade to support
+                     more than one market.
+                  3. Until the upgrade ships, the
+                     1 tradeable WC market
+                     (wc26-A1v4 today) is the only
+                     one with a live pool.
+                Demo-* markets keep the original
+                terse warning (those rows are
+                intentionally SQLite-only).
               */}
-              {!market.onchain_market_id && (
+              {!market.onchain_market_id && market.id.startsWith("wc26-") && (
+                <details className="mt-2 rounded border border-amber-500/20 bg-black/20 p-2 text-amber-200/80">
+                  <summary className="cursor-pointer text-amber-200">
+                    Why is this market a preview?
+                  </summary>
+                  <div className="mt-2 space-y-2 text-amber-200/80">
+                    <p>
+                      The Sui system <code className="text-amber-200">CoinRegistry</code>
+                      (the on-chain registry that all Sui coins are registered
+                      with) allows only <strong>one</strong> Currency&lt;T&gt; per
+                      type T per package. The current contract uses
+                      <code className="mx-1 text-amber-200">YES&lt;DUSDC&gt;</code>
+                      for all WC markets, so the first market registers
+                      <code className="mx-1 text-amber-200">Currency&lt;YES&lt;DUSDC&gt;&gt;</code>
+                      and every subsequent market aborts with
+                      <code className="mx-1 text-amber-200">ECurrencyAlreadyExists</code>.
+                    </p>
+                    <p>
+                      <strong className="text-amber-200">Current state:</strong> only
+                      the very first WC market (the <code className="text-amber-200">wc26-A1v4</code>
+                      demo) has a live DeepBook pool. The other 44 ghost rows in
+                      this list are SQLite-only previews — the on-chain
+                      PredictionMarket has not been published.
+                    </p>
+                    <p>
+                      <strong className="text-amber-200">Long-term fix:</strong> the
+                      contract needs to be upgraded to use per-market coin types
+                      (e.g. <code className="text-amber-200">YES&lt;DUSDC, MarketId&gt;</code>)
+                      so each market gets its own Currency and its own DeepBook
+                      pool. Until that ships, this list will always show one
+                      tradeable row + 44 preview rows.
+                    </p>
+                    <p>
+                      <strong className="text-amber-200">Manual workaround:</strong>{" "}
+                      an operator can run <code className="text-amber-200">node
+                      scripts/bootstrap-wc-markets.mjs</code> to deploy a single
+                      new market (it will register a fresh
+                      <code className="mx-1 text-amber-200">Currency&lt;…&gt;</code>
+                      and a new pool, but only one — the next run will hit the
+                      same limit). See <code className="text-amber-200">docs/SOP-DEPLOYMENT.md</code>
+                      for the full deploy workflow.
+                    </p>
+                  </div>
+                </details>
+              )}
+              {!market.onchain_market_id && !market.id.startsWith("wc26-") && !market.id.startsWith("demo-") && (
                 <details className="mt-2 rounded border border-amber-500/20 bg-black/20 p-2 text-amber-200/80">
                   <summary className="cursor-pointer text-amber-200">
                     How do I create a pool?
@@ -2114,11 +2185,6 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
                       pool, so the 500 DEEP fee only applies to the
                       very first market ever deployed on this
                       registry.
-                    </p>
-                    <p>
-                      Or wait for the next
-                      <code className="mx-1">world-cup-creator</code>
-                      tick (every 15 min) to retry automatically.
                     </p>
                   </div>
                 </details>

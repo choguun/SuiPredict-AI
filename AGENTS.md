@@ -143,6 +143,20 @@ Manual cleanup: `pnpm dev:clean`, `pnpm dev:web:clean`,
   and (c) calls `ensureMarketCreated` for every match. Every WC
   match now gets a real on-chain `PredictionMarket` or surfaces
   a real on-chain failure (no more 46-of-47 ghost markets).
+- **R-WC-1.2 follow-up (CoinRegistry circuit-breaker):** the
+  Sui system `CoinRegistry` allows only one
+  `Currency<YES<DUSDC>>` per package, so the on-chain `create_market`
+  aborts with `ECurrencyAlreadyExists` after the first market. The
+  agent now trips a persistent circuit-breaker (file:
+  `apps/agents/data/wc-creator-circuit-breaker.json`) on the
+  first occurrence and short-circuits subsequent ticks
+  (no PTB calls, no gas spend). The `/agents` page renders a
+  banner with the trip time + first-error market + a one-click
+  `Reset breaker` action. The breaker auto-resets if a market is
+  ever successfully created (e.g. after a contract upgrade to
+  per-market coin types). See
+  `docs/SOP-DEPLOYMENT.md#coinregistry-limit` for the full
+  operational story.
 - **`MAX_ACTIVE_WC_MARKETS` default 4** (down from 20) to fit the
   agent wallet's 2.7 SUI + 11.5 DEEP balance. Operators with more
   gas can raise via env.
@@ -240,6 +254,8 @@ See `.env.example` for the full list. The most critical:
 | Pool already exists for YES/DUSDC | First market already created | R-WC-1 fix: `ensureMarketCreated` automatically reuses the existing pool via `create_market_with_pool` (no DEEP fee). Every WC match now gets a real on-chain `PredictionMarket`. |
 | `world-cup-creator` returns `NEEDS FUNDING: ...` | Agent wallet is underfunded (no SUI for gas, or no DEEP for the first market's pool-creation fee) | Fund the agent address: Sui faucet (https://faucet.sui.io/?network=testnet) for SUI, self-hosted DUSDC/DEEP faucet (POST /faucet/deep) for DEEP |
 | `wc-creator` creates 0 markets on a fresh deploy | `existing` count includes pre-R-WC-1 SQLite-only demo rows | The R-WC-1 fix only counts `onchain_market_id IS NOT NULL` markets; the first tick after deploy can backfill up to `MAX_ACTIVE_WC_MARKETS` (default 4) on-chain markets |
+| `wc-creator` creates 1 market then `ECurrencyAlreadyExists` for every subsequent market | Sui CoinRegistry allows only one `Currency<YES<DUSDC>>` per package | R-WC-1.2 fix: the agent trips a circuit-breaker (`apps/agents/data/wc-creator-circuit-breaker.json`) and short-circuits subsequent ticks. The `/agents` page renders a banner with the trip details + a one-click reset. Long-term fix: upgrade the contract to per-market coin types (`YES<DUSDC, MarketId>`). See `docs/SOP-DEPLOYMENT.md#coinregistry-limit`. |
+| `/wc/circuit-breaker` returns `{coinRegistryFull: true, resetAt: null}` after a contract upgrade | The breaker is sticky; the agent doesn't auto-reset until a market is successfully created | R-WC-1.2 fix: POST `{action: "reset"}` to `/wc/circuit-breaker` (or click `Reset breaker` on `/agents`). The wc-creator will retry on the next tick; if the contract still aborts the breaker re-trips. |
 | `pnpm build` fails on `tsx` | The `dist/` is stale | `rm -rf apps/agents/dist && pnpm build` |
 | Port 3000/3001 already in use on `pnpm dev` | Zombie `next-server` / `tsx watch` from a prior session | `pnpm uat:clean` (or `pnpm dev:clean`) runs `scripts/dev-kill-zombies.sh`. The `predev` hook auto-cleans on every `pnpm dev`. |
 | Offline reload shows `chrome-error://chromewebdata/` | No service worker registered | R-UAT-FN-17 fix: `public/sw.js` is registered on first mount; offline navigation now serves `/offline.html` with a "Retry" button. |
@@ -273,6 +289,8 @@ production-critical ones:
 | FN-18 | Low | Market filter pills have `prefetch={true}` + `aria-current` + `data-testid` for instant nav | `apps/web/app/markets/page.tsx` |
 | FN-19 | Low | Top Forecasters widget fetches `/leaderboard/week?limit=5` (was static empty state) | `components/TopForecasters.tsx` |
 | **R-WC-1** | **Refactor** | **`world-cup-creator` always mints per-match on-chain `PredictionMarket` (no SQLite-only ghost rows); wallet-funding gate pre-checks SUI + DEEP** | **`apps/agents/src/agents/world-cup-creator.ts`, `packages/sdk/src/prediction-market-client.ts`** |
+| **R-WC-1.1** | **Fix** | **6 post-R-WC-1 gaps: `openConnectModal` exports wired to all 3 call sites; `sw.js` SW_VERSION=1.0.0 (was `__SW_VERSION__`); first-error surfaced in `recordResult` reasoning; `@ducanh2912/next-pwa` dead dep removed; `findExistingYesPool` paginates + decodes SDK-wrapper gRPC shape + defaults to `PREDICT_MARKET_PACKAGE_ID`** | **`apps/web/{app/parlay,app/portfolio,app/vault}/page.tsx`, `apps/web/public/sw.js`, `apps/agents/src/agents/world-cup-creator.ts`, `packages/sdk/src/prediction-market-client.ts`** |
+| **R-WC-1.2** | **Fix** | **CoinRegistry limit handled: `world-cup-creator` trips a circuit-breaker on first `ECurrencyAlreadyExists` and short-circuits subsequent ticks (no gas spend on 44 identical MoveAborts). Hardcoded the real self-hosted testnet pool id `0xddd7cbe…` (not `0xefb1e58a…` — that one was from the old market package and would cause a Move-level type mismatch). Per-market inter-PTB delay (5s default) to clear the Sui public-RPC rate-limit window. UI: unified `MarketStatusBadge` on home/markets/markets-[id]/worldcup, `CoinRegistryLimitBanner` with localStorage dismiss, `/wc/circuit-breaker` REST endpoint + `/agents` reset button. `bootstrap-wc-markets.mjs` short-circuits on the first `ECurrencyAlreadyExists`. Docs: `docs/SOP-DEPLOYMENT.md#coinregistry-limit` full recovery checklist.** | **`apps/agents/src/agents/wc-creator-circuit-breaker.ts`, `apps/agents/src/agents/world-cup-creator.ts`, `apps/agents/src/index.ts`, `apps/agents/scripts/bootstrap-wc-markets.mjs`, `apps/web/components/{MarketStatusBadge,CoinRegistryLimitBanner}.tsx`, `apps/web/app/{page,markets/page,markets/[id]/page,worldcup/page,agents/page}.tsx`, `docs/SOP-DEPLOYMENT.md`, `README.md`, `AGENTS.md`** |
 
 ## Hackathon submission
 
