@@ -117,6 +117,13 @@ export {
   // See `QUOTE_SCALE` docstring in
   // `prediction-market-client.ts`.
   QUOTE_SCALE,
+  // R-WC-1.6 fix: 1e6 base scale for the `place_order`
+  // wrapper. The YES / NO coins have 6 decimals, so
+  // 1 share = 1_000_000 atoms. Without scaling,
+  // a `qty=1` (one share) submits as 1 atom and
+  // aborts with `EOrderBelowMinimumSize` (code 1)
+  // because the pool's `min_size = 1_000_000`.
+  BASE_SCALE,
   yesCoinType,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,

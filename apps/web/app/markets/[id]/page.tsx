@@ -18,6 +18,7 @@ import {
   dollarsToDusdc,
   DUSDC_TYPE,
   QUOTE_SCALE,
+  BASE_SCALE,
   extractCreatedObjectId,
   normalizeObjectId,
   buildRedeemNoTx,
@@ -1152,13 +1153,19 @@ function MarketDetailBody({
         // lives in the SDK barrel so we don't
         // hardcode 1e9 in three places.
         price: BigInt(Math.round(yesLimitPrice * Number(QUOTE_SCALE))),
-        // `qty` is the YES * 10^decimals base quantity.
-        // `displayedPrice * qty` would be a fraction
-        // (0..qty), so we pass qty directly. The
-        // DeepBook-direct path took a `number`; the
-        // wrapper takes a `bigint` (the on-chain
-        // signature is `quantity: u64`).
-        quantity: BigInt(qty),
+        // `qty` is the YES share count as a number.
+        // The `buildPlaceOrderTx` wrapper expects
+        // the raw on-chain value (1 share = 1e6
+        // atoms for the 6-decimal YES coin). Pre-fix
+        // the page passed `BigInt(qty)` directly —
+        // for qty=1, the on-chain value was 1 atom,
+        // way below the pool's `min_size = 1e6`
+        // (EOrderBelowMinimumSize, abort code 1).
+        // Scale by `BASE_SCALE` (= 1e6) to convert
+        // share count → atom count. `BASE_SCALE`
+        // lives in the SDK barrel so we don't
+        // hardcode 1e6 in three places.
+        quantity: BigInt(qty) * BASE_SCALE,
         isBid,
       });
       // R55 audit fix: route through `submitAndWait` so

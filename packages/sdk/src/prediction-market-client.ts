@@ -1396,6 +1396,26 @@ export function buildPlaceOrderTx(params: {
  */
 export const QUOTE_SCALE = 1_000_000_000n;
 
+/**
+ * R-WC-1.6 fix: base-coin scale constant. The YES / NO
+ * outcome tokens have 6 decimals (matching the
+ * `create_market` default `lotSize = minSize = 1_000_000`
+ * in `prediction_market.move:326`), so 1 share = 1_000_000
+ * atoms. DeepBook's `validate_inputs` asserts
+ * `quantity >= min_size`, so a caller passing
+ * `BigInt(qty)` directly (where `qty` is the human
+ * "share count", e.g. `1` for one share) would submit
+ * 1 atom on-chain and abort with
+ * `EOrderBelowMinimumSize` (abort code 1).
+ *
+ * Web callers (the markets/[id] page) should multiply
+ * the share count by `BASE_SCALE` to convert to atom
+ * count: `quantity: BigInt(qty) * BASE_SCALE`. The
+ * default `1_000_000n` matches the 6-decimal YES coin
+ * and the pool's `min_size` of `1_000_000n`.
+ */
+export const BASE_SCALE = 1_000_000n;
+
 // ─── Cancel wrappers ────────────────────────────────────────────────────────
 
 /**
