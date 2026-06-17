@@ -288,19 +288,38 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
     //
     // Operators on a fresh deploy (or mainnet
     // where no pool exists yet) can override via
-    // the `WC_FALLBACK_POOL_ID` env var (set to
-    // empty string to disable the fallback).
+    // the `WC_FALLBACK_POOL_ID` env var. Set it to
+    // the literal sentinel `__DISABLED__` to skip the
+    // fallback entirely (the wc-creator will then
+    // pay the 500 DEEP pool-creation fee for the
+    // first market and create a fresh pool under
+    // the current MARKET_PACKAGE_ID). Railway's
+    // CLI rejects empty env values, so a sentinel
+    // is the operator-friendly opt-out.
+    const rawFallback = process.env.WC_FALLBACK_POOL_ID;
     const fallbackPoolId =
-      process.env.WC_FALLBACK_POOL_ID ?? "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360";
+      rawFallback === "__DISABLED__"
+        ? undefined
+        : rawFallback ?? "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360";
     try {
-      const existingPool = await findExistingYesPool(
-        client,
-        deepbookRegistryId,
-        undefined,
-        undefined,
-        fallbackPoolId || undefined,
-      );
-      if (existingPool) needsDeepFee = false;
+      // R-WC-1.6 fix: if the operator has set
+      // WC_FALLBACK_POOL_ID=__DISABLED__, skip
+      // findExistingYesPool entirely. The SDK
+      // internally re-reads process.env.WC_FALLBACK_POOL_ID
+      // (R-WC-1.6 audit) and treats the sentinel as
+      // "no fallback", so passing the sentinel through
+      // would still flow into normalizeObjectId and abort.
+      const probePoolId = fallbackPoolId;
+      if (probePoolId) {
+        const existingPool = await findExistingYesPool(
+          client,
+          deepbookRegistryId,
+          undefined,
+          undefined,
+          probePoolId,
+        );
+        if (existingPool) needsDeepFee = false;
+      }
     } catch {
       // findExistingYesPool threw (RPC blip, etc).
       // Fall through and assume we need the DEEP fee.

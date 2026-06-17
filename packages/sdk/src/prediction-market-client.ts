@@ -2367,7 +2367,19 @@ export async function ensureMarketCreated(
     // the registry doesn't expose the pool as
     // a dynamic field (the common case for
     // self-hosted DeepBook).
-    process.env.WC_FALLBACK_POOL_ID ||
+    //
+    // R-WC-1.6 fix: honour `WC_FALLBACK_POOL_ID=__DISABLED__`
+    // as a sentinel — the wc-creator passes `undefined` but
+    // this code re-reads `process.env` directly, so without
+    // the sentinel it would silently re-enable the fallback
+    // on a fresh deploy whose registry doesn't expose the
+    // pool as a dynamic field. Treat the sentinel as
+    // "no fallback" and surface the underlying
+    // "no pool found" error so the wc-creator can fall
+    // through to `create_market`.
+    (process.env.WC_FALLBACK_POOL_ID === "__DISABLED__"
+      ? undefined
+      : process.env.WC_FALLBACK_POOL_ID) ||
       "0xddd7cbe563d094d7245224bf1d9efc353fd9a9c67c9cda0640a4e203435d8360",
   );
   if (!existingPoolId) {
