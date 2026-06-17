@@ -45,6 +45,7 @@ import { Tooltip } from "@/components/Tooltip";
 import { FriendPositionsWidget } from "@/components/FriendPositionsWidget";
 import { FaucetButton } from "@/components/FaucetButton";
 import { RecentTrades } from "@/components/RecentTrades";
+import { WcTeamAnalysisCard } from "@/components/WcTeamAnalysisCard";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
 import { clampNumberString } from "@/lib/forms";
 
@@ -2069,8 +2070,8 @@ function MarketDetailBody({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <Card title="YES order book" className="order-2 lg:order-1">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <Card title="YES order book" className="order-2 lg:order-1 lg:col-span-1">
           {!deepBookMarket && !market.id.startsWith("demo-") && (
             <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200/90">
               <p className="font-semibold text-amber-200">No DeepBook pool for this market.</p>
@@ -2081,6 +2082,47 @@ function MarketDetailBody({
                 above to take a position directly, or ask the market creator to
                 deploy a DeepBook pool for live order routing.
               </p>
+              {/*
+                R-WC-1.1 fix: for the common case where the
+                ghost row was seeded by `wc-demo-seed.ts`
+                (i.e. onchain_market_id is null), surface
+                the fix path inline. Operator / curious user
+                can copy the bootstrap command and run it
+                themselves; no need to dig through SOPs.
+                We deliberately avoid showing this for the
+                demo-* (pre-seeded demo) markets because
+                those rows are intentionally SQLite-only.
+              */}
+              {!market.onchain_market_id && (
+                <details className="mt-2 rounded border border-amber-500/20 bg-black/20 p-2 text-amber-200/80">
+                  <summary className="cursor-pointer text-amber-200">
+                    How do I create a pool?
+                  </summary>
+                  <div className="mt-2 space-y-2 font-mono text-[10px]">
+                    <p>
+                      The market row exists locally but the on-chain
+                      <code className="mx-1">PredictionMarket</code>
+                      object hasn&apos;t been published yet. To deploy
+                      it on Sui testnet:
+                    </p>
+                    <pre className="overflow-x-auto rounded bg-black/40 p-2 leading-relaxed">{`cd apps/agents
+node scripts/bootstrap-wc-markets.mjs`}</pre>
+                    <p>
+                      Cost: ~0.01 SUI per market (one PTB each). The
+                      script shares the existing DeepBook
+                      <code className="mx-1">YES&lt;DUSDC&gt;</code>
+                      pool, so the 500 DEEP fee only applies to the
+                      very first market ever deployed on this
+                      registry.
+                    </p>
+                    <p>
+                      Or wait for the next
+                      <code className="mx-1">world-cup-creator</code>
+                      tick (every 15 min) to retry automatically.
+                    </p>
+                  </div>
+                </details>
+              )}
             </div>
           )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -2215,28 +2257,41 @@ function MarketDetailBody({
             >
               ↻ Refresh
             </button>
+
+            {/* R32 sweep fix: surface a "Recent
+                trades" panel below the order book
+                so a user landing on a market mid-
+                session has a single-glance signal of
+                recent activity (price drift, fill
+                rate, "is this a quiet book?"). The
+                panel wraps the new `RecentTrades`
+                client component which calls
+                `getMarketTrades(marketId, 10)` on
+                mount and refreshes every 10s when
+                the tab is visible. The trades are
+                populated by the agents'
+                position-indexer (from
+                `DeepBookOrderFilled` events) so
+                demo / pre-launch markets show the
+                friendly empty state.
+
+                R-WC-2 fix: moved INSIDE the
+                order book card so the page grid
+                has only 2 children (order book +
+                trade wrapper) and the `order-*`
+                classes place them in the
+                intended columns. The pre-R-WC-2
+                build had RecentTrades as a
+                sibling of the order book, which
+                made it the first auto-placed
+                cell and pushed the trade card
+                to a new row on the left. */}
+            <RecentTrades marketId={marketId} limit={10} />
           </div>
         </Card>
 
-        {/* R32 sweep fix: surface a "Recent
-            trades" panel below the order book
-            so a user landing on a market mid-
-            session has a single-glance signal of
-            recent activity (price drift, fill
-            rate, "is this a quiet book?"). The
-            panel wraps the new `RecentTrades`
-            client component which calls
-            `getMarketTrades(marketId, 10)` on
-            mount and refreshes every 10s when
-            the tab is visible. The trades are
-            populated by the agents'
-            position-indexer (from
-            `DeepBookOrderFilled` events) so
-            demo / pre-launch markets show the
-            friendly empty state. */}
-        <RecentTrades marketId={marketId} limit={10} />
-
-        <Card title="Trade" className="order-1 lg:order-2" id="trade-card">
+        <div className="order-1 lg:order-2 lg:col-span-2 grid gap-4 lg:grid-cols-2 min-w-0">
+          <Card title="Trade" id="trade-card">
           {/*
             UAT-FN-03 fix: replace the trade form with a
             settlement banner when the market is resolved.
@@ -2573,6 +2628,23 @@ function MarketDetailBody({
           </>
           )}
         </Card>
+
+        {/* R-WC-2: team analysis card. Sits in the
+           right column of the YES order book / Trade
+           grid, stacked below the Trade card on
+           desktop so it's at the same level visually
+           (right side, same width as the Trade card).
+           On mobile it stacks below the Trade card
+           (flex-col). The WcTeamAnalysisCard
+           component handles its own loading / error
+           / no-match states internally. Non-WC
+           markets skip the card entirely. */}
+        {market.id.startsWith("wc26-") && (
+          <Card title="Team Analysis">
+            <WcTeamAnalysisCard marketId={market.id} />
+          </Card>
+        )}
+        </div>
       </div>
 
       <FriendPositionsWidget
