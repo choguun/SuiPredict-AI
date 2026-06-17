@@ -6,6 +6,18 @@
 
 > **MVP vertical:** FIFA World Cup 2026 (June 11 – July 19, 2026, USA/Canada/Mexico). 48 teams, 12 groups, 72 group matches, all of which are scraped from Wikipedia and priced by an Elo-based market maker — zero human in the loop.
 
+## Quality status (post-UAT 2026-06-17)
+
+- **130 / 130** Move contracts tests pass
+- **38 / 38** agents tests pass
+- **28 / 28** SDK tests pass (23 pre + 5 new for `ensureMarketCreated` / `findExistingYesPool`)
+- **14 routes** (`/`, `/markets`, `/markets/[id]`, `/worldcup`, `/worldcup/group/[letter]`, `/leaderboard`, `/portfolio`, `/parlay`, `/vault`, `/agents`, `/friends`, `/agent-policy`, `/auth`, `/admin`) all return HTTP 200
+- **All 19 UAT findings resolved** (FN-01 through FN-19, see [UAT-REPORT-FIXES.md](UAT-REPORT-FIXES.md))
+- **Per-WC-match on-chain markets** — the `world-cup-creator` mints a real on-chain `PredictionMarket` for every upcoming match (per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`, shared DeepBook pool) instead of falling back to SQLite-only ghost rows
+- **Wallet-funding gate** — underfunded agent wallets surface as a single `noop` decision with a clear "fund with X SUI + Y DEEP" message instead of N stack-tracey warnings per tick
+- **Offline-shell SW** — `public/sw.js` registered on first mount; offline navigation serves `/offline.html` instead of a blank `chrome-error://chromewebdata/` page
+- **Agents-down banner** — every page that talks to the agents service shows a single uniform error UI when the upstream is unreachable (no more 21-byte `Internal Server Error` bodies)
+
 ## What it does
 
 1. **World Cup Market Creator** scrapes the Wikipedia 2026 FIFA WC articles → drops binary "Will Mexico 🇲🇽 beat South Korea 🇰🇷?" markets for every group match kickoffing in the next 7 days
@@ -114,7 +126,7 @@
 | `prize-admin` | `10 0 * * 1` | `settle_week` + `rotate_week` on the `PrizePool` |
 | `leaderboard-worker` | `5 0 * * 1` | Archive prior week's daily scores |
 | `position-indexer` | `*/1 * * * *` | Tail Sui events into positions / markets tables |
-| **`world-cup-creator`** | **`*/15 * * * *`** | **Scrapes Wikipedia → drops YES/NO markets for next 7d of WC fixtures** |
+| **`world-cup-creator`** | **`*/15 * * * *`** | **Scrapes Wikipedia → mints per-match on-chain `PredictionMarket` (shared DeepBook pool, per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`); wallet-funding gate pre-checks SUI + DEEP** |
 | **`world-cup-maker`** | **`*/2 * * * *`** | **Elo-based mid-price + time-decaying spread on up to 8 upcoming matches** |
 | **`world-cup-resolver`** | **`*/5 * * * *`** | **Scrapes per-group Wikipedia page → `resolve_market` at 85%+ confidence** |
 
@@ -151,6 +163,23 @@ The agents service ships with demo markets so the indexer returns data without a
 pnpm dev:agents      # http://localhost:3001  — /markets, /decisions, /stats
 pnpm dev:web         # http://localhost:3000  — UI
 ```
+
+> **Note:** as of the R-WC-1 refactor (2026-06-17), the demo mode is
+> the *only* way to run the agents with no on-chain state. The
+> `world-cup-creator` no longer falls back to writing a SQLite-only
+> "demo" row when the DeepBook `register_pool` aborts — it now
+> always calls `ensureMarketCreated` (which routes through
+> `create_market_with_pool` on `EPoolAlreadyExists`) so every WC
+> match gets a real on-chain `PredictionMarket`. The wallet-funding
+> gate (a single SUI + DEEP check before the create loop) returns
+> a `noop` decision with a clear "fund with X SUI + Y DEEP" message
+> on underfunded wallets.
+
+`pnpm dev` (and `pnpm dev:web` / `pnpm dev:agents`) run a
+`predev` hook that auto-cleans zombie `next-server` / `tsx watch`
+processes from ports 3000-3010 (see
+`scripts/dev-kill-zombies.sh`). Manual cleanup is available
+via `pnpm uat:clean` and the `dev:clean` variants.
 
 If `AGENT_POLICY_PACKAGE_ID` and the shared-object IDs are blank, the workers run in **dry-run** mode: they log every decision to `/decisions` but never sign or submit a transaction. This is the recommended mode for UI development.
 
@@ -196,6 +225,7 @@ The full SOP covers mainnet preparation, gas budgeting, agent key custody, secre
 | `/leaderboard` | Weekly top-N forecasters (with **friends-only filter**) |
 | `/dispute/[marketId]` | Submit dispute evidence for a market |
 | `/agent-policy` | On-chain agent policy: create/revoke agent wallet, set DUSDC budget, pause, profile (the old `/settings` route 307-redirects here) |
+| **`/offline.html`** | **Static fallback served by the registered service worker when the user is offline** |
 | `/admin` | Operator panel (FeeVault withdraw, distribution, resolution) |
 | `/agents` | Live decision feed for all 14 workers |
 | `/auth` | Enoki zkLogin OAuth callback |
@@ -217,6 +247,27 @@ The full SOP covers mainnet preparation, gas budgeting, agent key custody, secre
   next 5 group matches with full-width 48px-tall YES/NO buttons
 - **Elo-driven quotes** on every WC market, so the order book
   always has bid/ask liquidity near the true probability
+- **Settled banner** on resolved market detail pages — a friendly
+  "Market settled" panel with a checkered flag icon, winner
+  pill, redeem/dispute CTAs, and links to the user's portfolio
+  (replaces the previous behaviour where the trade form stayed
+  enabled on settled markets and a single visit could crash the
+  dev server's React Client Manifest)
+- **Distinct empty states** — every wallet-gated page
+  (`/portfolio`, `/parlay`, `/vault`) renders a per-surface
+  empty state with a 3-row "What you'll see here" preview list
+  and a per-surface icon (wallet / lightning / vault) so the
+  user knows what to expect after connecting
+- **AgentsDownBanner** (`components/AgentsDownBanner.tsx`) —
+  shared "agents service is unreachable" banner with a clickable
+  link to the `/health` endpoint, rendered on every page that
+  talks to the agents service when the upstream fails (no more
+  21-byte `Internal Server Error` bodies on `/leaderboard`,
+  `/portfolio`, etc.)
+- **Offline shell** (`public/sw.js`) — service worker registered
+  on first mount; offline navigation serves `/offline.html`
+  (a static page with a "Retry" button) instead of the
+  browser's raw `chrome-error://chromewebdata/` page
 
 ## Agent REST API (`:3001`)
 
@@ -263,27 +314,49 @@ See **[.env.example](.env.example)** for the full list. Key groups:
 | `LOG_LEVEL` | agents service | `debug` / `info` / `warn` / `error` |
 | `RISK_PAUSE_UTILIZATION` | risk monitor | Pause threshold (0-1, default 0.80) |
 | `RESOLVER_CONFIDENCE` | market-resolver | LLM confidence gate (0-100, default 85) |
+| `WC_MM_QUOTE_SIZE` | WC maker | 5_000_000 = 5 YES shares per side |
+| `MAX_ACTIVE_WC_MARKETS` | WC creator | Cap on simultaneous WC markets (default **4**; reduced from 20 to fit the 2.7 SUI + 11.5 DEEP agent wallet after the R-WC-1 wallet-funding gate was added) |
+| `AGENT_CRON_<NAME>` | all | Override any agent's cron schedule (e.g. `AGENT_CRON_WC_CREATOR=*/1 * * * *` for faster iteration) |
+| `MARKET_CREATOR_INITIAL_MINT_ATOMS` | WC creator | Initial YES+NO mint per new market (default 10_000_000 = 10 shares) |
 
 ## Development
 
 ```bash
 pnpm build                # Build all packages (Move + SDK + agents + web)
-pnpm dev                  # Turbo dev (web + agents, parallel)
+pnpm dev                  # Turbo dev (web + agents, parallel); auto-cleans zombie processes
 pnpm dev:web              # Frontend only
 pnpm dev:agents           # Agents service only
+pnpm dev:clean            # Kill zombie processes, then `pnpm dev`
+pnpm dev:web:clean        # Kill zombie processes, then `pnpm dev:web`
+pnpm dev:agents:clean     # Kill zombie processes, then `pnpm dev:agents`
+pnpm uat:clean            # Kill zombie processes (use before any UAT pass)
 pnpm contracts:build      # Move compile only (no publish)
-pnpm contracts:test       # Move unit tests
+pnpm contracts:test       # Move unit tests (130/130 pass)
+pnpm --filter @suipredict/agents test       # Agent unit tests (38/38 pass)
+pnpm --filter @suipredict/sdk test          # SDK unit tests (28/28 pass; tsx --test)
 pnpm --filter @suipredict/agents smoke-test  # End-to-end: mint → place order
 ```
+
+### Service worker (`public/sw.js`)
+
+A hand-rolled SW (replacing the legacy `@ducanh2912/next-pwa` wrapper
+that was disabled in the R48 audit) handles navigation requests
+only: it tries the network first, falls back to a pre-cached
+`/offline.html` on network failure. API responses are never cached
+(the agents service is the source of truth for live data). The SW
+is registered from `components/providers-inner.tsx` on first mount
+and unregisters the legacy Workbox SW + clears its caches
+defensively. Cache name: `suipredict-shell-${SW_VERSION}` (bump
+`SW_VERSION` in `sw.js` to evict on a deploy).
 
 ### Build outputs
 
 | Package | Output |
 |---------|--------|
 | `contracts` | Move bytecode (no on-disk artifact; deploys via `sui client publish`) |
-| `sdk` | `packages/sdk/dist/` (TypeScript → JS) |
+| `sdk` | `packages/sdk/dist/` (TypeScript → JS); exports `ensureMarketCreated`, `findExistingYesPool`, `buildCreateMarketTx`, `buildCreateMarketWithPoolTx`, `buildMintSharesTx`, `buildResolveMarketTx`, `buildRedeemTx`, etc. |
 | `agents` | `apps/agents/dist/` (run via `node dist/index.js`) |
-| `web` | `apps/web/.next/` (Next.js standalone) |
+| `web` | `apps/web/.next/` (Next.js standalone); ships `public/sw.js` (offline shell) + `public/offline.html` (static fallback) |
 
 ## Deployment
 
