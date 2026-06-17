@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui";
 import { EmptyState } from "@/components/EmptyState";
 import { ProbabilityBar } from "@/components/ProbabilityBar";
 import { SuivisionLink } from "@/components/SuivisionLink";
+import { WcTeamAnalysisCard } from "@/components/WcTeamAnalysisCard";
 
 // R30 sweep fix: per-page metadata so the
 // browser tab + SERP snippet match the
@@ -835,6 +836,24 @@ export default async function MarketsPage({
                   </div>
                 )}
               </div>
+              {/* R-WC-2: team analysis card behind
+                 the Trade buttons (Buy YES / Buy NO)
+                 for World Cup markets. Renders the
+                 home/away team's Elo rating, strength
+                 tier, confederation, and the
+                 head-to-head prediction. The card
+                 sits inside the parent <Link> so a
+                 click on the analysis area also
+                 navigates to the market detail page
+                 — desired behavior (the trade card
+                 and the analysis card are part of the
+                 same market). The component fetches
+                 data client-side from the agents
+                 service; non-WC markets skip the
+                 fetch entirely. */}
+              {m.category === "worldcup" && m.id.startsWith("wc26-") && (
+                <WcTeamAnalysisCard marketId={m.id} />
+              )}
             </Link>
           );
         })}

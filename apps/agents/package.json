@@ -11,7 +11,7 @@
     "test:wc": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts",
     "test:seed": "node --import tsx --test tests/wc-demo-seed.test.ts",
     "test:llm": "node --import tsx --test tests/llm-extractor.test.ts",
-    "test": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/llm-extractor.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts tests/wc-demo-seed.test.ts tests/world-cup-resolver.test.ts",
+    "test": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/llm-extractor.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts tests/wc-demo-seed.test.ts tests/world-cup-resolver.test.ts tests/team-analysis.test.ts",
     "bootstrap": "tsx scripts/bootstrap-gamification.ts",
     "bootstrap-parlay": "tsx scripts/bootstrap-parlay.ts",
     "resume-bootstrap": "tsx scripts/resume-bootstrap.ts",

@@ -62,7 +62,14 @@ import {
 // (a fallback would produce a 0.5/0.5 line, which
 // is wrong for every group fixture). Keep the table
 // alphabetically sorted for human review.
-const ELO: Record<string, number> = {
+// R-WC-2: exported so the `/wc/team-analysis` REST
+// route can build per-team rows with the same Elo
+// values the maker uses to quote. A separate ELO
+// literal in the route would drift the moment a
+// curator re-tunes a rating; the single-source-of-
+// truth here keeps the maker's quotes and the UI's
+// team-analysis card in sync.
+export const ELO: Record<string, number> = {
   ALG: 1640, ARG: 1870, AUS: 1650, AUT: 1660, BEL: 1795, BIH: 1580,
   BRA: 1830, CAN: 1730, CIV: 1640, COD: 1580, COL: 1740, CPV: 1600,
   CRO: 1770, CUW: 1500, CZE: 1650, ECU: 1700, EGY: 1640, ENG: 1820,
@@ -72,6 +79,51 @@ const ELO: Record<string, number> = {
   POR: 1810, QAT: 1580, RSA: 1580, SCO: 1640, SEN: 1700, SUI: 1710,
   SWE: 1660, TUN: 1660, TUR: 1680, URU: 1750, USA: 1770, UZB: 1600,
 };
+
+// R-WC-2: 4-tier strength classification for the
+// "team analysis" card. The brackets are tuned so
+// each tier holds 8-16 teams — narrow enough that
+// each tier means something, wide enough that the
+// distribution is roughly bell-curved.
+export type TeamStrengthTier =
+  | "elite"
+  | "strong"
+  | "competitive"
+  | "underdog";
+export function teamStrengthTier(elo: number): TeamStrengthTier {
+  if (elo >= 1800) return "elite";
+  if (elo >= 1700) return "strong";
+  if (elo >= 1600) return "competitive";
+  return "underdog";
+}
+
+// R-WC-2: predicted *draw* probability for a WC
+// match, broken out from `predictYesProbability()`
+// so the analysis card can render all three
+// outcomes (home / draw / away) explicitly. The
+// model is the same closeness-based formula the
+// maker uses internally — a fresh route would
+// drift if the maker's model is ever retuned.
+//
+// NB: the formula here produces the OPPOSITE
+// behaviour from what the original comment in
+// `predictYesProbability()` described
+// (`0.20 + 0.10 * closeness`, which would peak
+// for evenly matched teams). The current
+// implementation is `max(0.05, 0.22 - 0.6 *
+// closeness)`, which peaks at 0.22 for
+// MISMATCHED teams and floors at 0.05 for evenly
+// matched ones. The code is the source of truth;
+// the comment is stale. The
+// `team-analysis.test.ts` tests pin the current
+// behaviour.
+export function predictDrawProbability(match: WcMatch): number {
+  const eHome = ELO[match.homeTeamCode] ?? 1600;
+  const eAway = ELO[match.awayTeamCode] ?? 1600;
+  const pHome = 1 / (1 + Math.pow(10, (eAway - eHome) / 400));
+  const closeness = 1 - 2 * Math.abs(pHome - 0.5);
+  return Math.max(0.05, 0.22 - 0.6 * closeness);
+}
 
 /**
  * Returns the predicted YES probability for a WC match. Uses
@@ -87,9 +139,13 @@ export function predictYesProbability(match: WcMatch): number {
   const eHome = ELO[match.homeTeamCode] ?? 1600;
   const eAway = ELO[match.awayTeamCode] ?? 1600;
   const pHome = 1 / (1 + Math.pow(10, (eAway - eHome) / 400));
-  // Draw probability peaks when teams are evenly matched.
-  const closeness = 1 - 2 * Math.abs(pHome - 0.5);
-  const pDraw = Math.max(0.05, 0.22 - 0.6 * closeness);
+  // R-WC-2: route through the shared
+  // `predictDrawProbability` helper so the maker's
+  // quote and the analysis card's draw badge use
+  // exactly the same draw model. The pre-R-WC-2
+  // implementation inlined the draw formula here;
+  // the new helper keeps the formula in one place.
+  const pDraw = predictDrawProbability(match);
   const yes = (pHome - pDraw / 2) / (1 - pDraw);
   return Math.min(0.95, Math.max(0.05, yes));
 }

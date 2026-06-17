@@ -13,6 +13,12 @@ import {
   fetchMatchSchedule,
   loadWorldCupConfig,
 } from "../agents/world-cup-fetcher.js";
+import {
+  ELO,
+  predictDrawProbability,
+  predictYesProbability,
+  teamStrengthTier,
+} from "../agents/world-cup-maker.js";
 import { upcomingWcMarkets } from "../agents/world-cup-resolver.js";
 import {
   cacheStats,
@@ -352,6 +358,142 @@ export function handleMarketsRoute(
       rows,
       limit,
     });
+    return true;
+  }
+  if (url.pathname === "/wc/team-analysis") {
+    // R-WC-2: per-team analysis feed for the
+    // `WcTeamAnalysisCard` rendered behind every
+    // World Cup market card on `/markets`. Returns
+    // two parallel arrays:
+    //   - `teams`:  48 rows keyed by ISO 3-letter
+    //               code, one per qualified team.
+    //               Includes Elo, tier, group /
+    //               draw position, and the team's
+    //               predicted win probability vs
+    //               an "average opponent" baseline
+    //               (Elo 1600).
+    //   - `matches`: 72 rows keyed by match id
+    //                (e.g. "A1vA3"), each with the
+    //                head-to-head home / draw / away
+    //                probabilities and the favorite
+    //                side.
+    //
+    // The web client caches this response in
+    // localStorage for 1h. The schedule and Elo
+    // values are static for the duration of the
+    // tournament (they only change on a re-draw),
+    // so a 1h TTL is plenty.
+    (async () => {
+      try {
+        const groups = await loadWorldCupConfig();
+        const matches = await fetchMatchSchedule();
+        const allTeams = groups.flatMap((g) =>
+          g.teams.map((t) => ({
+            ...t,
+            group: g.letter,
+            elo: ELO[t.code] ?? 1600,
+          })),
+        );
+        // Rank teams globally by Elo desc. Ties
+        // broken alphabetically (deterministic).
+        const ranked = [...allTeams].sort((a, b) => {
+          if (b.elo !== a.elo) return b.elo - a.elo;
+          return a.code.localeCompare(b.code);
+        });
+        const rankByCode = new Map<string, number>();
+        ranked.forEach((t, i) => rankByCode.set(t.code, i + 1));
+        // Average opponent baseline = 1600 Elo.
+        const winProbVsAvg = (elo: number): number => {
+          const p = 1 / (1 + Math.pow(10, (1600 - elo) / 400));
+          return Math.min(0.99, Math.max(0.01, p));
+        };
+        const teams = allTeams
+          .map((t) => ({
+            code: t.code,
+            name: t.name,
+            flag: t.flag,
+            confederation: t.confederation,
+            pot: t.pot,
+            drawPosition: t.drawPosition,
+            group: t.group,
+            elo: t.elo,
+            tier: teamStrengthTier(t.elo),
+            rank: rankByCode.get(t.code) ?? 48,
+            winProbVsAvg: winProbVsAvg(t.elo),
+          }))
+          // Stable order: by group letter, then by
+          // draw position. A user scrolling the
+          // "all 48 teams" view sees Group A's 4
+          // teams, then Group B's, etc.
+          .sort((a, b) => {
+            if (a.group !== b.group) return a.group.localeCompare(b.group);
+            return a.drawPosition.localeCompare(b.drawPosition);
+          });
+        // Build the per-match rows. We re-use the
+        // maker's predictYesProbability for the
+        // home side, then derive draw + away from
+        // the same log5 decomposition.
+        const matchRows = matches.map((m) => {
+          const pYesHome = predictYesProbability(m);
+          const pDraw = predictDrawProbability(m);
+          // Invert the yes-prob to recover the
+          // P(home | no draw) share, then split
+          // back into P(home) + P(draw) + P(away)
+          // = 1.
+          const pHomeGivenNoDraw = pYesHome * (1 - pDraw) + pDraw / 2;
+          const pHome = pHomeGivenNoDraw * (1 - pDraw);
+          const pAway = (1 - pHomeGivenNoDraw) * (1 - pDraw);
+          const eloDiff =
+            (ELO[m.homeTeamCode] ?? 1600) -
+            (ELO[m.awayTeamCode] ?? 1600);
+          // R-WC-2: "toss-up" zone is a 5% window
+          // around 50/50. The maker's quote at
+          // kickoff is also 50/50 inside this band
+          // (a flat half-spread on both sides), so
+          // the favorite pill matches the book
+          // signal.
+          const favorite: "home" | "away" | "toss-up" =
+            Math.abs(pHome - pAway) < 0.05
+              ? "toss-up"
+              : pHome > pAway
+                ? "home"
+                : "away";
+          return {
+            id: m.id,
+            group: m.group,
+            matchday: m.matchday,
+            kickoffMs: m.kickoffMs,
+            homeCode: m.homeTeamCode,
+            awayCode: m.awayTeamCode,
+            homeName: m.homeName,
+            homeFlag: m.homeFlag,
+            homeElo: ELO[m.homeTeamCode] ?? 1600,
+            homeTier: teamStrengthTier(ELO[m.homeTeamCode] ?? 1600),
+            awayName: m.awayName,
+            awayFlag: m.awayFlag,
+            awayElo: ELO[m.awayTeamCode] ?? 1600,
+            awayTier: teamStrengthTier(ELO[m.awayTeamCode] ?? 1600),
+            homeWinProb: pHome,
+            drawProb: pDraw,
+            awayWinProb: pAway,
+            favorite,
+            eloDiff,
+          };
+        });
+        json(res, 200, {
+          generatedAtMs: Date.now(),
+          teams,
+          matches: matchRows,
+        });
+      } catch (err) {
+        json(res, 500, {
+          error: "wc team-analysis failed",
+          detail: err instanceof Error ? err.message : String(err),
+          teams: [],
+          matches: [],
+        });
+      }
+    })();
     return true;
   }
 
