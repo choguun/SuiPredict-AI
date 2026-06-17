@@ -130,6 +130,8 @@
 | **`world-cup-creator`** | **`*/15 * * * *`** | **Scrapes Wikipedia → mints per-match on-chain `PredictionMarket` (shared DeepBook pool, per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`); wallet-funding gate pre-checks SUI + DEEP** |
 | **`world-cup-maker`** | **`*/2 * * * *`** | **Elo-based mid-price + time-decaying spread on up to 8 upcoming matches** |
 | **`world-cup-resolver`** | **`*/5 * * * *`** | **Scrapes per-group Wikipedia page → `resolve_market` at 85%+ confidence** |
+| **`auto-funder`** | **`*/10 * * * *`** | **R-WC-1.8: tops up the agent wallet with DUSDC via the self-hosted `TreasuryCap`; surfaces a `NEEDS FUNDING` `noop` when DEEP is short (no in-agent mint path for Sui system DEEP)** |
+| **`pool-provisioner`** | **`*/15 * * * *`** | **R-WC-1.8: scans active markets with no DeepBook pool, calls `ensureMarketCreated`, writes the new pool + on-chain ids back to SQLite. Honours the R-WC-1.2 CoinRegistry circuit-breaker (no point retrying ghost rows after the first ECurrencyAlreadyExists trip).** |
 
 The three `world-cup-*` agents form an end-to-end autonomous loop for
 the World Cup vertical: they create markets, quote them, and resolve
@@ -331,6 +333,11 @@ See **[.env.example](.env.example)** for the full list. Key groups:
 | `WC_MM_QUOTE_SIZE` | WC maker | 5_000_000 = 5 YES shares per side |
 | `MAX_ACTIVE_WC_MARKETS` | WC creator | Cap on simultaneous WC markets (default **4**; reduced from 20 to fit the 2.7 SUI + 11.5 DEEP agent wallet after the R-WC-1 wallet-funding gate was added) |
 | `WC_FALLBACK_POOL_ID` | WC creator | **R-WC-1.6**: pool id to use when the registry doesn't expose a `YES<Q>` dynamic field. Set to the literal sentinel `__DISABLED__` to skip the fallback entirely and pay 500 DEEP for the first market's pool-creation fee. Railway's CLI rejects empty env values, so `__DISABLED__` is the operator-friendly opt-out. |
+| `AUTO_FUNDER_MIN_DUSDC_ATOMS` | auto-funder | **R-WC-1.8**: DUSDC floor below which the auto-funder mints (default `100_000_000_000` = 100 USDC) |
+| `AUTO_FUNDER_TOPUP_DUSDC_ATOMS` | auto-funder | **R-WC-1.8**: DUSDC mint amount per topup (default `10_000_000_000` = 10,000 USDC) |
+| `AUTO_FUNDER_MIN_DEEP_ATOMS` | auto-funder | **R-WC-1.8**: DEEP floor below which the auto-funder surfaces a `NEEDS FUNDING` `noop` (default `500_000_000` = 500 DEEP) |
+| `AGENT_CRON_AUTO_FUNDER` | auto-funder | Override the auto-funder cron (default `*/10 * * * *`) |
+| `AGENT_CRON_POOL_PROVISIONER` | pool-provisioner | Override the pool-provisioner cron (default `*/15 * * * *`) |
 | `AGENT_CRON_<NAME>` | all | Override any agent's cron schedule (e.g. `AGENT_CRON_WC_CREATOR=*/1 * * * *` for faster iteration) |
 | `MARKET_CREATOR_INITIAL_MINT_ATOMS` | WC creator | Initial YES+NO mint per new market (default 10_000_000 = 10 shares) |
 
