@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --import tsx --test tests/wallet-storage.test.ts"
   },
   "dependencies": {
     "@mysten/dapp-kit-react": "^2.0.3",

@@ -7,6 +7,7 @@ import {
   AGENT_POLICY_PACKAGE_ID,
   PREDICT_PACKAGE_ID,
 } from "@suipredict/sdk";
+import { createDisconnectAwareStorage } from "@/lib/wallet-storage";
 
 // R34 audit fix: the dAppKit config was hard-coded to testnet, so
 // `useCurrentClient()` (used by every page) returned a testnet
@@ -71,20 +72,24 @@ export const dAppKit = createDAppKit({
       baseUrl: FULLNODE_URL,
     });
   },
-  // R48 audit fix: opt out of autoConnect. A user who clicks
-  // "Disconnect" and refreshes the page was previously
-  // auto-reconnected because the wallet extension's own session
-  // is still alive (only the local dapp-kit cookie is cleared by
-  // `disconnectWallet`), and `autoConnect: true` re-establishes
-  // the connection on the next mount. The disconnect was
-  // effectively a no-op across reloads — exactly the opposite of
-  // what the user asked for. A user-initiated reconnect is the
-  // expected UX: open the wallet extension, click the
-  // ConnectWallet button, and re-authorize. If a future flow
-  // wants a silent re-prompt we can wire it via an explicit
-  // `dappKit.connectWallet({ silent: true })` after a debounce
-  // against a stored address.
-  autoConnect: false,
+  // R-Wallet-1 fix: restore the dapp-kit default
+  // `autoConnect: true`. The pre-fix build set this to
+  // `false` (R48 audit) because the wallet extension
+  // silently re-binds the session from its own cookie
+  // even after `disconnectWallet()` clears the dapp-kit
+  // cookie, making "Disconnect + Refresh" effectively a
+  // no-op. The user-facing behaviour we want is:
+  //   • Open the site → silently reconnect to the
+  //     previously authorised wallet (standard dApp UX,
+  //     matches every other Sui wallet dApp).
+  //   • Click Disconnect → next refresh stays
+  //     disconnected, exactly as the user asked.
+  // The `storage` wrapper below implements the second
+  // guarantee by tracking an explicit disconnect flag
+  // that makes `getItem(storageKey)` return null until
+  // the user reconnects.
+  autoConnect: true,
+  storage: createDisconnectAwareStorage(),
 });
 
 export const PACKAGE_IDS = {
