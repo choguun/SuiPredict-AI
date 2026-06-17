@@ -674,6 +674,24 @@ function startHealthServer() {
         JSON.stringify({
           status: "ok",
           package_id: process.env.AGENT_POLICY_PACKAGE_ID ?? "",
+          // R-WC-1.4 fix: surface MARKET_PACKAGE_ID and
+          // FEE_VAULT_ID in the /health payload so the
+          // web bundle's drift detector can catch a
+          // missing / mismatched value before a user
+          // hits the wallet spinner. Pre-fix, only
+          // AGENT_POLICY_PACKAGE_ID was tracked, and
+          // the SDK's PKG() getter resolves to the
+          // MARKET_PACKAGE_ID (R58.H10); a drift
+          // between the two surfaced as a cryptic
+          // BCS error at mint-shares time.
+          market_package_id:
+            process.env.MARKET_PACKAGE_ID ??
+            process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ??
+            "",
+          fee_vault_id:
+            process.env.FEE_VAULT_ID ??
+            process.env.NEXT_PUBLIC_FEE_VAULT_ID ??
+            "",
           // R-WC-1.3 fix: surface DEEPBOOK_PACKAGE_ID
           // in the /health payload so the web bundle's
           // drift detector can catch a missing
@@ -713,7 +731,6 @@ function startHealthServer() {
           // operator dashboard had no signal short of a
           // user-reported move abort. Same shape as the
           // existing parlay/vault entries.
-          fee_vault_id: process.env.FEE_VAULT_ID ?? "",
           streak_registry_id: process.env.STREAK_REGISTRY_ID ?? "",
           // R46 audit fix: the drift detector on the web
           // `/agents` page compares the `NEXT_PUBLIC_*` env

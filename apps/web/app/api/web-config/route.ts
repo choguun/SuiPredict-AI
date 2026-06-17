@@ -53,6 +53,15 @@ const PUBLIC_ENV = {
     process.env.NEXT_PUBLIC_DEEPBOOK_POOL_ID ?? "",
   NEXT_PUBLIC_DEEPBOOK_POOL_KEY:
     process.env.NEXT_PUBLIC_DEEPBOOK_POOL_KEY ?? "",
+  // R-WC-1.4 fix: include NEXT_PUBLIC_MARKET_PACKAGE_ID
+  // in the drift-detector surface. Pre-fix, the route
+  // omitted it, so the web bundle's drift detector
+  // couldn't catch a missing MARKET_PACKAGE_ID
+  // mismatch. The new entry surfaces the env var
+  // (the source of truth for the SDK's `PKG()` getter)
+  // alongside the rest of the package ids.
+  NEXT_PUBLIC_MARKET_PACKAGE_ID:
+    process.env.NEXT_PUBLIC_MARKET_PACKAGE_ID ?? "",
   // R-WC-1.3 fix: include DEEPBOOK_PACKAGE_ID in the
   // drift-detector surface. Pre-fix, this var was
   // missing from the web's `.env.local` and the

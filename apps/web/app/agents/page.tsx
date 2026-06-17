@@ -26,6 +26,17 @@ interface AgentManifestEntry {
 
 interface HealthEnvelope {
   package_id?: string;
+  // R-WC-1.4 fix: market_package_id and fee_vault_id
+  // are now surfaced by the agents /health payload
+  // so the drift detector can catch a missing /
+  // mismatched value before a user hits the wallet
+  // spinner. Without these, the
+  // `Mint Shares` button's PTB would fail with the
+  // cryptic `TypeMismatch` error (R-WC-1.4) or
+  // `::balance_manager::BalanceManager` BCS error
+  // (R-WC-1.3) at execution time.
+  market_package_id?: string;
+  fee_vault_id?: string;
   // R-WC-1.3 fix: deepbook_package_id is the
   // source-of-truth DEEPBOOK_PACKAGE_ID for the
   // SDK's createDeepBookClient. Pre-fix this was
@@ -38,12 +49,6 @@ interface HealthEnvelope {
   prize_pool_id?: string;
   parlay_pool_id?: string;
   streak_registry_id?: string;
-  // R40 audit fix: the web bundle bakes
-  // NEXT_PUBLIC_FEE_VAULT_ID into every mint/redeem PTB. The
-  // agents /health payload now echoes `fee_vault_id`; the
-  // drift detector surfaces a mismatch instead of silently
-  // misrouting collateral to a non-existent fee vault.
-  fee_vault_id?: string;
   // R39 audit fix: surface the resolved network, gRPC URL, and
   // referral-treasury address from the agents /health payload.
   // Without these the operator has no way to confirm the
@@ -142,6 +147,19 @@ const SUI_NETWORK: SuiNetwork = (SUI_NETWORKS as readonly string[]).includes(
 const SUIVISION_TX_URL = `https://${SUI_NETWORK}.suivision.xyz/txblock/`;
 const ENV_IDS: Array<{ env: string; label: string; runtimeKey: keyof HealthEnvelope }> = [
   { env: "NEXT_PUBLIC_AGENT_POLICY_PACKAGE_ID", label: "AGENT_POLICY_PACKAGE_ID", runtimeKey: "package_id" },
+  // R-WC-1.4 fix: track MARKET_PACKAGE_ID and
+  // FEE_VAULT_ID. The SDK's `PKG()` getter resolves
+  // to MARKET_PACKAGE_ID (R58.H10 audit), so a drift
+  // between the web bundle's
+  // `NEXT_PUBLIC_MARKET_PACKAGE_ID` and the agents
+  // runtime's `MARKET_PACKAGE_ID` would surface as a
+  // `::prediction_market::BalanceManager` (R-WC-1.3)
+  // or a `CommandArgumentError` (this commit's R-WC-1.4)
+  // at mint-shares time. Without these ENV_IDS entries
+  // the drift detector would silently skip the
+  // mismatch.
+  { env: "NEXT_PUBLIC_MARKET_PACKAGE_ID", label: "MARKET_PACKAGE_ID", runtimeKey: "market_package_id" },
+  { env: "NEXT_PUBLIC_FEE_VAULT_ID", label: "FEE_VAULT_ID", runtimeKey: "fee_vault_id" },
   // R-WC-1.3 fix: track DEEPBOOK_PACKAGE_ID. Pre-fix,
   // this env var was missing from the web's
   // `.env.local` and the SDK silently passed an empty

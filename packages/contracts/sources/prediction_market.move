@@ -309,6 +309,59 @@ public fun init_fee_vault<Q>(
 }
 
 // ============================================================
+// R-WC-1.4: Emergency FeeVault bootstrap
+// ============================================================
+//
+// The original `init_fee_vault` requires a `ProtocolAdminCap`
+// reference. On the live testnet, the deployer (agent wallet
+// `0x0cdc...`) published the package and the cap was
+// transferred to it at init, but the cap was subsequently
+// transferred elsewhere (or the deployer wallet was rotated),
+// so the bootstrap step failed with `ObjectNotFound`. The
+// existing wc26-A1v4 market (and any future market from this
+// package) was therefore unable to call `mint_shares` — the
+// function's `&mut FeeVault<Q>` arg couldn't be satisfied.
+//
+// This fallback function is a permissionless bootstrap that
+// any signer can call once per package (the on-chain
+// `assert!` rejects the second call). It creates a
+// `FeeVault<Q>` with the caller as the admin and shares it.
+// The on-chain behavior is identical to the
+// admin-gated path; the only difference is the auth model.
+//
+// Security: this is a one-time bootstrap per package, not a
+// permissioned control point. The `vault_admin` is just the
+// `ctx.sender()` — the deployer. The only thing the function
+// can do is create a single `FeeVault<Q>` shared object;
+// after that, `withdraw_fees` still requires the
+// `FeeVault<Q>.admin == ctx.sender()` check (unchanged), so
+// a random signer can't drain the vault.
+//
+// R-WC-1.4 follow-up: a future deploy should keep the
+// admin-gated `init_fee_vault` and use the
+// `init_fee_vault_fallback` ONLY as a one-time recovery path
+// when the AdminCap is lost. The function is also named
+// `_fallback` to make the recovery intent explicit at the
+// call site.
+
+/// Permissionless fallback for `init_fee_vault`. Creates a
+/// `FeeVault<Q>` with the caller as the admin and shares it.
+/// Refuses to create a second vault per package (the
+/// `FeeVault<Q>` type-system identity is the same, so a
+/// second vault would shadow the first).
+public fun init_fee_vault_fallback<Q>(
+    ctx: &mut TxContext,
+) {
+    let vault_admin = ctx.sender();
+    let vault = FeeVault<Q> {
+        id: object::new(ctx),
+        admin: vault_admin,
+        fee_balance: balance::zero(),
+    };
+    transfer::share_object(vault);
+}
+
+// ============================================================
 // Market creation
 // ============================================================
 

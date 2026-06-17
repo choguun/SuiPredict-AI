@@ -93,6 +93,12 @@ export {
   buildReturnFromMmTx,
   buildWithdrawFeesTx,
   buildInitFeeVaultTx,
+  // R-WC-1.4 fix: permissionless fallback builder for
+  // the `init_fee_vault` path. Used when the deployer's
+  // `ProtocolAdminCap` is lost (or the cap was
+  // transferred to a different wallet) and a
+  // one-time recovery bootstrap is needed.
+  buildInitFeeVaultFallbackTx,
   // R50 audit fix: 5 builders were defined in
   // `prediction-market-client.ts` but omitted from
   // the explicit barrel list. Consumers importing

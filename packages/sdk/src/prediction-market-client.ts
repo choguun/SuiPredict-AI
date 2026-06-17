@@ -956,6 +956,26 @@ export function buildInitFeeVaultTx(
   return tx;
 }
 
+// R-WC-1.4 fix: permissionless fallback for `init_fee_vault`.
+// See `init_fee_vault_fallback` in `prediction_market.move` for
+// the full rationale. Use this builder when the
+// `ProtocolAdminCap` is lost (or was never accessible from
+// the current deployer wallet) and a one-time recovery
+// bootstrap is needed to publish a `FeeVault<Q>` for the
+// package. The vault_admin is the signer
+// (`ctx.sender()`) — the same as `init_fee_vault` would
+// set when called with `_admin_cap: &ProtocolAdminCap,
+// vault_admin: signer`.
+export function buildInitFeeVaultFallbackTx(): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${PKG()}::prediction_market::init_fee_vault_fallback`,
+    typeArguments: [DUSDC_TYPE],
+    arguments: [],
+  });
+  return tx;
+}
+
 // ─── Order book helpers ───────────────────────────────────────────────────────
 
 /**
