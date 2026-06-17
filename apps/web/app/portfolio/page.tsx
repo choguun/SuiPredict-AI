@@ -16,7 +16,7 @@ import {
   normalizeObjectId,
   isMoveAbortInModule,
 } from "@suipredict/sdk";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, openConnectModal } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";
 import { SuivisionLink } from "@/components/SuivisionLink";
 import { useUserStreakId } from "@/hooks/useUserStreakId";
@@ -202,11 +202,7 @@ export default function PortfolioPage() {
           title="Wallet Disconnected"
           description="Connect your Sui wallet to view your active prediction positions. Your portfolio tracks YES/NO shares across every market you've traded."
           actionLabel="Connect Wallet"
-          onAction={() => {
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("open-connect-modal"));
-            }
-          }}
+          onAction={openConnectModal}
           previews={[
             "Active YES/NO share balances per market",
             "Current mark-to-market value in DUSDC",

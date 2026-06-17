@@ -16,7 +16,7 @@ import {
   VLP_TYPE,
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, openConnectModal } from "@/components/EmptyState";
 import { clampNumberString } from "@/lib/forms";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -415,11 +415,7 @@ export default function VaultPage() {
           title="Wallet Disconnected"
           description="Connect your Sui wallet to view and manage your vault allocations. Your deposit powers the autonomous market-making agents that earn the protocol's spread."
           actionLabel="Connect Wallet"
-          onAction={() => {
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("open-connect-modal"));
-            }
-          }}
+          onAction={openConnectModal}
           previews={[
             "Deposit DUSDC → mint VLP at the current share price",
             "Agents market-make across all CLOB markets",

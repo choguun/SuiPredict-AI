@@ -1,5 +1,4 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
 
 /**
  * Generic empty-state card with a single primary CTA and an
@@ -148,10 +147,3 @@ export function openConnectModal(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("open-connect-modal"));
 }
-
-/**
- * Re-export for consumers that already imported the
- * `EmptyState` symbol. The `previews` prop is optional
- * — existing call sites continue to work unchanged.
- */
-export type { ReactNode };

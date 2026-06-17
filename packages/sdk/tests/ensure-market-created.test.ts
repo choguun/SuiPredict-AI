@@ -60,12 +60,14 @@ test("findExistingYesPool: returns null when the registry has no YES<Q> pool", a
   // must return `null` (not throw) so the wc-creator
   // can fall back to `create_market` for the first
   // market. We mock the Sui client with the
-  // gRPC-first `core.getDynamicFields` returning
-  // an empty dynamicFields array.
+  // gRPC-first `listDynamicFields` returning an
+  // empty `dynamicFields` array.
   const mockClient = {
-    core: {
-      getDynamicFields: async () => ({ dynamicFields: [], hasNextPage: false, cursor: null }),
-    },
+    listDynamicFields: async () => ({
+      hasNextPage: false,
+      cursor: null,
+      dynamicFields: [],
+    }),
   } as unknown as Parameters<typeof findExistingYesPool>[0];
   const result = await findExistingYesPool(
     mockClient,
@@ -76,26 +78,62 @@ test("findExistingYesPool: returns null when the registry has no YES<Q> pool", a
   assert.equal(result, null);
 });
 
-test("findExistingYesPool: matches dynamic fields by YES<DUSDC> prefix", async () => {
+test("findExistingYesPool: matches dynamic fields by YES<DUSDC> prefix (SDK-wrapper shape)", async () => {
   // R-WC-1 fix: a registry with a pool of a
   // different base type (e.g. `YES<SUI>`) plus a
   // matching `YES<DUSDC>` pool must return the
   // DUSDC one. The match is on the dynamic-field
-  // name's rendered TypeName, which serialises
-  // as `{ name: "<pkg>::prediction_market::YES<…>, <quote>" }`.
+  // name's rendered TypeName. The SDK wrapper
+  // returns the name as a parsed object
+  // (`{ type: "TypeName", bcs: <BCS bytes> }`);
+  // we decode the BCS-encoded TypeName struct
+  // (which is just a `String` wrapper) and match
+  // against the rendered type name.
+  const matchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<${DUSDC_TYPE}>, ${DUSDC_TYPE}`;
+  const nonMatchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<0x2::sui::SUI>, 0x2::sui::SUI`;
+  // BCS encoding of a Move `String` is
+  // ULEB128(length) + utf8-bytes. The TypeName
+  // struct is just `{ name: String }`, so the BCS
+  // is one ULEB128 + the string bytes.
+  const bcsOfMatching = concatBcs(uleb128(matchingName.length), utf8(matchingName));
+  const bcsOfNonMatching = concatBcs(uleb128(nonMatchingName.length), utf8(nonMatchingName));
+  const mockClient = {
+    listDynamicFields: async () => ({
+      hasNextPage: false,
+      cursor: null,
+      dynamicFields: [
+        { fieldId: "0xaaa", name: { type: "TypeName", bcs: bcsOfNonMatching }, valueType: "0x2::type_name::TypeName", type: "..." },
+        { fieldId: "0xbbb", name: { type: "TypeName", bcs: bcsOfMatching }, valueType: "0x2::type_name::TypeName", type: "..." },
+      ],
+    }),
+  } as unknown as Parameters<typeof findExistingYesPool>[0];
+  const result = await findExistingYesPool(
+    mockClient,
+    "0x123",
+    AGENT_POLICY_PACKAGE_ID,
+    DUSDC_TYPE,
+  );
+  assert.equal(result, "0xbbb");
+});
+
+test("findExistingYesPool: matches dynamic fields by YES<DUSDC> prefix (legacy JSON-RPC shape)", async () => {
+  // R-WC-1 fix: an older fullnode (pre-gRPC
+  // migration) returns the name as a plain object
+  // with a `name` field that's the rendered
+  // TypeName string. The helper detects this shape
+  // and uses the `name` field directly (no BCS
+  // decode needed).
   const matchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<${DUSDC_TYPE}>, ${DUSDC_TYPE}`;
   const nonMatchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<0x2::sui::SUI>, 0x2::sui::SUI`;
   const mockClient = {
-    core: {
-      getDynamicFields: async () => ({
-        dynamicFields: [
-          { objectId: "0xaaa", name: { name: nonMatchingName } },
-          { objectId: "0xbbb", name: { name: matchingName } },
-        ],
-        hasNextPage: false,
-        cursor: null,
-      }),
-    },
+    getDynamicFields: async () => ({
+      data: [
+        { objectId: "0xaaa", name: { name: nonMatchingName } },
+        { objectId: "0xbbb", name: { name: matchingName } },
+      ],
+      hasNextPage: false,
+      nextCursor: null,
+    }),
   } as unknown as Parameters<typeof findExistingYesPool>[0];
   const result = await findExistingYesPool(
     mockClient,
@@ -116,17 +154,16 @@ test("findExistingYesPool: returns the first matching pool when multiple are reg
   // to reuse and skips the DEEP fee on the
   // `create_market` path.
   const matchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<${DUSDC_TYPE}>, ${DUSDC_TYPE}`;
+  const bcsOfMatching = concatBcs(uleb128(matchingName.length), utf8(matchingName));
   const mockClient = {
-    core: {
-      getDynamicFields: async () => ({
-        dynamicFields: [
-          { objectId: "0xfirst", name: { name: matchingName } },
-          { objectId: "0xsecond", name: { name: matchingName } },
-        ],
-        hasNextPage: false,
-        cursor: null,
-      }),
-    },
+    listDynamicFields: async () => ({
+      hasNextPage: false,
+      cursor: null,
+      dynamicFields: [
+        { fieldId: "0xfirst", name: { type: "TypeName", bcs: bcsOfMatching }, valueType: "0x2::type_name::TypeName", type: "..." },
+        { fieldId: "0xsecond", name: { type: "TypeName", bcs: bcsOfMatching }, valueType: "0x2::type_name::TypeName", type: "..." },
+      ],
+    }),
   } as unknown as Parameters<typeof findExistingYesPool>[0];
   const result = await findExistingYesPool(
     mockClient,
@@ -136,3 +173,116 @@ test("findExistingYesPool: returns the first matching pool when multiple are reg
   );
   assert.equal(result, "0xfirst");
 });
+
+test("findExistingYesPool: paginates when the first page has no match", async () => {
+  // R-WC-1 fix: a DeepBook registry with > 50
+  // dynamic fields (a busy mainnet deployment)
+  // returns the first match across multiple
+  // pages. The first page contains 49 non-matching
+  // pools; the second page contains the match.
+  // Without pagination the helper would return
+  // null and the wc-creator would try to
+  // `create_market` (consuming 500 DEEP for a
+  // pool that already exists).
+  const matchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<${DUSDC_TYPE}>, ${DUSDC_TYPE}`;
+  const nonMatchingName = `${AGENT_POLICY_PACKAGE_ID}::prediction_market::YES<0x2::sui::SUI>, 0x2::sui::SUI`;
+  const bcsOfNonMatching = concatBcs(uleb128(nonMatchingName.length), utf8(nonMatchingName));
+  const bcsOfMatching = concatBcs(uleb128(matchingName.length), utf8(matchingName));
+  // 49 non-matching rows on the first page.
+  const firstPage = Array.from({ length: 49 }, (_, i) => ({
+    fieldId: `0xnonmatch${i}`,
+    name: { type: "TypeName", bcs: bcsOfNonMatching },
+    valueType: "0x2::type_name::TypeName",
+    type: "...",
+  }));
+  let callCount = 0;
+  const mockClient = {
+    listDynamicFields: async (args: { cursor?: string }) => {
+      callCount++;
+      // First call: no cursor → page 1.
+      // Second call: cursor="page2" → page 2.
+      if (!args.cursor) {
+        return {
+          hasNextPage: true,
+          cursor: "page2",
+          dynamicFields: firstPage,
+        };
+      }
+      return {
+        hasNextPage: false,
+        cursor: null,
+        dynamicFields: [
+          { fieldId: "0xmatch", name: { type: "TypeName", bcs: bcsOfMatching }, valueType: "0x2::type_name::TypeName", type: "..." },
+        ],
+      };
+    },
+  } as unknown as Parameters<typeof findExistingYesPool>[0];
+  const result = await findExistingYesPool(
+    mockClient,
+    "0x123",
+    AGENT_POLICY_PACKAGE_ID,
+    DUSDC_TYPE,
+  );
+  assert.equal(result, "0xmatch");
+  assert.equal(callCount, 2, "should have made exactly 2 paginated calls");
+});
+
+test("findExistingYesPool: throws on infinite-loop (hasNextPage=true without cursor)", async () => {
+  // R-WC-1 fix: a misbehaving legacy fullnode that
+  // returns `hasNextPage: true` but no `nextCursor`
+  // would put the helper in an infinite loop. The
+  // defensive check throws a clear error after the
+  // first bad response so the caller (the
+  // wc-creator's gate) can surface it as a failed
+  // `noop` decision instead of hanging the agent.
+  // The new gRPC client computes `hasNextPage` from
+  // `nextPageToken` directly, so the same defensive
+  // check is reachable via a missing-cursor
+  // response (covered by the pagination logic); this
+  // test pins the legacy JSON-RPC path which is
+  // separate.
+  const mockClient = {
+    getDynamicFields: async () => ({
+      data: [],
+      hasNextPage: true,
+      // No `nextCursor` key at all — a fullnode
+      // omission. The defensive check should catch
+      // this and throw.
+    }),
+  } as unknown as Parameters<typeof findExistingYesPool>[0];
+  await assert.rejects(
+    () => findExistingYesPool(
+      mockClient,
+      "0x123",
+      AGENT_POLICY_PACKAGE_ID,
+      DUSDC_TYPE,
+    ),
+    /without a cursor/,
+  );
+});
+
+/**
+ * Test helpers for BCS encoding. The TypeName struct
+ * is `{ name: String }` so its BCS is one ULEB128-encoded
+ * length followed by the UTF-8 bytes of the string.
+ */
+function uleb128(n: number): Uint8Array {
+  const bytes: number[] = [];
+  do {
+    bytes.push(n & 0x7f);
+    n >>>= 7;
+    if (n > 0) bytes[bytes.length - 1] |= 0x80;
+  } while (n > 0);
+  return new Uint8Array(bytes);
+}
+function utf8(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
+}
+/** Concatenate two Uint8Arrays. `Uint8Array + Uint8Array`
+ *  in JS coerces to a number, so we use `set` + `subarray`. */
+function concatBcs(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}

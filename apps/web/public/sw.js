@@ -25,15 +25,29 @@
 // narrower scope. UAT-FN-17 follow-up suggestion: update
 // README accordingly.
 //
-// The `__SW_VERSION__` placeholder is replaced by the
-// build script in `scripts/build-sw.mjs` (or by the
-// timestamp at install time if no build script is run).
-// Bumping the version forces the new SW to take over
-// from any previously-installed one and clears the
-// old cache.
+// The `SW_VERSION` constant is the cache-name suffix.
+// Bumping the version on a deploy forces every installed
+// client to evict the old cache on the next visit (the
+// `activate` handler below deletes any cache whose name
+// doesn't start with `suipredict-shell-${SW_VERSION}`).
+//
+// Versioning rules:
+//   - Patch bump (e.g. 1.0.0 → 1.0.1) for SW logic changes
+//     that don't require a fresh offline.html fetch.
+//   - Minor bump (1.0.x → 1.1.0) for new cached resources
+//     (bump the cache name suffix to `1.1.0`).
+//   - Major bump (1.x.x → 2.0.0) for the rare "bust all
+//     state" deploy.
+//
+// The version is checked into the source so a deploy
+// that's missing the SW change still produces a
+// deterministic cache name. The next.config.ts
+// `headers()` config sets `Cache-Control: no-cache, no-store`
+// on `/sw.js` so the browser always fetches the latest
+// version on every load.
 // =============================================================================
 
-const SW_VERSION = "__SW_VERSION__";
+const SW_VERSION = "1.0.0";
 const CACHE_NAME = `suipredict-shell-${SW_VERSION}`;
 const OFFLINE_URL = "/offline.html";
 

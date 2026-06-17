@@ -298,6 +298,15 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
 
   let created = 0;
   let failed = 0;
+  // R-WC-1 fix: capture the first error so the decision
+  // feed surfaces *why* the create loop failed. Pre-fix
+  // the operator only saw "WC: created 0 on-chain
+  // markets, 3 failed" with no actionable info; the
+  // detailed stack-tracey warnings were buried in the
+  // agent's stdout. The first error is included in the
+  // `recordResult` reasoning string below (truncated
+  // to 200 chars to keep the decision feed scannable).
+  let firstError: string | null = null;
   for (const m of todo) {
     try {
       // Step 1: ensure a 500-DEEP coin for pool
@@ -541,6 +550,19 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // "fund wallet" message instead of N
       // "insufficient SUI" stack traces.
       failed++;
+      // R-WC-1 fix: capture the first error message
+      // for the decision feed. The full stack-trace
+      // is in the agent's stdout (via console.warn
+      // below); the decision feed gets a one-line
+      // summary so the operator doesn't have to
+      // open a terminal to find out why the
+      // create loop failed.
+      if (firstError === null) {
+        // Truncate to 200 chars to keep the
+        // decision feed scannable. The full
+        // message is in stdout.
+        firstError = msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+      }
       console.warn(`[wc-creator] ${m.id} failed:`, msg);
     }
   }
@@ -550,7 +572,8 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
     reasoning:
       `WC: created ${created} on-chain markets, ${failed} failed. ` +
       `Window: ${upcoming.length} matches in 7d, cap ${maxActive}. ` +
-      `Path: ${needsDeepFee ? "create_market (first market creates pool, 500 DEEP fee)" : "create_market_with_pool (reusing existing pool, no DEEP)"}.`,
+      `Path: ${needsDeepFee ? "create_market (first market creates pool, 500 DEEP fee)" : "create_market_with_pool (reusing existing pool, no DEEP)"}.` +
+      (firstError ? ` First error: ${firstError}` : ""),
     confidence: 85,
   });
 }

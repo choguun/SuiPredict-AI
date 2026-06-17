@@ -23,7 +23,7 @@ import {
   type MarketInfo,
 } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
-import { EmptyState } from "@/components/EmptyState";
+import { EmptyState, openConnectModal } from "@/components/EmptyState";
 import { ParlayHistory } from "@/components/ParlayHistory";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -627,11 +627,7 @@ export default function ParlayPage() {
           title="Wallet Disconnected"
           description="Connect your Sui wallet to build and place multi-leg parlays. Combine 2-8 YES/NO positions across markets and earn multiplied payouts when every leg wins."
           actionLabel="Connect Wallet"
-          onAction={() => {
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("open-connect-modal"));
-            }
-          }}
+          onAction={openConnectModal}
           previews={[
             "Pick 2-8 markets, choose YES or NO on each",
             "Combined payout multiplier (legs × odds)",

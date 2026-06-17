@@ -1834,7 +1834,7 @@ export function buildRegisterMarketTx(
 export async function findExistingYesPool(
   client: SuiClient,
   deepbookRegistryId: string,
-  marketPackageId: string = PKG(),
+  marketPackageId: string = PREDICT_MARKET_PACKAGE_ID,
   quoteType: string = DUSDC_TYPE,
 ): Promise<string | null> {
   // The dynamic-field name for a Pool<YES<Q>, Q> in the
@@ -1870,64 +1870,224 @@ export async function findExistingYesPool(
   // `${quoteType}>` (closing `>` after the DUSDC type
   // name), not `::${quoteType}>`.
   const expectedSuffix = `${quoteType}>`;
-  // R-WC-1 fix: gRPC-first, JSON-RPC fallback. The
-  // `SuiGrpcClient` types don't expose `getDynamicFields`
-  // at the top level, but `core` has it. We use
-  // `client.core?.getDynamicFields` and fall back to
-  // the legacy API (cast through `unknown` because
-  // legacy `getDynamicFields` is not on the gRPC
-  // client's type).
+  // R-WC-1 fix: `SuiGrpcClient.listDynamicFields` is a
+  // SDK wrapper around the raw gRPC
+  // `StateService.ListDynamicFields` call. The
+  // wrapper:
+  //   1. Renames `parent` → `parentId`, `page_size` →
+  //      `limit`, `page_token` → `cursor` (cursor is
+  //      base64-encoded so consumers don't have to
+  //      handle raw protobuf bytes).
+  //   2. Normalizes the response from
+  //      `dynamicFields: Bcs[]` to
+  //      `dynamicFields: { fieldId, name: { type, bcs }, valueType, type, childId, value }[]`.
+  //      The `name.type` is the Move type name
+  //      ("TypeName") and `name.bcs` is the
+  //      BCS-encoded `TypeName` struct. The struct is
+  //      `{ name: String }`, so the BCS is
+  //      ULEB128-encoded length + UTF-8 bytes.
+  //   3. Computes `hasNextPage` from the presence
+  //      of a `nextPageToken`.
+  //
+  // We prefer the wrapper over the raw gRPC client
+  // (which lives at `client.stateService.listDynamicFields`
+  // and returns the protobuf `Bcs` shape with the
+  // bytes still inside `name.value`). The legacy
+  // JSON-RPC client returns
+  // `{ data: [{ objectId, name: { name: "TypeName" } }] }`
+  // (no `bcs`/`value`) — an older fullnode that
+  // hasn't migrated to the v2 gRPC API; we detect it
+  // by the presence of `objectId` instead of `fieldId`.
   const g = client as SuiClient & {
-    core?: {
-      getDynamicFields?: (args: {
-        parentId: string;
-        limit?: number;
-        cursor?: string | null;
-      }) => Promise<{
-        dynamicFields: Array<{ objectId: string; name?: unknown }>;
-        hasNextPage: boolean;
-        cursor?: string | null;
+    listDynamicFields?: (args: {
+      parentId: string;
+      limit?: number;
+      cursor?: string | null;
+    }) => Promise<{
+      hasNextPage: boolean;
+      cursor: string | null;
+      dynamicFields: Array<{
+        fieldId: string;
+        name: { type: string; bcs: Uint8Array };
+        valueType: string;
+        type: string;
+        childId?: string;
       }>;
-    };
+    }>;
     getDynamicFields?: (args: {
       parentId: string;
       limit?: number;
       cursor?: string | null;
-    }) => Promise<{ data: Array<{ objectId: string; name?: unknown }>; hasNextPage: boolean; nextCursor?: string | null }>;
+    }) => Promise<{
+      data: Array<{ objectId: string; name?: unknown }>;
+      hasNextPage: boolean;
+      nextCursor?: string | null;
+    }>;
   };
-  type DynamicFieldRow = { objectId: string; name?: unknown };
-  let rows: DynamicFieldRow[] = [];
-  if (g.core?.getDynamicFields) {
-    const r = await g.core.getDynamicFields({ parentId: deepbookRegistryId, limit: 50 });
-    rows = r.dynamicFields;
-  } else if (g.getDynamicFields) {
-    const r = await g.getDynamicFields({ parentId: deepbookRegistryId, limit: 50 });
-    rows = r.data;
-  } else {
-    throw new Error(
-      "findExistingYesPool: client exposes neither core.getDynamicFields nor getDynamicFields",
-    );
-  }
-  for (const f of rows) {
-    const name = f.name;
-    // The dynamic-field name for a TypeName key is
-    // an object with a `name: string` field (Sui's
-    // TypeName BCS encoding). The full pool key looks
-    // like `name: "<pkg>::prediction_market::YES<DUSDC>, <pkg>::...::DUSDC"`
-    // — we check the YES<…> portion.
-    if (
-      typeof name === "object" &&
-      name !== null &&
-      "name" in name &&
-      typeof (name as { name: unknown }).name === "string"
-    ) {
-      const rendered = (name as { name: string }).name;
-      if (rendered.startsWith(expectedPrefix) && rendered.includes(expectedSuffix)) {
-        return f.objectId;
+  type ResolvedRow = { id: string; typename?: string };
+  // Decode a `Bcs` containing a Move `TypeName` struct
+  // (which is just a wrapper around a `String`). The
+  // struct is
+  // `struct TypeName has copy, drop, store { name: String }`
+  // so the BCS is: ULEB128 length + UTF-8 bytes.
+  // Rather than depend on `@mysten/bcs` (a transitive
+  // dep of `@mysten/sui` that isn't exposed via the
+  // Sui SDK's public exports), we use a small inline
+  // ULEB128 + String decoder. The Move String BCS
+  // encoding is documented at
+  // https://github.com/MystenLabs/sui/blob/main/external-crates/move/crates/move-binary-format/src/file_format_common.rs
+  // and is just "vector<u8>" — ULEB128 length + raw
+  // bytes. The TypeName struct is a wrapper, so the
+  // bytes are a single String field.
+  const decodeTypeNameBcs = (bytes: Uint8Array): string => {
+    if (bytes.length === 0) {
+      throw new Error("decodeTypeNameBcs: empty BCS buffer");
+    }
+    // Read the ULEB128 length prefix. Move's String
+    // stores a `u64` length but the BCS serializer
+    // emits a ULEB128; the `String` Move type's
+    // max length is `u64::MAX` so the ULEB128 can
+    // span up to 10 bytes for the full u64 range.
+    let length = 0;
+    let shift = 0;
+    let offset = 0;
+    while (true) {
+      if (offset >= bytes.length) {
+        throw new Error("decodeTypeNameBcs: truncated ULEB128 length");
+      }
+      const byte = bytes[offset++]!;
+      length |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+      if (shift > 63) {
+        throw new Error("decodeTypeNameBcs: ULEB128 length overflows u64");
       }
     }
+    // The remaining bytes after the ULEB128 are the
+    // UTF-8 string content.
+    if (offset + length > bytes.length) {
+      throw new Error(
+        `decodeTypeNameBcs: truncated String (declared length ${length}, ` +
+          `remaining bytes ${bytes.length - offset})`,
+      );
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.slice(offset, offset + length),
+    );
+  };
+  // Resolve the dynamic field id + the rendered
+  // TypeName string from either the SDK-wrapper
+  // shape (`name: { type, bcs }`) or the legacy
+  // JSON-RPC shape (`name: { name: "TypeName" }`).
+  // The id field is `fieldId` on the new client
+  // and `objectId` on the legacy client.
+  const resolveIdAndName = (f: unknown): ResolvedRow | undefined => {
+    if (typeof f !== "object" || f === null) return undefined;
+    const o = f as Record<string, unknown>;
+    const id =
+      (typeof o["fieldId"] === "string" && o["fieldId"]) ||
+      (typeof o["objectId"] === "string" && o["objectId"]) ||
+      undefined;
+    if (!id) return undefined;
+    const name = o["name"];
+    if (typeof name !== "object" || name === null) return { id, typename: undefined };
+    const n = name as Record<string, unknown>;
+    // SDK-wrapper shape: { type: "TypeName", bcs: Uint8Array }
+    if (n["bcs"] instanceof Uint8Array) {
+      const typeNameStr = n["type"];
+      if (typeof typeNameStr === "string" && typeNameStr === "TypeName") {
+        try {
+          const rendered = decodeTypeNameBcs(n["bcs"]);
+          return { id, typename: rendered };
+        } catch {
+          return { id, typename: undefined };
+        }
+      }
+    }
+    // Legacy JSON-RPC: name is an object with a `name`
+    // field that's already the rendered TypeName
+    // string (e.g. "<pkg>::prediction_market::YES<…>").
+    if (typeof n["name"] === "string") {
+      return { id, typename: n["name"] };
+    }
+    return { id, typename: undefined };
+  };
+  // R-WC-1 fix: paginate the dynamic-field walk so
+  // a DeepBook registry with > 50 pools (a busy
+  // mainnet deployment) doesn't get truncated at
+  // the first 50 rows. The SDK wrapper's
+  // `hasNextPage: boolean` + `cursor: string | null`
+  // shape is the unified pagination contract (the
+  // legacy client uses `nextCursor` instead of
+  // `cursor` — both shapes are handled).
+  let cursor: string | null = null;
+  // Hard cap on total pages scanned to prevent a
+  // runaway loop on a misbehaving fullnode. 1000
+  // is plenty for any real DeepBook deployment
+  // (testnet has 1, mainnet has < 100 today).
+  const MAX_PAGES = 20;
+  const PAGE_SIZE = 50;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    let rows: unknown[] = [];
+    let hasNextPage = false;
+    let nextCursor: string | null = null;
+    if (typeof g.listDynamicFields === "function") {
+      const r: {
+        dynamicFields: unknown[];
+        hasNextPage: boolean;
+        cursor: string | null;
+      } = await g.listDynamicFields({
+        parentId: deepbookRegistryId,
+        limit: PAGE_SIZE,
+        cursor: cursor ?? undefined,
+      });
+      rows = r.dynamicFields;
+      hasNextPage = r.hasNextPage;
+      nextCursor = r.cursor;
+    } else if (typeof g.getDynamicFields === "function") {
+      const r: {
+        data: unknown[];
+        hasNextPage: boolean;
+        nextCursor?: string | null;
+      } = await g.getDynamicFields({
+        parentId: deepbookRegistryId,
+        limit: PAGE_SIZE,
+        cursor: cursor,
+      });
+      rows = r.data;
+      hasNextPage = r.hasNextPage;
+      nextCursor = r.nextCursor ?? null;
+    } else {
+      throw new Error(
+        "findExistingYesPool: client exposes neither listDynamicFields nor getDynamicFields",
+      );
+    }
+    for (const f of rows) {
+      const resolved = resolveIdAndName(f);
+      if (
+        resolved?.typename !== undefined &&
+        resolved.typename.startsWith(expectedPrefix) &&
+        resolved.typename.includes(expectedSuffix)
+      ) {
+        return resolved.id;
+      }
+    }
+    if (!hasNextPage) return null;
+    // Defensive: if the fullnode returns hasNextPage
+    // but no cursor (null, undefined, or empty
+    // string), bail out to avoid an infinite loop.
+    if (!nextCursor) {
+      throw new Error(
+        "findExistingYesPool: fullnode returned hasNextPage=true without a cursor; " +
+          "aborting pagination to avoid an infinite loop",
+      );
+    }
+    cursor = nextCursor;
   }
-  return null;
+  throw new Error(
+    `findExistingYesPool: exceeded ${MAX_PAGES} pages of dynamic fields without finding a match ` +
+      `(registry ${deepbookRegistryId}, expected prefix "${expectedPrefix}", suffix "${expectedSuffix}")`,
+  );
 }
 
 /**
