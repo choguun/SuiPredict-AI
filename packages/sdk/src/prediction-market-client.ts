@@ -124,6 +124,22 @@ export const FEE_VAULT_ID = (
   "0x0000000000000000000000000000000000000000000000000000000000000000"
 ).trim();
 
+/** R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` shared object
+ *  that holds the per-package YES/Q + NO/Q TreasuryCaps. Created
+ *  once at module bootstrap via
+ *  `init_yes_no_currencies<Q>(...)`. All `create_market<Q>`,
+ *  `mint_shares<Q>`, and `redeem{,_no,_with_streak}<Q>` PTBs
+ *  must include this shared object as a `&mut` arg. The bare
+ *  `SHARED_TREASURY_HOLDER_ID` is the server/agents variant;
+ *  the web bundle uses the `NEXT_PUBLIC_*` form (the
+ *  `predict-server` env.ts also reads this for the web side).
+ */
+export const SHARED_TREASURY_HOLDER_ID = (
+  process.env.NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID ??
+  process.env.SHARED_TREASURY_HOLDER_ID ??
+  "0x0000000000000000000000000000000000000000000000000000000000000000"
+).trim();
+
 /** Protocol treasury address for withdrawing accumulated fees and claiming referral rewards.
  *
  *  R43 audit fix: same `.trim()` as FEE_VAULT_ID above. A
@@ -314,7 +330,7 @@ export function buildCreateMarketTx(params: {
     target: `${PKG()}::prediction_market::create_market`,
     typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
-      tx.object("0xc"),                                   // Sui CoinRegistry
+      tx.object(SHARED_TREASURY_HOLDER_ID),               // R-WC-3 v3: shared caps holder
       tx.object(DEEPBOOK_REGISTRY_ID),
       tx.pure.vector("u8", encodeUtf8(params.title)),
       tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),
@@ -440,7 +456,7 @@ export function buildCreateMarketWithPoolTx(params: {
     target: `${PKG()}::prediction_market::create_market_with_pool`,
     typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
-      tx.object("0xc"),  // Sui system CoinRegistry
+      tx.object(SHARED_TREASURY_HOLDER_ID),  // R-WC-3 v3: shared caps holder
       tx.object(normalizeObjectId(params.poolId)),
       tx.pure.vector("u8", encodeUtf8(params.title)),
       tx.pure.vector("u8", encodeUtf8(params.resolutionSource)),
@@ -472,6 +488,14 @@ export function buildMintSharesTx(
    * matches the v2 package's generic signature.
    */
   m?: string,
+  /**
+   * R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` shared object
+   * holding the YES/Q + NO/Q TreasuryCaps. Defaults to
+   * `SHARED_TREASURY_HOLDER_ID` (resolved from env). Pass an
+   * explicit id to mint against a specific holder (e.g. when
+   * multiple packages are deployed with separate holders).
+   */
+  sharedCapsId?: string,
 ): Transaction {
   // R-UAT-23 follow-up: pre-flight the
   // `marketId` against the Sui object-id
@@ -539,7 +563,12 @@ export function buildMintSharesTx(
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
     typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
-    arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), mintCoin],
+    arguments: [
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(sharedCapsId ?? SHARED_TREASURY_HOLDER_ID)),  // R-WC-3 v3
+      tx.object(normalizeObjectId(vaultId)),
+      mintCoin,
+    ],
   });
   return tx;
 }
@@ -683,6 +712,11 @@ export function buildRedeemTx(
    * second type argument to `redeem<Q, M>`.
    */
   m?: string,
+  /**
+   * R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` shared
+   * object. Defaults to `SHARED_TREASURY_HOLDER_ID` (env).
+   */
+  sharedCapsId?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
@@ -690,6 +724,7 @@ export function buildRedeemTx(
     typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(sharedCapsId ?? SHARED_TREASURY_HOLDER_ID)),  // R-WC-3 v3
       tx.object(normalizeObjectId(vaultId)),
       tx.object(normalizeObjectId(winningCoin)),
     ],
@@ -809,12 +844,22 @@ export function buildRedeemNoTx(
    * second type argument to `redeem_no<Q, M>`.
    */
   m?: string,
+  /**
+   * R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` shared
+   * object. Defaults to `SHARED_TREASURY_HOLDER_ID` (env).
+   */
+  sharedCapsId?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_no`,
     typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
-    arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), tx.object(normalizeObjectId(winningCoin))],
+    arguments: [
+      tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(sharedCapsId ?? SHARED_TREASURY_HOLDER_ID)),  // R-WC-3 v3
+      tx.object(normalizeObjectId(vaultId)),
+      tx.object(normalizeObjectId(winningCoin)),
+    ],
   });
   return tx;
 }
@@ -840,6 +885,11 @@ export function buildRedeemWithStreakTx(
    * second type argument to `redeem_with_streak<Q, M>`.
    */
   m?: string,
+  /**
+   * R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` shared
+   * object. Defaults to `SHARED_TREASURY_HOLDER_ID` (env).
+   */
+  sharedCapsId?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
@@ -847,6 +897,7 @@ export function buildRedeemWithStreakTx(
     typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
+      tx.object(normalizeObjectId(sharedCapsId ?? SHARED_TREASURY_HOLDER_ID)),  // R-WC-3 v3
       tx.object(normalizeObjectId(vaultId)),
       tx.object(normalizeObjectId(winningCoinId)),
       tx.object(normalizeObjectId(streakId)),
@@ -868,6 +919,7 @@ export function buildRedeemNoWithStreakTx(
     typeArguments: [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
+      tx.object(SHARED_TREASURY_HOLDER_ID),  // R-WC-3 v3
       tx.object(normalizeObjectId(vaultId)),
       tx.object(normalizeObjectId(winningCoinId)),
       tx.object(normalizeObjectId(streakId)),

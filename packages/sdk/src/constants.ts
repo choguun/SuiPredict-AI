@@ -168,6 +168,8 @@ function assertMainnetHasExplicitIds(): void {
     "STREAK_REGISTRY_ID",
     "NEXT_PUBLIC_PROFILE_REGISTRY_ID",
     "PROFILE_REGISTRY_ID",
+    "NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID",
+    "SHARED_TREASURY_HOLDER_ID",
   ];
   for (const v of additionalIds) {
     if (!process.env[v]) {
@@ -360,6 +362,20 @@ export function resolveReferralTreasuryAddress(): string {
     process.env.NEXT_PUBLIC_REFERRAL_TREASURY_ADDRESS ??
     process.env.REFERRAL_TREASURY_ADDRESS ??
     process.env.PROTOCOL_TREASURY_ADDRESS ??
+    "0x0000000000000000000000000000000000000000000000000000000000000000"
+  ).trim();
+}
+/// R-WC-3 v3: resolve the `SharedTreasuryHolder<Q>` object id
+/// that holds the shared YES/Q + NO/Q TreasuryCaps. The
+/// holder is a shared object created by
+/// `init_yes_no_currencies<Q>(...)` at module bootstrap. All
+/// `create_market<Q>`, `mint_shares<Q>`, and
+/// `redeem{,_no,_with_streak}<Q>` PTBs must include this
+/// shared object as a `&mut` arg.
+export function resolveSharedTreasuryHolderId(): string {
+  return (
+    process.env.NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID ??
+    process.env.SHARED_TREASURY_HOLDER_ID ??
     "0x0000000000000000000000000000000000000000000000000000000000000000"
   ).trim();
 }
