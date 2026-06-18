@@ -64,9 +64,26 @@ export async function runAutoFunder(
   ]);
   const totalDusdc = dusdcCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
   const totalDeep = deepCoins.reduce((s, c) => s + BigInt(c.balance), 0n);
-  const totalSui = suiRes
-    ? BigInt(((suiRes as { totalBalance?: string | bigint }).totalBalance?.toString() ?? "0"))
-    : 0n;
+  // R-WC-1.8 fix: SuiGrpcClient's `getBalance` returns
+  // a nested `{ balance: { balance: string, ... } }`
+  // shape (the gRPC `Balance` message). The legacy
+  // JSON-RPC client returns a flat `{ totalBalance: string }`.
+  // Normalize both shapes — pre-fix this read
+  // `totalBalance` and always got 0 from the gRPC
+  // client, which made the wallet-funding gate
+  // permanently trip "NEEDS FUNDING: have 0.00 SUI"
+  // even after the operator topped up the wallet.
+  const totalSui = (() => {
+    if (!suiRes) return 0n;
+    const j = suiRes as unknown as {
+      totalBalance?: string | bigint;
+      balance?: { balance?: string | bigint };
+    };
+    const nested = j.balance?.balance;
+    const flat = j.totalBalance;
+    const raw = nested ?? flat;
+    return BigInt((raw as string | bigint | undefined)?.toString() ?? "0");
+  })();
 
   const minDusdc = BigInt(safeInt(process.env.AUTO_FUNDER_MIN_DUSDC_ATOMS, Number(DEFAULT_MIN_DUSDC_ATOMS), 0, 1e18));
   const topupDusdc = BigInt(safeInt(process.env.AUTO_FUNDER_TOPUP_DUSDC_ATOMS, Number(DEFAULT_TOPUP_DUSDC_ATOMS), 0, 1e18));
