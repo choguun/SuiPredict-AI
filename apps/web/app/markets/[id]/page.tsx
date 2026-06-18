@@ -36,6 +36,8 @@ import {
   PREDICT_QUOTE_COIN_KEY,
   tupleBookToSnapshot,
   yesCoinType,
+  marketTypeSeed,
+  withMarketType,
   isMoveAbortInModule,
   type MarketInfo,
   type OrderBookSnapshot,
@@ -956,15 +958,12 @@ function MarketDetailBody({
         );
       }
       const tx = buildMintSharesTx(
-        // R60 audit fix: use the on-chain marketId
-        // (the SQLite primary key is the `wc26-<matchId>`
-        // form, which would abort the on-chain
-        // `mint_shares` call).
         onchainMarketId,
         FEE_VAULT_ID,
         coin.objectId,
         amountAtoms,
       );
+      withMarketType(tx, marketTypeSeed(market.id));
       // R55 audit fix: route through `submitAndWait` so
       // the `setRefreshCounter` + `invalidateMarketCaches`
       // refetches hit a node that has already finalized
@@ -1197,6 +1196,7 @@ function MarketDetailBody({
         quantity: BigInt(qty) * BASE_SCALE,
         isBid,
       });
+      withMarketType(tx, marketTypeSeed(market.id));
       // R55 audit fix: route through `submitAndWait` so
       // the `waitForOrderInBook` poll runs against a node
       // that has already finalized the order tx. The
@@ -1632,7 +1632,9 @@ function MarketDetailBody({
     setBusy("redeemWinner");
     const toastId = toast.loading("Fetching your winning position...");
     try {
-      const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
+      const winningCoinType = winningSide === "yes"
+        ? yesCoinType(undefined, marketTypeSeed(market.id))
+        : noCoinType(undefined, marketTypeSeed(market.id));
       // R51 audit fix: normalize the owner
       // address. `listCoins` is case-sensitive
       // on the wire — a mixed-case Enoki
@@ -1694,6 +1696,7 @@ function MarketDetailBody({
           : streakId
             ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
             : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
+      withMarketType(tx, marketTypeSeed(market.id));
       // R55 audit fix: route through `submitAndWait` so
       // the redeem confirmation reflects the on-chain
       // state. The previous signAndExecuteTransaction

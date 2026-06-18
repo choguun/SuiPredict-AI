@@ -9,7 +9,7 @@ import {
   useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { buildDisputeMarketTx, getMarket, isMoveAbortCode } from "@suipredict/sdk";
+import { buildDisputeMarketTx, getMarket, isMoveAbortCode, marketTypeSeed, withMarketType } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -217,6 +217,7 @@ export default function DisputeMarketPage() {
         return;
       }
       const tx = buildDisputeMarketTx(onchainMarketId, evidenceUri.trim());
+      withMarketType(tx, marketTypeSeed(marketId));
       // R54 audit fix: route through `submitAndWait` so the
       // subsequent `invalidateQueries` / state refetch hits a
       // node that has already finalized the tx. The previous

@@ -15,6 +15,8 @@ import {
   noCoinType,
   normalizeObjectId,
   isMoveAbortInModule,
+  marketTypeSeed,
+  withMarketType,
 } from "@suipredict/sdk";
 import { EmptyState, openConnectModal } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";
@@ -79,7 +81,9 @@ export default function PortfolioPage() {
         throw new Error("Cannot redeem: market outcome is not YES or NO.");
       }
 
-      const winningCoinType = winningSide === "yes" ? yesCoinType() : noCoinType();
+      const winningCoinType = winningSide === "yes"
+        ? yesCoinType(undefined, marketTypeSeed(p.market_id))
+        : noCoinType(undefined, marketTypeSeed(p.market_id));
 
       // List user's winning coins
       const { objects } = await client.core.listCoins({
@@ -117,6 +121,7 @@ export default function PortfolioPage() {
           : streakId
             ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
             : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
+      withMarketType(tx, marketTypeSeed(p.market_id));
 
       const r = await submitAndWait(dAppKit, client, tx);
       if (r.$kind !== "Transaction") {
