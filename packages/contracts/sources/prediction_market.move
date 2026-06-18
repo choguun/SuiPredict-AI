@@ -25,6 +25,7 @@ use sui::clock::Clock;
 use std::string::{Self, String};
 use sui::coin_registry::{Self, CoinRegistry};
 use sui::coin::{Self, Coin, TreasuryCap};
+use sui::dynamic_object_field;
 use sui::event;
 use sui::object::{Self, ID, UID};
 use sui::transfer;
@@ -123,10 +124,15 @@ public struct PredictionMarket<phantom Q> has key {
     id: UID,
     /// Human-readable question / title
     title: vector<u8>,
-    /// TreasuryCap for YES<Q> - mints and burns YES tokens
-    yes_cap: TreasuryCap<YES<Q>>,
-    /// TreasuryCap for NO<Q> - mints and burns NO tokens
-    no_cap: TreasuryCap<NO<Q>>,
+    /// R-WC-3 v3: id of the `SharedTreasuryHolder<Q>` that
+    /// owns this market's YES/Q and NO/Q TreasuryCaps. The
+    /// caps are stored as `dynamic_object_field` entries on
+    /// the holder (Sui's standard pattern for `key + store`
+    /// objects on a `key` struct). At mint/redeem time, the
+    /// market + holder are passed in together; `mint_shares`
+    /// / `redeem` borrow the caps via
+    /// `dynamic_object_field::borrow_mut(&mut holder.id, ...)`.
+    shared_caps_id: ID,
     /// All collateral backing this market's positions
     collateral: Balance<Q>,
     /// Whether the market has been resolved
@@ -180,6 +186,47 @@ public struct FeeVault<phantom Q> has key {
 public struct ProtocolAdminCap has key {
     id: UID,
     admin: address,
+}
+
+// ============================================================
+// R-WC-3 v3: shared YES/Q + NO/Q TreasuryCaps
+// ============================================================
+//
+// The Sui system CoinRegistry enforces "one Currency per type per
+// package". The v1 contract hit this limit on the second
+// `create_market` call (the first registered `Currency<YES<Q>>` /
+// `Currency<NO<Q>>`, the second aborted with
+// `ECurrencyAlreadyExists`).
+//
+// R-WC-2 tried to work around the limit with a per-market
+// `phantom M: address` type param on `YES<Q>`. That was
+// discovered to be impossible on Sui Move (Sui's
+// `TypeTag::Address` is a unit variant in BCS, no body, and
+// Move can't generate new types at runtime).
+//
+// R-WC-3 v3 fix: register the currency ONCE per package per
+// quote-coin type, at module-bootstrap time, and store the
+// resulting YES/Q + NO/Q TreasuryCaps in a shared
+// `SharedTreasuryHolder<Q>` object. Every subsequent
+// `create_market<Q>(...)` call borrows the caps from the
+// shared holder (via `sui::dynamic_object_field::borrow_mut`)
+// without re-registering the currency. The CoinRegistry
+// limit is hit exactly once per (package, Q), allowing
+// unlimited markets thereafter.
+//
+// The full design is in `docs/R-WC-4-v3-design-spec.md`.
+
+/// Shared object holding the per-package YES/Q + NO/Q
+/// TreasuryCaps. Created once per package per quote-coin type
+/// via `init_yes_no_currencies<Q>(...)`. The caps are stored
+/// as `dynamic_object_field` entries on this object's `id`
+/// (Sui's `key` + `store` TreasuryCaps can't be plain fields
+/// of another `key` struct, but `dynamic_object_field` allows
+/// them). Subsequent `create_market<Q>(...)` calls borrow
+/// the caps via `dynamic_object_field::borrow_mut(&mut
+/// holder.id, b"yes")` etc.
+public struct SharedTreasuryHolder<phantom Q> has key {
+    id: UID,
 }
 
 // ============================================================
@@ -362,6 +409,107 @@ public fun init_fee_vault_fallback<Q>(
 }
 
 // ============================================================
+// R-WC-3 v3: shared TreasuryCaps + unlimited markets per package
+// ============================================================
+//
+// See the `SharedTreasuryHolder<Q>` struct definition above for
+// the design rationale. This function registers `Currency<YES<Q>>`
+// and `Currency<NO<Q>>` in the Sui CoinRegistry exactly once
+// per package per `Q`, and shares the resulting TreasuryCaps
+// via a single `SharedTreasuryHolder<Q>` object.
+//
+// The shared caps are stored as `dynamic_object_field` entries
+// (keys: `b"yes_cap"` and `b"no_cap"`) so subsequent
+// `create_market<Q>(...)` calls can borrow them via
+// `dynamic_object_field::borrow_mut(&mut holder.id, b"yes_cap")`
+// and mint/burn YES / NO tokens across many markets without
+// re-registering the currency.
+///
+/// R-WC-3.1 follow-up: refactor `mint_shares`, `redeem`,
+/// `redeem_no`, and `redeem_with_streak` to take
+/// `&mut SharedTreasuryHolder<Q>` alongside
+/// `&mut PredictionMarket<Q>`. The PredictionMarket struct
+/// still holds per-market fields (collateral, balance_manager_id,
+/// etc.) but no longer embeds the YES/NO TreasuryCaps. Caps
+/// are accessed via dynamic_field at mint/burn time.
+
+/// One-time-per-(package, Q) init of the shared YES/Q + NO/Q
+/// TreasuryCaps. Call this once after publishing. Subsequent
+/// calls with the same `Q` would abort with
+/// `ECurrencyAlreadyExists` from the CoinRegistry — the
+/// shared holder is created on the first call only.
+public fun init_yes_no_currencies<Q>(
+    _admin_cap: &ProtocolAdminCap,
+    coin_registry: &mut CoinRegistry,
+    ctx: &mut TxContext,
+) {
+    // Register `Currency<YES<Q>>` in the Sui CoinRegistry. The
+    // `new_currency` (no OTW) path is used because `YES<Q>` is
+    // generic on `Q` — we can't make the OTW be the concrete
+    // `YES<DUSDC>` type since OTWs are module-level non-generic
+    // types. The CoinRegistry treats this as a one-shot
+    // registration per (package, `YES<Q>` type).
+    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
+        coin_registry, 0,
+        string::utf8(b"YES"), string::utf8(b"YES"),
+        string::utf8(b"YES outcome token"), string::utf8(b""),
+        ctx,
+    );
+    let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
+    transfer::public_transfer(yes_meta_cap, ctx.sender());
+
+    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
+        coin_registry, 0,
+        string::utf8(b"NO"), string::utf8(b"NO"),
+        string::utf8(b"NO outcome token"), string::utf8(b""),
+        ctx,
+    );
+    let no_meta_cap = coin_registry::finalize(no_init, ctx);
+    transfer::public_transfer(no_meta_cap, ctx.sender());
+
+    // Wrap the caps in a shared holder object and store the
+    // caps as `dynamic_object_field` entries on its `id`.
+    // The shared object is shared so any market can borrow.
+    let mut holder = SharedTreasuryHolder<Q> { id: object::new(ctx) };
+    dynamic_object_field::add(&mut holder.id, b"yes_cap", yes_cap);
+    dynamic_object_field::add(&mut holder.id, b"no_cap", no_cap);
+    transfer::share_object(holder);
+}
+
+// ============================================================
+// R-WC-3 v3: shared-cap accessors
+// ============================================================
+//
+// `mint_shares` / `redeem` / `redeem_no` / `redeem_with_streak`
+// take `&mut SharedTreasuryHolder<Q>` alongside
+// `&mut PredictionMarket<Q>`. The shared holder's YES/NO
+// TreasuryCaps are accessed via `dynamic_object_field::borrow_mut`
+// (Sui's standard pattern for storing `key + store` objects on
+// a `key` struct). Per-market collateral, balance_manager_id,
+// etc. stay on the `PredictionMarket<Q>` object itself; only
+// the TreasuryCaps are shared across markets.
+
+/// Borrow the shared `&mut TreasuryCap<YES<Q>>` from the
+/// holder. Used by `mint_shares` and `redeem` for YES-side
+/// operations. The `&mut` is taken on `holder.id` and
+/// released when the returned reference goes out of scope.
+public fun borrow_yes_cap_mut<Q>(
+    holder: &mut SharedTreasuryHolder<Q>,
+): &mut TreasuryCap<YES<Q>> {
+    dynamic_object_field::borrow_mut(&mut holder.id, b"yes_cap")
+}
+
+/// Borrow the shared `&mut TreasuryCap<NO<Q>>` from the
+/// holder. Used by `redeem_no` and the `redeem_no_with_streak`
+/// test helper. The `&mut` is taken on `holder.id` and
+/// released when the returned reference goes out of scope.
+public fun borrow_no_cap_mut<Q>(
+    holder: &mut SharedTreasuryHolder<Q>,
+): &mut TreasuryCap<NO<Q>> {
+    dynamic_object_field::borrow_mut(&mut holder.id, b"no_cap")
+}
+
+// ============================================================
 // Market creation
 // ============================================================
 
@@ -401,11 +549,16 @@ public fun init_fee_vault_fallback<Q>(
 /// looks up the existing pool from the registry (by base
 /// + quote TypeName) and calls this instead. The on-chain
 /// signature is otherwise identical to `create_market`
-/// minus the `coin_registry` and `deep_coin` arguments
-/// (the pool was created earlier; the registry is also
-/// not needed since we don't register a new pool).
+/// minus the `deep_coin` argument (the pool was created
+/// earlier).
+///
+/// R-WC-3 v3: takes `&mut SharedTreasuryHolder<Q>` (instead
+/// of `&mut CoinRegistry`) so all markets in this package
+/// share the same `YES<Q>` / `NO<Q>` TreasuryCaps. The shared
+/// caps were initialized once per package per `Q` via
+/// `init_yes_no_currencies<Q>(...)` (above).
 public fun create_market_with_pool<Q>(
-    coin_registry: &mut CoinRegistry,
+    _shared_caps: &mut SharedTreasuryHolder<Q>,
     pool: &mut Pool<YES<Q>, Q>,
     title: vector<u8>,
     resolution_source: vector<u8>,
@@ -420,6 +573,14 @@ public fun create_market_with_pool<Q>(
     // reuses an already-registered pool, so the registry
     // is not touched. (Registry is only consulted for
     // *creating* pools, not for sharing existing ones.)
+    //
+    // R-WC-3 v3: the shared TreasuryCaps are NOT extracted
+    // here — they stay in the holder so subsequent markets
+    // can borrow them. This is the key to unlimited markets
+    // per package: the caps are never consumed. (We just
+    // borrow then drop to assert the holder is initialized
+    // with the right cap names.)
+    let _ = borrow_yes_cap_mut(_shared_caps);
     let creator = ctx.sender();
     let pool_id = object::id(pool);
 
@@ -431,29 +592,19 @@ public fun create_market_with_pool<Q>(
     let balance_manager_id = object::id(&balance_manager);
     transfer::public_share_object(balance_manager);
 
-    // 2. Create YES and NO coin currencies via coin_registry
-    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
-        coin_registry, 0,
-        string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
-        ctx,
-    );
-    let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
-    transfer::public_transfer(yes_meta_cap, creator);
-
-    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
-        coin_registry, 0,
-        string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
-        ctx,
-    );
-    let no_meta_cap = coin_registry::finalize(no_init, ctx);
-    transfer::public_transfer(no_meta_cap, creator);
+    // 2. R-WC-3 v3: the YES/NO TreasuryCaps live in the shared
+    // holder, not on the market. The market records the
+    // shared holder's id so downstream mint/redeem calls
+    // can find it. (We store the id rather than the caps
+    // themselves to avoid "key in key" issues with
+    // TreasuryCap embedding.)
+    let shared_caps_id = object::id(_shared_caps);
 
     // 3. Create the PredictionMarket
     let market = PredictionMarket<Q> {
         id: object::new(ctx),
         title,
-        yes_cap,
-        no_cap,
+        shared_caps_id,
         collateral: balance::zero(),
         resolved: false,
         outcome: 0,
@@ -486,7 +637,7 @@ public fun create_market_with_pool<Q>(
 }
 
 public fun create_market<Q>(
-    coin_registry: &mut CoinRegistry,
+    _shared_caps: &mut SharedTreasuryHolder<Q>,
     deepbook_registry: &mut Registry,
     title: vector<u8>,
     resolution_source: vector<u8>,
@@ -518,29 +669,23 @@ public fun create_market<Q>(
     let balance_manager_id = object::id(&balance_manager);
     transfer::public_share_object(balance_manager);
 
-    // 3. Create YES and NO coin currencies via coin_registry (bypasses broken is_one_time_witness on testnet v1.73)
-    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
-        coin_registry, 0,
-        string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
-        ctx,
-    );
-    let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
-    transfer::public_transfer(yes_meta_cap, creator);
+    // 3. R-WC-3 v3: assert the shared caps holder is initialized
+    // (the caller must have called `init_yes_no_currencies<Q>`
+    // once at bootstrap). We don't extract the caps here —
+    // they stay in the shared holder so subsequent markets
+    // can borrow them.
+    {
+        let _ = borrow_yes_cap_mut(_shared_caps);
+    };
+    let shared_caps_id = object::id(_shared_caps);
 
-    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
-        coin_registry, 0,
-        string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
-        ctx,
-    );
-    let no_meta_cap = coin_registry::finalize(no_init, ctx);
-    transfer::public_transfer(no_meta_cap, creator);
-
-    // 4. Create the PredictionMarket with YES/NO TreasuryCaps
+    // 4. Create the PredictionMarket — the YES/NO TreasuryCaps
+    // stay in the shared holder (the market records the
+    // holder's id so downstream mint/redeem can find it).
     let market = PredictionMarket<Q> {
         id: object::new(ctx),
         title,
-        yes_cap,
-        no_cap,
+        shared_caps_id,
         collateral: balance::zero(),
         resolved: false,
         outcome: 0,
@@ -588,8 +733,15 @@ public fun balance_manager_id<Q>(market: &PredictionMarket<Q>): ID {
 /// User deposits collateral and receives equal YES and NO tokens.
 /// The protocol takes a 1% fee in quote coin, routed to the shared
 /// `FeeVault<Q>`.
+///
+/// R-WC-3 v3: takes `&mut SharedTreasuryHolder<Q>` (alongside
+/// `&mut PredictionMarket<Q>`) to access the shared YES/Q +
+/// NO/Q TreasuryCaps. The caps live on the holder (not the
+/// market) so multiple markets in the same package share the
+/// same caps. Borrowed via `dynamic_object_field::borrow_mut`.
 public fun mint_shares<Q>(
     market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     vault: &mut FeeVault<Q>,
     quote_in: Coin<Q>,
     ctx: &mut TxContext,
@@ -608,9 +760,20 @@ public fun mint_shares<Q>(
     vault.fee_balance.join(fee_bal);
     market.collateral.join(bal);
 
-    // Mint equal YES and NO
-    let yes = coin::mint(&mut market.yes_cap, net, ctx);
-    let no = coin::mint(&mut market.no_cap, net, ctx);
+    // R-WC-3 v3: borrow caps from the shared holder. We can't
+    // borrow both at once (Move's borrow checker forbids two
+    // `&mut` borrows on the same field), so mint them
+    // sequentially. The `yes` Coin is bound to a separate
+    // variable so its `&mut TreasuryCap` is released before
+    // we borrow the NO cap.
+    let yes = {
+        let yes_cap = borrow_yes_cap_mut(shared_caps);
+        coin::mint(yes_cap, net, ctx)
+    };
+    let no = {
+        let no_cap = borrow_no_cap_mut(shared_caps);
+        coin::mint(no_cap, net, ctx)
+    };
 
     event::emit(MintedEvent {
         market_id: object::id(market),
@@ -715,8 +878,14 @@ public fun resolve_dispute<Q>(
 /// Redeem YES winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee, routed to the shared
 /// `FeeVault<Q>`. Only valid when the market resolved to YES (outcome = 1).
+///
+/// R-WC-3 v3: takes `&mut SharedTreasuryHolder<Q>` to access
+/// the shared YES/Q TreasuryCap. The `PredictionMarket<Q>`
+/// records `shared_caps_id` (not the cap itself) so this
+/// function looks up the cap via `dynamic_object_field::borrow_mut`.
 public fun redeem<Q>(
     market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     vault: &mut FeeVault<Q>,
     winning_coin: Coin<YES<Q>>,
     ctx: &mut TxContext,
@@ -731,8 +900,9 @@ public fun redeem<Q>(
     let fee = (gross * REDEEM_FEE_BPS) / BPS;
     let net = gross - fee;
 
-    // Burn the winning YES tokens
-    coin::burn(&mut market.yes_cap, winning_coin);
+    // Burn the winning YES tokens via the shared cap.
+    let yes_cap = borrow_yes_cap_mut(shared_caps);
+    coin::burn(yes_cap, winning_coin);
 
     // Split fee and return net collateral
     let fee_bal = market.collateral.split(fee);
@@ -753,8 +923,12 @@ public fun redeem<Q>(
 /// Redeem NO winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee, routed to the shared
 /// `FeeVault<Q>`. Only valid when the market resolved to NO (outcome = 2).
+///
+/// R-WC-3 v3: takes `&mut SharedTreasuryHolder<Q>` to access
+/// the shared NO/Q TreasuryCap.
 public fun redeem_no<Q>(
     market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     vault: &mut FeeVault<Q>,
     winning_coin: Coin<NO<Q>>,
     ctx: &mut TxContext,
@@ -768,7 +942,7 @@ public fun redeem_no<Q>(
     let fee = (gross * REDEEM_FEE_BPS) / BPS;
     let net = gross - fee;
 
-    coin::burn(&mut market.no_cap, winning_coin);
+    coin::burn(borrow_no_cap_mut(shared_caps), winning_coin);
 
     let fee_bal = market.collateral.split(fee);
     vault.fee_balance.join(fee_bal);
@@ -791,6 +965,7 @@ public fun redeem_no<Q>(
 /// the shared `FeeVault<Q>`.
 public fun redeem_with_streak<Q>(
     market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     vault: &mut FeeVault<Q>,
     winning_coin: Coin<YES<Q>>,
     user_streak: &streak_system::UserStreak,
@@ -810,7 +985,8 @@ public fun redeem_with_streak<Q>(
     let fee = (boosted * REDEEM_FEE_BPS) / BPS;
     let net = boosted - fee;
 
-    coin::burn(&mut market.yes_cap, winning_coin);
+    let yes_cap = borrow_yes_cap_mut(shared_caps);
+    coin::burn(yes_cap, winning_coin);
 
     let fee_bal = market.collateral.split(fee);
     vault.fee_balance.join(fee_bal);
@@ -831,6 +1007,7 @@ public fun redeem_with_streak<Q>(
 /// are routed to the shared `FeeVault<Q>`.
 public fun redeem_no_with_streak<Q>(
     market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     vault: &mut FeeVault<Q>,
     winning_coin: Coin<NO<Q>>,
     user_streak: &streak_system::UserStreak,
@@ -849,7 +1026,7 @@ public fun redeem_no_with_streak<Q>(
     let fee = (boosted * REDEEM_FEE_BPS) / BPS;
     let net = boosted - fee;
 
-    coin::burn(&mut market.no_cap, winning_coin);
+    coin::burn(borrow_no_cap_mut(shared_caps), winning_coin);
 
     let fee_bal = market.collateral.split(fee);
     vault.fee_balance.join(fee_bal);
@@ -1234,13 +1411,10 @@ public fun new_market_for_testing<Q>(
     creator: address,
     ctx: &mut TxContext,
 ): PredictionMarket<Q> {
-    let yes_cap = coin::create_treasury_cap_for_testing<YES<Q>>(ctx);
-    let no_cap = coin::create_treasury_cap_for_testing<NO<Q>>(ctx);
     PredictionMarket<Q> {
         id: object::new(ctx),
         title,
-        yes_cap,
-        no_cap,
+        shared_caps_id: object::id_from_address(@0x0),
         collateral: balance::zero(),
         resolved: false,
         outcome: 0,
@@ -1292,8 +1466,7 @@ public fun destroy_for_testing<Q>(market: PredictionMarket<Q>) {
     let PredictionMarket {
         id,
         title: _,
-        yes_cap,
-        no_cap,
+        shared_caps_id: _,
         collateral,
         resolved: _,
         outcome: _,
@@ -1310,8 +1483,6 @@ public fun destroy_for_testing<Q>(market: PredictionMarket<Q>) {
         resolved_ms: _,
     } = market;
     id.delete();
-    sui::test_utils::destroy(yes_cap);
-    sui::test_utils::destroy(no_cap);
     sui::test_utils::destroy(collateral);
 }
 
@@ -1328,28 +1499,31 @@ public fun add_collateral_for_testing<Q>(
     market.collateral.join(coin.into_balance());
 }
 
-/// Test-only helper: mint a `Coin<YES<Q>>` through the market's
-/// real `TreasuryCap`. Use this in redeem tests — the production
-/// `redeem` path calls `coin::burn(&mut market.yes_cap, …)` which
-/// asserts the cap's total supply >= the burned value, so a coin
-/// produced by `coin::mint_for_testing` (which bypasses the cap)
-/// will fail the burn.
+/// Test-only helper: mint a `Coin<YES<Q>>` through the shared
+/// `TreasuryCap` (R-WC-3 v3: cap is on the holder, not the
+/// market). Use this in redeem tests — the production `redeem`
+/// path calls `coin::burn(&mut yes_cap, …)` which asserts the
+/// cap's total supply >= the burned value, so a coin produced
+/// by `coin::mint_for_testing` (which bypasses the cap) will
+/// fail the burn.
 #[test_only]
 public fun mint_yes_for_testing<Q>(
-    market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     amount: u64,
     ctx: &mut TxContext,
 ): Coin<YES<Q>> {
-    coin::mint(&mut market.yes_cap, amount, ctx)
+    let yes_cap = borrow_yes_cap_mut(shared_caps);
+    coin::mint(yes_cap, amount, ctx)
 }
 
-/// Test-only helper: mint a `Coin<NO<Q>>` through the market's
-/// real `TreasuryCap`. Same rationale as `mint_yes_for_testing`.
+/// Test-only helper: mint a `Coin<NO<Q>>` through the shared
+/// TreasuryCap. Same rationale as `mint_yes_for_testing`.
 #[test_only]
 public fun mint_no_for_testing<Q>(
-    market: &mut PredictionMarket<Q>,
+    shared_caps: &mut SharedTreasuryHolder<Q>,
     amount: u64,
     ctx: &mut TxContext,
 ): Coin<NO<Q>> {
-    coin::mint(&mut market.no_cap, amount, ctx)
+    let no_cap = borrow_no_cap_mut(shared_caps);
+    coin::mint(no_cap, amount, ctx)
 }
