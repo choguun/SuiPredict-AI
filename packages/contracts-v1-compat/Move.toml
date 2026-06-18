@@ -1,0 +1,31 @@
+[package]
+name = "suipredict_agent_policy"
+version = "0.1.0"
+edition = "2024.beta"
+
+[dependencies]
+# Same self-hosted deepbook as the main contracts package, so v1
+# bytecode can build against the same Move stdlib + DeepBook API.
+deepbook = { local = "../../deps/deepbookv3-self-hosted/packages/deepbook" }
+token = { local = "../../deps/deepbookv3-self-hosted/packages/token", override = true }
+
+[addresses]
+suipredict = "0x0"
+suipredict_agent_policy = "0x0"
+
+[dev-addresses]
+suipredict = "0x0"
+suipredict_agent_policy = "0x0"
+
+[published.testnet]
+# v1.5 upgrade target. Matches the live AgentPolicy shared object's
+# `objType` so the Move compiler emits bytecode whose `original-id`
+# field aligns with the live UpgradeCap at
+# 0x646dfdb6d287bb00210c060976ceb309d67456a9132cbe7d529c1f21b9b8181a.
+# After this upgrade, the v2 fresh-publish package's migrate.move
+# will call these extractors to read field values out of the v1
+# shared objects and reconstruct v2-typed objects.
+original-id = "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf"
+upgrade-capability = "0x646dfdb6d287bb00210c060976ceb309d67456a9132cbe7d529c1f21b9b8181a"
+toolchain-version = "1.73.1"
+build-config = { flavor = "sui", edition = "2024" }
