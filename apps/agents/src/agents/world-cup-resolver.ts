@@ -472,7 +472,7 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       // already have caught via the
       // `!market.pool_id` branch).
       const onchainId = market.onchain_market_id ?? market.id;
-      const tx = buildResolveMarketTx(onchainId, outcome, marketTypeSeed(market.id));
+      const tx = buildResolveMarketTx(onchainId, outcome);
       const result2 = await executeTransaction(client, tx, ctx.signer);
       upsertMarket({
         ...market,
@@ -575,7 +575,6 @@ async function commitResolution(
     const tx = buildResolveMarketTx(
       market.onchain_market_id ?? market.id,
       outcome,
-      marketTypeSeed(market.id),
     );
     const onChainResult = await executeTransaction(client, tx, ctx.signer);
     upsertMarket({

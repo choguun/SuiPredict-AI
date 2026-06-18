@@ -281,7 +281,6 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     }
 
     // Step 2: create the market
-    const typeM = marketTypeSeed(spec.title);
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -291,7 +290,6 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       minSize: BigInt(1_000_000),
       deepCoinId: feeCoinId!,
       category: categoryToCode(spec.category),
-      m: typeM,
     });
 
     const createResult = await executeTransaction(client, createTx, ctx.signer);
@@ -352,7 +350,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         referral_id: null,
         created_at_ms: Date.now(),
       });
-      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000), typeM);
+      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
       const referralResult = await executeTransaction(client, referralTx, ctx.signer);
       // `extractCreatedObjectId` returns null if the struct name
       // doesn't match the suffix used by gRPC's `objectTypes[objectId]`
@@ -441,7 +439,6 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               feeVaultId,
               dusdcCoin.objectId,
               initialMintAtoms,
-              typeM,
             );
             const mintResult = await executeTransaction(client, mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;

@@ -396,7 +396,6 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         quantity: BigInt(quoteSize),
         isBid: true,
         clientOrderId: BigInt(Date.now() % 1_000_000),
-        m: marketTypeSeed(`wc26-${match.id}`),
       });
       await executeTransaction(client, placeTx, ctx.signer);
       // Mirror into SQLite so the agent feed shows the quote.

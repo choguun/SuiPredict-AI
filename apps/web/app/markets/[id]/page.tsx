@@ -962,7 +962,6 @@ function MarketDetailBody({
         FEE_VAULT_ID,
         coin.objectId,
         amountAtoms,
-        marketTypeSeed(market.id),
       );
       // R55 audit fix: route through `submitAndWait` so
       // the `setRefreshCounter` + `invalidateMarketCaches`
@@ -1195,7 +1194,6 @@ function MarketDetailBody({
         // hardcode 1e6 in three places.
         quantity: BigInt(qty) * BASE_SCALE,
         isBid,
-        m: marketTypeSeed(market.id),
       });
       // R55 audit fix: route through `submitAndWait` so
       // the `waitForOrderInBook` poll runs against a node
@@ -1689,15 +1687,13 @@ function MarketDetailBody({
       // `market.id` for non-WC markets.
       const redeemMarketId = market.onchain_market_id ?? market.id;
       const tx =
-        const m = marketTypeSeed(market.id);
-      const tx =
         winningSide === "yes"
           ? streakId
-            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
-            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m)
+            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId)
           : streakId
-            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
-            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m);
+            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
       // R55 audit fix: route through `submitAndWait` so
       // the redeem confirmation reflects the on-chain
       // state. The previous signAndExecuteTransaction

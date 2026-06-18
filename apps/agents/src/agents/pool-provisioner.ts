@@ -194,7 +194,6 @@ export async function runPoolProvisioner(
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
-        m: marketTypeSeed(m.id),
       });
       const marketId = result.marketId;
       const poolId = result.poolId;

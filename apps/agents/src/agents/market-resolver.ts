@@ -159,7 +159,7 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
     // limiter. The R51 sweep
     // missed this worker.
     const client = getSharedClient();
-    const tx = buildResolveMarketTx(market.id, outcome, marketTypeSeed(market.id));
+    const tx = buildResolveMarketTx(market.id, outcome);
     const result = await executeTransaction(client, tx, ctx.signer);
     upsertMarket({
       ...market,

@@ -116,15 +116,11 @@ export default function PortfolioPage() {
       const tx =
         winningSide === "yes"
           ? streakId
-            const m = marketTypeSeed(p.market_id);
-      const tx =
-        winningSide === "yes"
-          ? streakId
-            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
-            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m)
+            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId)
           : streakId
-            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
-            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m);
+            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
+            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
 
       const r = await submitAndWait(dAppKit, client, tx);
       if (r.$kind !== "Transaction") {
