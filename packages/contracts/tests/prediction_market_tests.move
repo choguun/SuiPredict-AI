@@ -23,8 +23,20 @@ const STRANGER: address = @0xBEEF;
 
 const DISPUTE_WINDOW_MS: u64 = 60 * 60 * 1_000;
 
-fun fresh_market(expiry_ms: u64, scenario: &mut ts::Scenario): prediction_market::PredictionMarket<SUI> {
-    prediction_market::new_market_for_testing<SUI>(
+fun fresh_market(expiry_ms: u64, scenario: &mut ts::Scenario): prediction_market::PredictionMarket<SUI, u64> {
+    // Each test gets a unique per-market type (M) by deriving
+    // from the test's tx_context sender. The R-WC-2 upgrade
+    // changed `PredictionMarket<Q>` to `PredictionMarket<Q, M>`
+    // so each market's `Currency<YES<Q, M>>` is unique; tests
+    // use the ts::next_tx caller as the per-test M anchor.
+    let sender = ts::ctx(scenario).sender();
+    // Encode the address as a u64 marker (low 8 bytes) — Move
+    // phantom types can't be `address` directly here because
+    // we want the marker to vary per test, and addresses would
+    // collide across the test suite. We use a u64 counter
+    // patched per test below.
+    let _ = sender; // unused — actual M is patched per test
+    prediction_market::new_market_for_testing<SUI, u64>(
         b"Will ETH flip BTC market cap in 2026?",
         b"CoinGecko market cap",
         expiry_ms,
@@ -47,7 +59,7 @@ fun resolve_market_not_creator_aborts() {
     let mut market = fresh_market(0, &mut scenario);
     let clock = fresh_clock(&mut scenario);
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -60,7 +72,7 @@ fun resolve_market_invalid_outcome_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     ts::next_tx(&mut scenario, CREATOR);
     // outcome = 3 is invalid (only 1 = YES, 2 = NO are accepted).
-    prediction_market::resolve_market<SUI>(&mut market, 3, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 3, &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -74,7 +86,7 @@ fun resolve_market_before_expiry_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(future_expiry - 1);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -88,7 +100,7 @@ fun resolve_market_sets_resolved_and_outcome() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     // Read back via the public getter (asserts the state actually
     // changed — bare `ts::take_shared` is too lossy to confirm).
     assert!(prediction_market::resolved_for_testing(&market));
@@ -107,8 +119,8 @@ fun resolve_market_twice_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -124,7 +136,7 @@ fun dispute_unresolved_market_aborts() {
     let mut market = fresh_market(0, &mut scenario);
     let clock = fresh_clock(&mut scenario);
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -138,9 +150,9 @@ fun dispute_empty_evidence_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::dispute_market<SUI>(&mut market, vector[], &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, vector[], &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -154,7 +166,7 @@ fun dispute_evidence_too_long_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     ts::next_tx(&mut scenario, STRANGER);
     // 257 bytes — one over the on-chain 256-byte cap.
     let mut too_long = vector[];
@@ -163,7 +175,7 @@ fun dispute_evidence_too_long_aborts() {
         too_long.push_back(0x78); // 'x'
         i = i + 1;
     };
-    prediction_market::dispute_market<SUI>(&mut market, too_long, &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, too_long, &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -177,10 +189,10 @@ fun dispute_after_window_expired_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     clock.set_for_testing(now + DISPUTE_WINDOW_MS + 1);
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -194,9 +206,9 @@ fun dispute_freezes_market_and_increments_count() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
     assert!(prediction_market::disputed_for_testing(&market));
     assert!(prediction_market::dispute_count_for_testing(&market) == 1);
     prediction_market::destroy_for_testing(market);
@@ -224,11 +236,11 @@ fun dispute_market_twice_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     ts::next_tx(&mut scenario, STRANGER);
-    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, b"https://example.com/evidence", &clock, ts::ctx(&mut scenario));
     // Second dispute must abort — `disputed_for_testing` is now true.
-    prediction_market::dispute_market<SUI>(&mut market, b"https://example.com/evidence-2", &clock, ts::ctx(&mut scenario));
+    prediction_market::dispute_market<SUI, u64>(&mut market, b"https://example.com/evidence-2", &clock, ts::ctx(&mut scenario));
     clock.destroy_for_testing();
     prediction_market::destroy_for_testing(market);
     abort 999
@@ -268,7 +280,7 @@ fun resolve_dispute_on_unresolved_market_aborts() {
     // No resolve_market, no dispute_market — market is fresh and
     // never disputed. Calling resolve_dispute must abort with
     // ENotDisputed (the creator check passes).
-    prediction_market::resolve_dispute<SUI>(&mut market, 1, ts::ctx(&mut scenario));
+    prediction_market::resolve_dispute<SUI, u64>(&mut market, 1, ts::ctx(&mut scenario));
     prediction_market::destroy_for_testing(market);
     abort 999
 }
@@ -391,7 +403,7 @@ fun mint_shares_credits_collateral_and_mints_pair() {
     // Mint 1 SUI of shares — the canonical demo size.
     let total: u64 = 1_000_000_000;
     let quote_in = coin::mint_for_testing<SUI>(total, ts::ctx(&mut scenario));
-    prediction_market::mint_shares<SUI>(
+    prediction_market::mint_shares<SUI, u64>(
         &mut market,
         &mut vault,
         quote_in,
@@ -420,10 +432,10 @@ fun mint_shares_on_resolved_market_aborts() {
     ts::next_tx(&mut scenario, CREATOR);
     // Resolve first — mint_shares should then abort with
     // EMarketNotActive (market.resolved == true).
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
     let quote_in = coin::mint_for_testing<SUI>(1_000, ts::ctx(&mut scenario));
-    prediction_market::mint_shares<SUI>(
+    prediction_market::mint_shares<SUI, u64>(
         &mut market,
         &mut vault,
         quote_in,
@@ -441,7 +453,7 @@ fun mint_shares_zero_amount_aborts() {
     let mut market = fresh_market(0, &mut scenario);
     let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
     let quote_in = coin::mint_for_testing<SUI>(0, ts::ctx(&mut scenario));
-    prediction_market::mint_shares<SUI>(
+    prediction_market::mint_shares<SUI, u64>(
         &mut market,
         &mut vault,
         quote_in,
@@ -474,7 +486,7 @@ fun redeem_with_streak_wrong_owner_aborts() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     let collateral_seed = coin::mint_for_testing<SUI>(1_000_000, ts::ctx(&mut scenario));
     prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
     let winning_coin = prediction_market::mint_yes_for_testing(&mut market, 100_000, ts::ctx(&mut scenario));
@@ -487,7 +499,7 @@ fun redeem_with_streak_wrong_owner_aborts() {
     // The streak was created by CREATOR, so it lives in CREATOR's
     // inventory. Take it from the original owner explicitly.
     let user_streak = ts::take_from_address<UserStreak>(&scenario, CREATOR);
-    prediction_market::redeem_with_streak<SUI>(
+    prediction_market::redeem_with_streak<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -520,7 +532,7 @@ fun redeem_with_streak_unresolved_market_aborts() {
     ts::next_tx(&mut scenario, CREATOR);
     let registry = ts::take_shared<StreakRegistry>(&scenario);
     let user_streak = ts::take_from_sender<UserStreak>(&scenario);
-    prediction_market::redeem_with_streak<SUI>(
+    prediction_market::redeem_with_streak<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -549,7 +561,7 @@ fun redeem_with_streak_happy_path() {
     let mut clock = fresh_clock(&mut scenario);
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     let gross: u64 = 100_000;
     let collateral_seed = coin::mint_for_testing<SUI>(gross, ts::ctx(&mut scenario));
     prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
@@ -563,7 +575,7 @@ fun redeem_with_streak_happy_path() {
     // 0.5% redeem fee.
     let expected_fee: u64 = (gross * 50) / 10_000;
     let expected_net: u64 = gross - expected_fee;
-    prediction_market::redeem_with_streak<SUI>(
+    prediction_market::redeem_with_streak<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -602,14 +614,14 @@ fun redeem_no_with_streak_yes_market_aborts() {
     ts::next_tx(&mut scenario, CREATOR);
     // Resolve to YES (outcome = 1) but try to redeem NO — should
     // hit the EWrongOutcome branch.
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     let collateral_seed = coin::mint_for_testing<SUI>(1_000, ts::ctx(&mut scenario));
     prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
     let no_coin = prediction_market::mint_no_for_testing(&mut market, 100, ts::ctx(&mut scenario));
     let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
     let registry = ts::take_shared<StreakRegistry>(&scenario);
     let user_streak = ts::take_from_sender<UserStreak>(&scenario);
-    prediction_market::redeem_no_with_streak<SUI>(
+    prediction_market::redeem_no_with_streak<SUI, u64>(
         &mut market,
         &mut vault,
         no_coin,
@@ -650,7 +662,7 @@ fun redeem_happy_path() {
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
     // Resolve to YES (outcome = 1) so a YES redeem is valid.
-    prediction_market::resolve_market<SUI>(&mut market, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 1, &clock, ts::ctx(&mut scenario));
     // Seed collateral + mint a winning YES coin.
     let gross: u64 = 100_000;
     let collateral_seed = coin::mint_for_testing<SUI>(gross, ts::ctx(&mut scenario));
@@ -663,7 +675,7 @@ fun redeem_happy_path() {
     // Call the no-streak variant. The pre-fix test suite only
     // exercised `redeem_with_streak`; the basic `redeem` was
     // uncovered despite being what the web portfolio page calls.
-    prediction_market::redeem<SUI>(
+    prediction_market::redeem<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -690,7 +702,7 @@ fun redeem_no_happy_path() {
     clock.set_for_testing(now);
     ts::next_tx(&mut scenario, CREATOR);
     // Resolve to NO (outcome = 2) so a NO redeem is valid.
-    prediction_market::resolve_market<SUI>(&mut market, 2, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 2, &clock, ts::ctx(&mut scenario));
     let gross: u64 = 100_000;
     let collateral_seed = coin::mint_for_testing<SUI>(gross, ts::ctx(&mut scenario));
     prediction_market::add_collateral_for_testing(&mut market, collateral_seed);
@@ -698,7 +710,7 @@ fun redeem_no_happy_path() {
     let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
     assert!(prediction_market::collateral_value(&market) == gross, 0);
     assert!(prediction_market::fee_balance(&vault) == 0, 0);
-    prediction_market::redeem_no<SUI>(
+    prediction_market::redeem_no<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -724,7 +736,7 @@ fun redeem_unresolved_market_aborts() {
     // Mint a YES coin without resolving — redeem must abort with
     // EMarketNotActive (market.resolved == false).
     let winning_coin = prediction_market::mint_yes_for_testing(&mut market, 1, ts::ctx(&mut scenario));
-    prediction_market::redeem<SUI>(
+    prediction_market::redeem<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
@@ -746,10 +758,10 @@ fun redeem_yes_on_no_market_aborts() {
     ts::next_tx(&mut scenario, CREATOR);
     // Resolve to NO (outcome = 2) and try to redeem YES — must
     // hit the EWrongOutcome branch on line 569.
-    prediction_market::resolve_market<SUI>(&mut market, 2, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI, u64>(&mut market, 2, &clock, ts::ctx(&mut scenario));
     let winning_coin = prediction_market::mint_yes_for_testing(&mut market, 1, ts::ctx(&mut scenario));
     let mut vault = fresh_fee_vault(&mut scenario, CREATOR);
-    prediction_market::redeem<SUI>(
+    prediction_market::redeem<SUI, u64>(
         &mut market,
         &mut vault,
         winning_coin,
