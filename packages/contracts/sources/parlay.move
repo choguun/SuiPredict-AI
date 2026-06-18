@@ -324,9 +324,9 @@ public fun create_parlay<Q>(
 ///
 /// The leg's status flips to LEG_WON or LEG_LOST based on whether the
 /// market outcome matched the user's prediction.
-public fun record_leg<Q, M>(
+public fun record_leg<Q>(
     parlay: &mut Parlay<Q>,
-    market: &PredictionMarket<Q, M>,
+    market: &PredictionMarket<Q>,
     leg_index: u64,
     _ctx: &TxContext,
 ) {

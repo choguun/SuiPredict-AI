@@ -32,8 +32,8 @@ fun fresh_clock(scenario: &mut ts::Scenario): sui::clock::Clock {
     sui::clock::create_for_testing(ts::ctx(scenario))
 }
 
-fun fresh_market(scenario: &mut ts::Scenario): prediction_market::PredictionMarket<SUI, u64> {
-    prediction_market::new_market_for_testing<SUI, u64>(
+fun fresh_market(scenario: &mut ts::Scenario): prediction_market::PredictionMarket<SUI> {
+    prediction_market::new_market_for_testing<SUI>(
         b"parlay test market",
         b"test source",
         0, // expires immediately
@@ -62,14 +62,14 @@ fun setup_pool(scenario: &mut ts::Scenario) {
 
 /// Resolve `market` to `outcome`. Convenience wrapper that handles
 /// the `ts::next_tx` and the `&mut` borrows for the test author.
-fun resolve_yes(market: &mut prediction_market::PredictionMarket<SUI, u64>, scenario: &mut ts::Scenario, clock: &sui::clock::Clock) {
+fun resolve_yes(market: &mut prediction_market::PredictionMarket<SUI>, scenario: &mut ts::Scenario, clock: &sui::clock::Clock) {
     ts::next_tx(scenario, CREATOR);
-    prediction_market::resolve_market<SUI, u64>(market, PREDICT_YES, clock, ts::ctx(scenario));
+    prediction_market::resolve_market<SUI>(market, PREDICT_YES, clock, ts::ctx(scenario));
 }
 
-fun resolve_no(market: &mut prediction_market::PredictionMarket<SUI, u64>, scenario: &mut ts::Scenario, clock: &sui::clock::Clock) {
+fun resolve_no(market: &mut prediction_market::PredictionMarket<SUI>, scenario: &mut ts::Scenario, clock: &sui::clock::Clock) {
     ts::next_tx(scenario, CREATOR);
-    prediction_market::resolve_market<SUI, u64>(market, PREDICT_NO, clock, ts::ctx(scenario));
+    prediction_market::resolve_market<SUI>(market, PREDICT_NO, clock, ts::ctx(scenario));
 }
 
 // ============================================================
@@ -492,7 +492,7 @@ fun record_leg_unresolved_market_aborts() {
 
     ts::next_tx(&mut scenario, USER);
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
     abort 999
 }
 
@@ -525,7 +525,7 @@ fun record_leg_market_mismatch_aborts() {
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_yes(&mut m2, &mut scenario, &clock);
     // leg 0 expects m1, but we pass m_rogue.
-    parlay::record_leg<SUI, u64>(&mut parlay, &m_rogue, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m_rogue, 0, ts::ctx(&mut scenario));
     abort 999
 }
 
@@ -556,8 +556,8 @@ fun record_leg_twice_aborts() {
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_yes(&mut m2, &mut scenario, &clock);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
     abort 999
 }
 
@@ -586,7 +586,7 @@ fun record_leg_out_of_range_aborts() {
 
     ts::next_tx(&mut scenario, USER);
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 7, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 7, ts::ctx(&mut scenario));
     abort 999
 }
 
@@ -614,12 +614,12 @@ fun record_leg_on_disputed_market_aborts() {
     // Advance the clock past m1's expiry so we can resolve it.
     clock.set_for_testing(2_000_000);
     ts::next_tx(&mut scenario, CREATOR);
-    prediction_market::resolve_market<SUI, u64>(&mut m1, 1, &clock, ts::ctx(&mut scenario));
+    prediction_market::resolve_market<SUI>(&mut m1, 1, &clock, ts::ctx(&mut scenario));
     // Dispute the resolved market within the dispute window.
     // The dispute can be filed by anyone (not just the
     // creator) per the `dispute_market` signature.
     ts::next_tx(&mut scenario, USER);
-    prediction_market::dispute_market<SUI, u64>(
+    prediction_market::dispute_market<SUI>(
         &mut m1,
         b"https://example.com/evidence",
         &clock,
@@ -648,7 +648,7 @@ fun record_leg_on_disputed_market_aborts() {
     // `leg_index = 0` in the parlay we just created.
     ts::next_tx(&mut scenario, USER);
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
     abort 999
 }
 
@@ -684,8 +684,8 @@ fun finalize_all_won_pays_out_to_owner() {
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_no(&mut m2, &mut scenario, &clock);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
-    parlay::record_leg<SUI, u64>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
     assert!(parlay::parlay_legs_recorded(&parlay) == 2, 0);
     assert!(parlay::parlay_legs_lost(&parlay) == 0, 1);
 
@@ -746,8 +746,8 @@ fun finalize_one_lost_pays_zero() {
     // market resolves to YES).
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_yes(&mut m2, &mut scenario, &clock);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
-    parlay::record_leg<SUI, u64>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
     assert!(parlay::parlay_legs_lost(&parlay) == 1, 0);
 
     ts::next_tx(&mut scenario, USER);
@@ -794,7 +794,7 @@ fun finalize_before_all_legs_recorded_aborts() {
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_yes(&mut m2, &mut scenario, &clock);
     // Only record leg 0 — leave leg 1 pending.
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
 
     ts::next_tx(&mut scenario, USER);
     let mut pool = ts::take_shared<ParlayPool<SUI>>(&scenario);
@@ -833,8 +833,8 @@ fun parlay_reads_reflect_recorded_state() {
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_no(&mut m2, &mut scenario, &clock);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
-    parlay::record_leg<SUI, u64>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
 
     // Status flips match outcome:
     assert!(parlay::parlay_leg_status(&parlay, 0) == parlay::leg_status_won_for_testing(), 0);
@@ -874,8 +874,8 @@ fun parlay_status_reflects_loss() {
     let mut parlay = ts::take_from_address<Parlay<SUI>>(&scenario, USER);
     resolve_yes(&mut m1, &mut scenario, &clock);
     resolve_yes(&mut m2, &mut scenario, &clock);
-    parlay::record_leg<SUI, u64>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
-    parlay::record_leg<SUI, u64>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m1, 0, ts::ctx(&mut scenario));
+    parlay::record_leg<SUI>(&mut parlay, &m2, 1, ts::ctx(&mut scenario));
 
     assert!(parlay::parlay_leg_status(&parlay, 0) == parlay::leg_status_won_for_testing(), 0);
     assert!(parlay::parlay_leg_status(&parlay, 1) == parlay::leg_status_lost_for_testing(), 1);

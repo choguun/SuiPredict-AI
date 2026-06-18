@@ -1,5 +1,5 @@
 /// DeepBook V3-integrated prediction market.
-/// Uses DeepBook Pool<YES<Q, M>, Q> as the orderbook CLOB.
+/// Uses DeepBook Pool<YES<Q>, Q> as the orderbook CLOB.
 /// YES/NO are TreasuryCap-backed Sui coins with 1:1 collateral backing.
 #[allow(deprecated_usage, unused_const, lint(self_transfer))]
 module suipredict::prediction_market;
@@ -98,26 +98,17 @@ const DEFAULT_EXPIRY: u64 = 18446744073709551615;
 // Coin witness types
 //
 // YES/NO are TreasuryCap-backed Sui coin types scoped to a quote
-// coin Q. Each market gets its own `M: address` phantom so the
-// `Currency<YES<Q, M>>` registration in the Sui system
-// CoinRegistry is unique per market — without this, the
-// second market on the same package aborts with
-// `ECurrencyAlreadyExists` (R-WC-1.2 CoinRegistry limit).
-//
-// M is set to `object::id_address(market)` at create time so
-// the type is derived from the market's own object id; this
-// keeps the type encoding deterministic and lets any consumer
-// (maker, resolver, web) reconstruct the type from a known
-// `PredictionMarket` object id alone.
+// coin Q. This keeps YES/NO pools isolated per quote-asset (e.g.
+// DBUSDC) while reusing one DeepBook Pool<YES<Q>, Q> per market.
 // ============================================================
 
 /// Marker type for YES outcome tokens (base asset on DeepBook).
-public struct YES<phantom Q, phantom M> has key, store {
+public struct YES<phantom Q> has key, store {
         id: UID,
     }
 
 /// Marker type for NO outcome tokens (held but not traded on DeepBook).
-public struct NO<phantom Q, phantom M> has key, store {
+public struct NO<phantom Q> has key, store {
         id: UID,
     }
 
@@ -127,16 +118,15 @@ public struct NO<phantom Q, phantom M> has key, store {
 
 /// A binary prediction market.
 /// - Q: the quote-coin type (e.g. DBUSDC) used as collateral
-/// - M: per-market phantom address (the market's own object id)
-/// - YES<Q, M> / NO<Q, M>: the outcome token types for this market
-public struct PredictionMarket<phantom Q, phantom M> has key {
+/// - YES<Q> / NO<Q>: the outcome token types for this market
+public struct PredictionMarket<phantom Q> has key {
     id: UID,
     /// Human-readable question / title
     title: vector<u8>,
-    /// TreasuryCap for YES<Q, M> - mints and burns YES tokens
-    yes_cap: TreasuryCap<YES<Q, M>>,
-    /// TreasuryCap for NO<Q, M> - mints and burns NO tokens
-    no_cap: TreasuryCap<NO<Q, M>>,
+    /// TreasuryCap for YES<Q> - mints and burns YES tokens
+    yes_cap: TreasuryCap<YES<Q>>,
+    /// TreasuryCap for NO<Q> - mints and burns NO tokens
+    no_cap: TreasuryCap<NO<Q>>,
     /// All collateral backing this market's positions
     collateral: Balance<Q>,
     /// Whether the market has been resolved
@@ -149,7 +139,7 @@ public struct PredictionMarket<phantom Q, phantom M> has key {
     resolution_source: vector<u8>,
     /// Market creator address
     creator: address,
-    /// ID of the DeepBook Pool<YES<Q, M>, Q> for this market
+    /// ID of the DeepBook Pool<YES<Q>, Q> for this market
     pool_id: ID,
     /// BalanceManager ID for this market's DeepBook trading
     /// The BalanceManager must be passed separately to trading functions
@@ -382,9 +372,9 @@ public fun init_fee_vault_fallback<Q>(
 ///
 /// This function handles everything in one PTB:
 ///   1. Call pool_creation_fee() to get the 500M MIST creation fee
-///   2. Create the DeepBook Pool<YES<Q, M>, Q> via create_permissionless_pool
+///   2. Create the DeepBook Pool<YES<Q>, Q> via create_permissionless_pool
 ///   3. Create a BalanceManager for this market's trading (shared object)
-///   4. Create PredictionMarket<Q, M> with YES/NO TreasuryCaps
+///   4. Create PredictionMarket<Q> with YES/NO TreasuryCaps
 ///
 /// Arguments:
 ///   coin_registry    - Sui CoinRegistry shared object (0xc)
@@ -405,7 +395,7 @@ public fun init_fee_vault_fallback<Q>(
 /// already exists in the registry — which is the case on
 /// the self-hosted DeepBook after the first market is
 /// created. This entry point skips pool creation and
-/// accepts a `&mut Pool<YES<Q, M>, Q>` reference. Use case:
+/// accepts a `&mut Pool<YES<Q>, Q>` reference. Use case:
 /// the agents' `bootstrap-wc-markets.mjs` script first
 /// attempts `create_market`; on `EPoolAlreadyExists` it
 /// looks up the existing pool from the registry (by base
@@ -414,9 +404,9 @@ public fun init_fee_vault_fallback<Q>(
 /// minus the `coin_registry` and `deep_coin` arguments
 /// (the pool was created earlier; the registry is also
 /// not needed since we don't register a new pool).
-public fun create_market_with_pool<Q, M>(
+public fun create_market_with_pool<Q>(
     coin_registry: &mut CoinRegistry,
-    pool: &mut Pool<YES<Q, M>, Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     title: vector<u8>,
     resolution_source: vector<u8>,
     expiry_ms: u64,
@@ -442,7 +432,7 @@ public fun create_market_with_pool<Q, M>(
     transfer::public_share_object(balance_manager);
 
     // 2. Create YES and NO coin currencies via coin_registry
-    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q, M>>(
+    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
         coin_registry, 0,
         string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
         ctx,
@@ -450,7 +440,7 @@ public fun create_market_with_pool<Q, M>(
     let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
     transfer::public_transfer(yes_meta_cap, creator);
 
-    let (no_init, no_cap) = coin_registry::new_currency<NO<Q, M>>(
+    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
         coin_registry, 0,
         string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
         ctx,
@@ -459,7 +449,7 @@ public fun create_market_with_pool<Q, M>(
     transfer::public_transfer(no_meta_cap, creator);
 
     // 3. Create the PredictionMarket
-    let market = PredictionMarket<Q, M> {
+    let market = PredictionMarket<Q> {
         id: object::new(ctx),
         title,
         yes_cap,
@@ -495,7 +485,7 @@ public fun create_market_with_pool<Q, M>(
     (market_id, balance_manager_id)
 }
 
-public fun create_market<Q, M>(
+public fun create_market<Q>(
     coin_registry: &mut CoinRegistry,
     deepbook_registry: &mut Registry,
     title: vector<u8>,
@@ -511,7 +501,7 @@ public fun create_market<Q, M>(
     let creator = ctx.sender();
 
     // 1. Create the DeepBook permissionless pool
-    let pool_id = pool::create_permissionless_pool<YES<Q, M>, Q>(
+    let pool_id = pool::create_permissionless_pool<YES<Q>, Q>(
         deepbook_registry,
         tick_size,
         lot_size,
@@ -529,7 +519,7 @@ public fun create_market<Q, M>(
     transfer::public_share_object(balance_manager);
 
     // 3. Create YES and NO coin currencies via coin_registry (bypasses broken is_one_time_witness on testnet v1.73)
-    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q, M>>(
+    let (yes_init, yes_cap) = coin_registry::new_currency<YES<Q>>(
         coin_registry, 0,
         string::utf8(b"YES"), string::utf8(b"YES"), string::utf8(b"YES outcome token"), string::utf8(b""),
         ctx,
@@ -537,7 +527,7 @@ public fun create_market<Q, M>(
     let yes_meta_cap = coin_registry::finalize(yes_init, ctx);
     transfer::public_transfer(yes_meta_cap, creator);
 
-    let (no_init, no_cap) = coin_registry::new_currency<NO<Q, M>>(
+    let (no_init, no_cap) = coin_registry::new_currency<NO<Q>>(
         coin_registry, 0,
         string::utf8(b"NO"), string::utf8(b"NO"), string::utf8(b"NO outcome token"), string::utf8(b""),
         ctx,
@@ -546,7 +536,7 @@ public fun create_market<Q, M>(
     transfer::public_transfer(no_meta_cap, creator);
 
     // 4. Create the PredictionMarket with YES/NO TreasuryCaps
-    let market = PredictionMarket<Q, M> {
+    let market = PredictionMarket<Q> {
         id: object::new(ctx),
         title,
         yes_cap,
@@ -587,7 +577,7 @@ public fun create_market<Q, M>(
 // ============================================================
 
 /// Get the BalanceManager ID for a market (read-only).
-public fun balance_manager_id<Q, M>(market: &PredictionMarket<Q, M>): ID {
+public fun balance_manager_id<Q>(market: &PredictionMarket<Q>): ID {
     market.balance_manager_id
 }
 
@@ -598,8 +588,8 @@ public fun balance_manager_id<Q, M>(market: &PredictionMarket<Q, M>): ID {
 /// User deposits collateral and receives equal YES and NO tokens.
 /// The protocol takes a 1% fee in quote coin, routed to the shared
 /// `FeeVault<Q>`.
-public fun mint_shares<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun mint_shares<Q>(
+    market: &mut PredictionMarket<Q>,
     vault: &mut FeeVault<Q>,
     quote_in: Coin<Q>,
     ctx: &mut TxContext,
@@ -640,8 +630,8 @@ public fun mint_shares<Q, M>(
 // ============================================================
 
 /// Resolve the market to YES or NO. Only callable by creator after expiry.
-public fun resolve_market<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun resolve_market<Q>(
+    market: &mut PredictionMarket<Q>,
     outcome: u8,  // 1 = YES won, 2 = NO won
     clock: &Clock,
     ctx: &TxContext,
@@ -667,8 +657,8 @@ public fun resolve_market<Q, M>(
 /// the window passes, disputes abort with `EDisputeWindowExpired` so
 /// the market can be redeemed normally. The market is frozen
 /// (`redeem` aborts) until `resolve_dispute` is called.
-public fun dispute_market<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun dispute_market<Q>(
+    market: &mut PredictionMarket<Q>,
     evidence_uri: vector<u8>,
     clock: &Clock,
     ctx: &TxContext,
@@ -698,8 +688,8 @@ public fun dispute_market<Q, M>(
 }
 
 /// Settle a disputed market. Only the creator can resolve the dispute.
-public fun resolve_dispute<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun resolve_dispute<Q>(
+    market: &mut PredictionMarket<Q>,
     final_outcome: u8,
     ctx: &TxContext,
 ) {
@@ -725,10 +715,10 @@ public fun resolve_dispute<Q, M>(
 /// Redeem YES winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee, routed to the shared
 /// `FeeVault<Q>`. Only valid when the market resolved to YES (outcome = 1).
-public fun redeem<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun redeem<Q>(
+    market: &mut PredictionMarket<Q>,
     vault: &mut FeeVault<Q>,
-    winning_coin: Coin<YES<Q, M>>,
+    winning_coin: Coin<YES<Q>>,
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
@@ -763,10 +753,10 @@ public fun redeem<Q, M>(
 /// Redeem NO winning position for quote collateral.
 /// The protocol takes a 0.5% redemption fee, routed to the shared
 /// `FeeVault<Q>`. Only valid when the market resolved to NO (outcome = 2).
-public fun redeem_no<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun redeem_no<Q>(
+    market: &mut PredictionMarket<Q>,
     vault: &mut FeeVault<Q>,
-    winning_coin: Coin<NO<Q, M>>,
+    winning_coin: Coin<NO<Q>>,
     ctx: &mut TxContext,
 ) {
     assert!(market.resolved, EMarketNotActive);
@@ -799,10 +789,10 @@ public fun redeem_no<Q, M>(
 /// sender's `UserStreak` must belong to the sender. The multiplier is
 /// sourced from `streak_system::get_multiplier_bps`. Fees are routed to
 /// the shared `FeeVault<Q>`.
-public fun redeem_with_streak<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun redeem_with_streak<Q>(
+    market: &mut PredictionMarket<Q>,
     vault: &mut FeeVault<Q>,
-    winning_coin: Coin<YES<Q, M>>,
+    winning_coin: Coin<YES<Q>>,
     user_streak: &streak_system::UserStreak,
     ctx: &mut TxContext,
 ) {
@@ -839,10 +829,10 @@ public fun redeem_with_streak<Q, M>(
 
 /// Redeem NO winning position with a streak multiplier applied. Fees
 /// are routed to the shared `FeeVault<Q>`.
-public fun redeem_no_with_streak<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun redeem_no_with_streak<Q>(
+    market: &mut PredictionMarket<Q>,
     vault: &mut FeeVault<Q>,
-    winning_coin: Coin<NO<Q, M>>,
+    winning_coin: Coin<NO<Q>>,
     user_streak: &streak_system::UserStreak,
     ctx: &mut TxContext,
 ) {
@@ -889,8 +879,8 @@ public fun redeem_no_with_streak<Q, M>(
 /// Price is in quote units (e.g. 500_000_000 = 0.5 Q with 9 decimals).
 ///
 /// Arguments:
-///   market          - PredictionMarket<Q, M> (shared)
-///   pool            - Pool<YES<Q, M>, Q> (shared, mutable)
+///   market          - PredictionMarket<Q> (shared)
+///   pool            - Pool<YES<Q>, Q> (shared, mutable)
 ///   balance_manager - BalanceManager for this market (shared, mutable)
 ///   client_order_id - Client-supplied order ID for tracking
 ///   price           - Price in quote units (e.g. 500_000_000 = 0.5 Q)
@@ -899,9 +889,9 @@ public fun redeem_no_with_streak<Q, M>(
 ///   order_type      - IOC=2, GFT=3, FOK=1, POST_ONLY=0
 ///   clock           - Clock for timestamping
 ///   ctx
-public fun place_order<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun place_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     client_order_id: u64,
     price: u64,
@@ -919,7 +909,7 @@ public fun place_order<Q, M>(
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
 
     // Place the order
-    let order_info = pool::place_limit_order<YES<Q, M>, Q>(
+    let order_info = pool::place_limit_order<YES<Q>, Q>(
         pool,
         balance_manager,
         &proof,
@@ -947,9 +937,9 @@ public fun place_order<Q, M>(
 }
 
 /// Place a market order (immediately executable at best price).
-public fun place_market_order<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun place_market_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     client_order_id: u64,
     quantity: u64,
@@ -962,7 +952,7 @@ public fun place_market_order<Q, M>(
 
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
 
-    let order_info = pool::place_market_order<YES<Q, M>, Q>(
+    let order_info = pool::place_market_order<YES<Q>, Q>(
         pool,
         balance_manager,
         &proof,
@@ -991,9 +981,9 @@ public fun place_market_order<Q, M>(
 // ============================================================
 
 /// Cancel a single order on the DeepBook pool.
-public fun cancel_order<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun cancel_order<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     order_id: u128,
     clock: &Clock,
@@ -1003,7 +993,7 @@ public fun cancel_order<Q, M>(
 
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
 
-    pool::cancel_live_order<YES<Q, M>, Q>(pool, balance_manager, &proof, order_id, clock, ctx);
+    pool::cancel_live_order<YES<Q>, Q>(pool, balance_manager, &proof, order_id, clock, ctx);
 
     event::emit(OrderCancelledEvent {
         market_id: object::id(market),
@@ -1013,9 +1003,9 @@ public fun cancel_order<Q, M>(
 }
 
 /// Cancel multiple orders on the DeepBook pool.
-public fun cancel_orders<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun cancel_orders<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     order_ids: vector<u128>,
     clock: &Clock,
@@ -1025,7 +1015,7 @@ public fun cancel_orders<Q, M>(
 
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
 
-    pool::cancel_live_orders<YES<Q, M>, Q>(pool, balance_manager, &proof, order_ids, clock, ctx);
+    pool::cancel_live_orders<YES<Q>, Q>(pool, balance_manager, &proof, order_ids, clock, ctx);
 
     event::emit(OrdersBatchCancelledEvent {
         market_id: object::id(market),
@@ -1035,14 +1025,14 @@ public fun cancel_orders<Q, M>(
 }
 
 /// Withdraw settled amounts from the pool back to BalanceManager.
-public fun withdraw_settled<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun withdraw_settled<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     ctx: &mut TxContext,
 ) {
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
-    pool::withdraw_settled_amounts<YES<Q, M>, Q>(pool, balance_manager, &proof);
+    pool::withdraw_settled_amounts<YES<Q>, Q>(pool, balance_manager, &proof);
 
     event::emit(SettledEvent {
         market_id: object::id(market),
@@ -1056,9 +1046,9 @@ public fun withdraw_settled<Q, M>(
 // ============================================================
 
 /// Cancel ALL open orders for this market's BalanceManager on the pool.
-public fun cancel_all_orders<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun cancel_all_orders<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     balance_manager: &mut BalanceManager,
     clock: &Clock,
     ctx: &TxContext,
@@ -1066,7 +1056,7 @@ public fun cancel_all_orders<Q, M>(
     assert!(!market.resolved, EMarketNotActive);
 
     let proof = balance_manager::generate_proof_as_owner(balance_manager, ctx);
-    pool::cancel_all_orders<YES<Q, M>, Q>(pool, balance_manager, &proof, clock, ctx);
+    pool::cancel_all_orders<YES<Q>, Q>(pool, balance_manager, &proof, clock, ctx);
 }
 
 // ============================================================
@@ -1074,7 +1064,7 @@ public fun cancel_all_orders<Q, M>(
 //
 // Before placing orders the BalanceManager must have:
 //   1. Q (quote coin) deposited for order collateral
-//   2. YES<Q, M> deposited as base asset for asks
+//   2. YES<Q> deposited as base asset for asks
 //   3. DEEP deposited for trading fees (if pay_with_deep = true)
 //
 // All three are deposited via deposit_for_trading below.
@@ -1083,10 +1073,10 @@ public fun cancel_all_orders<Q, M>(
 /// Deposit quote coin and YES base coin into the BalanceManager for trading.
 /// Also deposits DEEP for trading fees.
 /// Call this before place_order / place_market_order.
-public fun deposit_for_trading<Q, M>(
-    _market: &PredictionMarket<Q, M>,
+public fun deposit_for_trading<Q>(
+    _market: &PredictionMarket<Q>,
     balance_manager: &mut BalanceManager,
-    base_coin: Coin<YES<Q, M>>,
+    base_coin: Coin<YES<Q>>,
     quote_coin: Coin<Q>,
     deep_coin: Coin<DEEP>,
     ctx: &mut TxContext,
@@ -1103,16 +1093,16 @@ public fun deposit_for_trading<Q, M>(
 /// Mint a DeepBook referral for the market's pool, making this protocol
 /// the owner of the referral so it can claim additional trading fees.
 /// Only callable once per market.
-public fun setup_referral<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun setup_referral<Q>(
+    market: &mut PredictionMarket<Q>,
+    pool: &mut Pool<YES<Q>, Q>,
     multiplier: u64,  // e.g. 1_000_000_000 = 1.0x referral bonus (must be multiple of 100_000_000)
     ctx: &mut TxContext,
 ) {
     assert!(ctx.sender() == market.creator, ENotCreator);
     assert!(option::is_none(&market.referral_id), EReferralAlreadySet);
 
-    let referral_id = pool::mint_referral<YES<Q, M>, Q>(pool, multiplier, ctx);
+    let referral_id = pool::mint_referral<YES<Q>, Q>(pool, multiplier, ctx);
     market.referral_id = option::some(referral_id);
 
     event::emit(ReferralSetEvent {
@@ -1124,12 +1114,12 @@ public fun setup_referral<Q, M>(
 /// Claim accumulated referral rewards from DeepBook for the market's pool.
 /// Only the referral owner (set during setup_referral) can call this.
 /// Rewards go to the caller.
-public fun claim_referral_rewards<Q, M>(
-    pool: &mut Pool<YES<Q, M>, Q>,
+public fun claim_referral_rewards<Q>(
+    pool: &mut Pool<YES<Q>, Q>,
     referral: &DeepBookPoolReferral,
     ctx: &mut TxContext,
 ) {
-    let (yes_dust, quote_coins, deep_coins) = pool::claim_pool_referral_rewards<YES<Q, M>, Q>(pool, referral, ctx);
+    let (yes_dust, quote_coins, deep_coins) = pool::claim_pool_referral_rewards<YES<Q>, Q>(pool, referral, ctx);
     transfer::public_transfer(yes_dust, ctx.sender());
     transfer::public_transfer(quote_coins, ctx.sender());
     transfer::public_transfer(deep_coins, ctx.sender());
@@ -1162,7 +1152,7 @@ public fun withdraw_fees<Q>(
 // View functions
 // ============================================================
 
-public fun collateral_value<Q, M>(market: &PredictionMarket<Q, M>): u64 {
+public fun collateral_value<Q>(market: &PredictionMarket<Q>): u64 {
     balance::value(&market.collateral)
 }
 
@@ -1170,35 +1160,35 @@ public fun fee_balance<Q>(vault: &FeeVault<Q>): u64 {
     balance::value(&vault.fee_balance)
 }
 
-public fun is_resolved<Q, M>(market: &PredictionMarket<Q, M>): bool {
+public fun is_resolved<Q>(market: &PredictionMarket<Q>): bool {
     market.resolved
 }
 
-public fun market_outcome<Q, M>(market: &PredictionMarket<Q, M>): u8 {
+public fun market_outcome<Q>(market: &PredictionMarket<Q>): u8 {
     market.outcome
 }
 
-public fun expiry<Q, M>(market: &PredictionMarket<Q, M>): u64 {
+public fun expiry<Q>(market: &PredictionMarket<Q>): u64 {
     market.expiry_ms
 }
 
-public fun pool_id<Q, M>(market: &PredictionMarket<Q, M>): ID {
+public fun pool_id<Q>(market: &PredictionMarket<Q>): ID {
     market.pool_id
 }
 
-public fun referral_id<Q, M>(market: &PredictionMarket<Q, M>): Option<ID> {
+public fun referral_id<Q>(market: &PredictionMarket<Q>): Option<ID> {
     market.referral_id
 }
 
-public fun is_disputed<Q, M>(market: &PredictionMarket<Q, M>): bool {
+public fun is_disputed<Q>(market: &PredictionMarket<Q>): bool {
     market.disputed
 }
 
-public fun dispute_count<Q, M>(market: &PredictionMarket<Q, M>): u64 {
+public fun dispute_count<Q>(market: &PredictionMarket<Q>): u64 {
     market.dispute_count
 }
 
-public fun dispute_evidence_uri<Q, M>(market: &PredictionMarket<Q, M>): &vector<u8> {
+public fun dispute_evidence_uri<Q>(market: &PredictionMarket<Q>): &vector<u8> {
     &market.dispute_evidence_uri
 }
 
@@ -1224,7 +1214,7 @@ public fun init_for_testing(ctx: &mut TxContext) {
     init(ctx);
 }
 
-/// Build a `PredictionMarket<Q, M>` for tests without going through the
+/// Build a `PredictionMarket<Q>` for tests without going through the
 /// on-chain `create_market` flow (which requires a real `Coin<DEEP>`
 /// for the DeepBook pool fee). The returned market has placeholder
 /// `pool_id` / `balance_manager_id` zeros; the dispute and resolve
@@ -1237,16 +1227,16 @@ public fun init_for_testing(ctx: &mut TxContext) {
 /// real `create_currency` and works at runtime; the test-only path
 /// is intentionally permissive.
 #[test_only]
-public fun new_market_for_testing<Q, M>(
+public fun new_market_for_testing<Q>(
     title: vector<u8>,
     resolution_source: vector<u8>,
     expiry_ms: u64,
     creator: address,
     ctx: &mut TxContext,
-): PredictionMarket<Q, M> {
-    let yes_cap = coin::create_treasury_cap_for_testing<YES<Q, M>>(ctx);
-    let no_cap = coin::create_treasury_cap_for_testing<NO<Q, M>>(ctx);
-    PredictionMarket<Q, M> {
+): PredictionMarket<Q> {
+    let yes_cap = coin::create_treasury_cap_for_testing<YES<Q>>(ctx);
+    let no_cap = coin::create_treasury_cap_for_testing<NO<Q>>(ctx);
+    PredictionMarket<Q> {
         id: object::new(ctx),
         title,
         yes_cap,
@@ -1271,34 +1261,34 @@ public fun new_market_for_testing<Q, M>(
 /// Test-only getters so the suite can assert on state changes
 /// without destructuring the (non-drop) struct.
 #[test_only]
-public fun resolved_for_testing<Q, M>(market: &PredictionMarket<Q, M>): bool {
+public fun resolved_for_testing<Q>(market: &PredictionMarket<Q>): bool {
     market.resolved
 }
 
 #[test_only]
-public fun outcome_for_testing<Q, M>(market: &PredictionMarket<Q, M>): u8 {
+public fun outcome_for_testing<Q>(market: &PredictionMarket<Q>): u8 {
     market.outcome
 }
 
 #[test_only]
-public fun disputed_for_testing<Q, M>(market: &PredictionMarket<Q, M>): bool {
+public fun disputed_for_testing<Q>(market: &PredictionMarket<Q>): bool {
     market.disputed
 }
 
 #[test_only]
-public fun dispute_count_for_testing<Q, M>(market: &PredictionMarket<Q, M>): u64 {
+public fun dispute_count_for_testing<Q>(market: &PredictionMarket<Q>): u64 {
     market.dispute_count
 }
 
 #[test_only]
-public fun resolved_ms_for_testing<Q, M>(market: &PredictionMarket<Q, M>): u64 {
+public fun resolved_ms_for_testing<Q>(market: &PredictionMarket<Q>): u64 {
     market.resolved_ms
 }
 
-/// Destroys a `PredictionMarket<Q, M>` for tests. The struct has no
+/// Destroys a `PredictionMarket<Q>` for tests. The struct has no
 /// `drop` ability, so the test harness needs an explicit exit.
 #[test_only]
-public fun destroy_for_testing<Q, M>(market: PredictionMarket<Q, M>) {
+public fun destroy_for_testing<Q>(market: PredictionMarket<Q>) {
     let PredictionMarket {
         id,
         title: _,
@@ -1331,35 +1321,35 @@ public fun destroy_for_testing<Q, M>(market: PredictionMarket<Q, M>) {
 /// `redeem_with_streak`, and the referral-claim path need a market
 /// with non-zero collateral to redeem against.
 #[test_only]
-public fun add_collateral_for_testing<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun add_collateral_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
     coin: Coin<Q>,
 ) {
     market.collateral.join(coin.into_balance());
 }
 
-/// Test-only helper: mint a `Coin<YES<Q, M>>` through the market's
+/// Test-only helper: mint a `Coin<YES<Q>>` through the market's
 /// real `TreasuryCap`. Use this in redeem tests — the production
 /// `redeem` path calls `coin::burn(&mut market.yes_cap, …)` which
 /// asserts the cap's total supply >= the burned value, so a coin
 /// produced by `coin::mint_for_testing` (which bypasses the cap)
 /// will fail the burn.
 #[test_only]
-public fun mint_yes_for_testing<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun mint_yes_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
     amount: u64,
     ctx: &mut TxContext,
-): Coin<YES<Q, M>> {
+): Coin<YES<Q>> {
     coin::mint(&mut market.yes_cap, amount, ctx)
 }
 
-/// Test-only helper: mint a `Coin<NO<Q, M>>` through the market's
+/// Test-only helper: mint a `Coin<NO<Q>>` through the market's
 /// real `TreasuryCap`. Same rationale as `mint_yes_for_testing`.
 #[test_only]
-public fun mint_no_for_testing<Q, M>(
-    market: &mut PredictionMarket<Q, M>,
+public fun mint_no_for_testing<Q>(
+    market: &mut PredictionMarket<Q>,
     amount: u64,
     ctx: &mut TxContext,
-): Coin<NO<Q, M>> {
+): Coin<NO<Q>> {
     coin::mint(&mut market.no_cap, amount, ctx)
 }
