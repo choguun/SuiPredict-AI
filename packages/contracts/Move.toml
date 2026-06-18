@@ -17,3 +17,11 @@ suipredict_agent_policy = "0x0"
 [dev-addresses]
 suipredict = "0x0"
 suipredict_agent_policy = "0x0"
+
+[published.testnet]
+# Live testnet deployment: the AgentPolicy shared object (0xb624f2fc78...)
+# is stamped with this package id, so all upgrade tickets must reference
+# it as the package's original-id. Adding this here lets the Move
+# compiler emit bytecode whose `original-id` field matches the live
+# UpgradeCap at 0x646dfdb6d287bb00210c060976ceb309d67456a9132cbe7d529c1f21b9b8181a.
+original-id = "0xb1777f167c29dbf1d0bf6e014157b3afd377608703d4935106989a0bb2be3ebf"
