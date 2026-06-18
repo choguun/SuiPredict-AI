@@ -216,8 +216,7 @@ export default function DisputeMarketPage() {
         toast.error("On-chain market id not resolved yet — wait for the indexer and try again.", { id: toastId });
         return;
       }
-      const tx = buildDisputeMarketTx(onchainMarketId, evidenceUri.trim());
-      withMarketType(tx, marketTypeSeed(marketId));
+      const tx = buildDisputeMarketTx(onchainMarketId, evidenceUri.trim(), marketTypeSeed(marketId));
       // R54 audit fix: route through `submitAndWait` so the
       // subsequent `invalidateQueries` / state refetch hits a
       // node that has already finalized the tx. The previous

@@ -962,8 +962,8 @@ function MarketDetailBody({
         FEE_VAULT_ID,
         coin.objectId,
         amountAtoms,
+        marketTypeSeed(market.id),
       );
-      withMarketType(tx, marketTypeSeed(market.id));
       // R55 audit fix: route through `submitAndWait` so
       // the `setRefreshCounter` + `invalidateMarketCaches`
       // refetches hit a node that has already finalized
@@ -1195,8 +1195,8 @@ function MarketDetailBody({
         // hardcode 1e6 in three places.
         quantity: BigInt(qty) * BASE_SCALE,
         isBid,
+        m: marketTypeSeed(market.id),
       });
-      withMarketType(tx, marketTypeSeed(market.id));
       // R55 audit fix: route through `submitAndWait` so
       // the `waitForOrderInBook` poll runs against a node
       // that has already finalized the order tx. The
@@ -1689,14 +1689,15 @@ function MarketDetailBody({
       // `market.id` for non-WC markets.
       const redeemMarketId = market.onchain_market_id ?? market.id;
       const tx =
+        const m = marketTypeSeed(market.id);
+      const tx =
         winningSide === "yes"
           ? streakId
-            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
-            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId)
+            ? buildRedeemWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
+            : buildRedeemTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m)
           : streakId
-            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId)
-            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId);
-      withMarketType(tx, marketTypeSeed(market.id));
+            ? buildRedeemNoWithStreakTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, streakId, m)
+            : buildRedeemNoTx(redeemMarketId, FEE_VAULT_ID, coin.objectId, m);
       // R55 audit fix: route through `submitAndWait` so
       // the redeem confirmation reflects the on-chain
       // state. The previous signAndExecuteTransaction

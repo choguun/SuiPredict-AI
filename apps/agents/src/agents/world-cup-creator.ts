@@ -547,8 +547,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             onchain_market_id: marketId,
             created_at_ms: Date.now(),
           });
-          const refTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
-          withMarketType(refTx, typeM);
+          const refTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000), typeM);
           const refResult = await executeTransaction(client, refTx, ctx.signer);
           const refId = await extractCreatedObjectId(client, refResult.digest, "DeepBookPoolReferral");
           if (refId) patchMarketReferralId(dedupeKey(m.id), refId);
@@ -586,8 +585,8 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
               feeVaultId,
               dusdcCoin.objectId,
               BigInt(initialMintAtoms),
+              typeM,
             );
-            withMarketType(mintTx, typeM);
             await executeTransaction(client, mintTx, ctx.signer);
           }
         } catch (mintErr) {

@@ -168,6 +168,16 @@ export function buildCreateMarketTx(params: {
   minSize?: bigint;
   deepCoinId: string;
   category?: number;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument so `create_market<Q, M>` produces a
+   * unique `YES<Q, M>` coin type per market (bypasses the Sui
+   * CoinRegistry's one-Currency-per-T-per-package limit).
+   * When provided, this REPLACES the broken `withMarketType`
+   * post-processor (which only mutated a getData() snapshot
+   * and never reached the actual BCS serializer).
+   */
+  m?: string;
 }): Transaction {
   // R52 audit fix: reject empty / missing
   // `deepCoinId` AND route through
@@ -302,7 +312,7 @@ export function buildCreateMarketTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::create_market`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object("0xc"),                                   // Sui CoinRegistry
       tx.object(DEEPBOOK_REGISTRY_ID),
@@ -356,6 +366,12 @@ export function buildCreateMarketWithPoolTx(params: {
   expiryMs: bigint;
   poolId: string;
   category?: number;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument so `create_market_with_pool<Q, M>`
+   * produces a unique `YES<Q, M>` coin type per market.
+   */
+  m?: string;
 }): Transaction {
   // R62 audit fixes (mirrored from buildCreateMarketTx):
   // validate `expiryMs` is a future bigint, title and
@@ -422,7 +438,7 @@ export function buildCreateMarketWithPoolTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::create_market_with_pool`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object("0xc"),  // Sui system CoinRegistry
       tx.object(normalizeObjectId(params.poolId)),
@@ -450,6 +466,12 @@ export function buildMintSharesTx(
   vaultId: string,
   quoteIn: string,
   amountAtoms: bigint,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `mint_shares<Q, M>` so the call
+   * matches the v2 package's generic signature.
+   */
+  m?: string,
 ): Transaction {
   // R-UAT-23 follow-up: pre-flight the
   // `marketId` against the Sui object-id
@@ -516,7 +538,7 @@ export function buildMintSharesTx(
   const [mintCoin] = tx.splitCoins(tx.object(normalizeObjectId(quoteIn)), [tx.pure.u64(amountAtoms)]);
   tx.moveCall({
     target: `${PKG()}::prediction_market::mint_shares`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), mintCoin],
   });
   return tx;
@@ -537,6 +559,11 @@ export function buildMintSharesBatchTx(params: {
   vaultId: string;
   quoteIn: string;
   amountPerMarket: bigint;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to every `mint_shares<Q, M>` call.
+   */
+  m?: string;
 }): Transaction {
   const tx = new Transaction();
   // Minimum per-leg amount: 1 YES share at the protocol's default
@@ -580,7 +607,7 @@ export function buildMintSharesBatchTx(params: {
   params.marketIds.forEach((marketId, i) => {
     tx.moveCall({
       target: `${PKG()}::prediction_market::mint_shares`,
-      typeArguments: [DUSDC_TYPE],
+      typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
       arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(params.vaultId)), coins[i]!],
     });
   });
@@ -604,6 +631,11 @@ export function buildMintSharesBatchTx(params: {
 export function buildResolveMarketTx(
   marketId: string,
   outcome: 1 | 2,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `resolve_market<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   // R56.3 audit fix: validate `outcome` at the build boundary.
   // The TS type is `1 | 2` but the on-chain
@@ -625,7 +657,7 @@ export function buildResolveMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_market`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
       tx.pure.u8(outcome),
@@ -646,11 +678,16 @@ export function buildRedeemTx(
   marketId: string,
   vaultId: string,
   winningCoin: string,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `redeem<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
       tx.object(normalizeObjectId(vaultId)),
@@ -683,6 +720,11 @@ const MAX_EVIDENCE_URI_BYTES = 256;
 export function buildDisputeMarketTx(
   marketId: string,
   evidenceUri: string | Uint8Array,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `dispute_market<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   const evidence =
     typeof evidenceUri === "string" ? encodeUtf8(evidenceUri) : evidenceUri;
@@ -703,7 +745,7 @@ export function buildDisputeMarketTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::dispute_market`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
       tx.pure.vector("u8", Array.from(evidence)),
@@ -720,6 +762,11 @@ export function buildDisputeMarketTx(
 export function buildResolveDisputeTx(
   marketId: string,
   finalOutcome: 1 | 2,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `resolve_dispute<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   // R56.2 audit fix: validate `finalOutcome` at the build boundary.
   // The TS type is `1 | 2` but no runtime guard is enforced. The
@@ -740,7 +787,7 @@ export function buildResolveDisputeTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::resolve_dispute`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [tx.object(normalizeObjectId(marketId)), tx.pure.u8(finalOutcome)],
   });
   return tx;
@@ -757,11 +804,16 @@ export function buildRedeemNoTx(
   marketId: string,
   vaultId: string,
   winningCoin: string,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `redeem_no<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_no`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [tx.object(normalizeObjectId(marketId)), tx.object(normalizeObjectId(vaultId)), tx.object(normalizeObjectId(winningCoin))],
   });
   return tx;
@@ -783,11 +835,16 @@ export function buildRedeemWithStreakTx(
   vaultId: string,
   winningCoinId: string,
   streakId: string,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `redeem_with_streak<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::redeem_with_streak`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
       tx.object(normalizeObjectId(vaultId)),
@@ -833,6 +890,11 @@ export function buildSetupReferralTx(
   marketId: string,
   poolId: string,
   multiplier: bigint = 1_000_000_000n,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `setup_referral<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   // R55 audit fix: validate `multiplier > 0` at the
   // build boundary. The on-chain DeepBook
@@ -850,7 +912,7 @@ export function buildSetupReferralTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::setup_referral`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(marketId)),
       tx.object(normalizeObjectId(poolId)),
@@ -872,6 +934,11 @@ export function buildSetupReferralTx(
 export function buildClaimReferralRewardsTx(
   poolId: string,
   referralId: string,
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `claim_referral_rewards<Q, M>`.
+   */
+  m?: string,
 ): Transaction {
   // R56.14 audit fix: reject a copy-paste of `poolId` for
   // `referralId`. Both are 32-byte hex strings and `normalizeObjectId`
@@ -890,7 +957,7 @@ export function buildClaimReferralRewardsTx(
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::claim_referral_rewards`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: m ? [DUSDC_TYPE, addressOf(m)] : [DUSDC_TYPE],
     arguments: [tx.object(normalizeObjectId(poolId)), tx.object(normalizeObjectId(referralId))],
   });
   return tx;
@@ -1094,22 +1161,30 @@ export function addressOf(id: string): string {
  * object id or a `marketTypeSeed(seed)`-derived address.
  */
 export function withMarketType(tx: Transaction, m: string): Transaction {
-  const addr = addressOf(m);
-  const data = (tx as unknown as { getData: () => unknown }).getData();
-  if (!data || typeof data !== "object") return tx;
-  const commands = (data as { commands?: unknown[] }).commands;
-  if (!Array.isArray(commands)) return tx;
-  for (const cmd of commands) {
-    if (cmd !== null && typeof cmd === "object" && "MoveCall" in cmd) {
-      const mc = (cmd as { MoveCall: { typeArguments?: string[] } }).MoveCall;
-      if (Array.isArray(mc.typeArguments)) {
-        // Append M as the second type arg if not already there.
-        if (mc.typeArguments.length === 1) {
-          mc.typeArguments.push(addr);
-        }
-      }
-    }
-  }
+  // R-WC-3.3: this post-processor is DEPRECATED. The Sui
+  // v2.x SDK's `Transaction` class returns a clone from
+  // `getData()` and does not expose `setData()`, so we
+  // cannot mutate the type arguments after the MoveCall
+  // is built — the BCS serializer always emits the
+  // original `[DUSDC_TYPE]` and the on-chain
+  // `create_market<Q, M>` rejects the PTB with
+  // `VMVerificationOrDeserializationError`.
+  //
+  // The correct way to thread `M` is at builder time:
+  //   buildCreateMarketTx({ ..., m: marketTypeSeed(seed) })
+  //   buildMintSharesTx(marketId, vaultId, coinId, amount, m)
+  //   buildPlaceOrderTx({ ..., m: marketTypeSeed(seed) })
+  // etc. Every builder in this file accepts an optional
+  // trailing `m` parameter.
+  //
+  // This function is preserved as a runtime warning so
+  // any leftover caller surfaces a clear error instead
+  // of silently emitting broken PTBs.
+  console.warn(
+    "[withMarketType] DEPRECATED: this post-processor can't mutate " +
+      "the Sui SDK's internal commands. Pass `m` directly to the " +
+      "builder (e.g. buildMintSharesTx(..., m)). Falling through.",
+  );
   return tx;
 }
 
@@ -1257,6 +1332,11 @@ export function buildPlaceMarketOrderTx(params: {
   clientOrderId: bigint;
   quantity: bigint;
   isBid: boolean;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `place_market_order<Q, M>`.
+   */
+  m?: string;
 }): Transaction {
   // R53 audit fix: validate
   // `quantity` at the build
@@ -1282,7 +1362,7 @@ export function buildPlaceMarketOrderTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::place_market_order`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(params.marketId)),
       tx.object(normalizeObjectId(params.poolId)),
@@ -1353,6 +1433,11 @@ export function buildPlaceOrderTx(params: {
    * E2E-GAP-03 fix.
    */
   marketStatus?: string;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `place_order<Q, M>`.
+   */
+  m?: string;
 }): Transaction {
   // E2E-GAP-03 fix: pre-flight market
   // status. The on-chain `place_order`
@@ -1463,7 +1548,7 @@ export function buildPlaceOrderTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::place_order`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(params.marketId)),
       tx.object(normalizeObjectId(params.poolId)),
@@ -1525,6 +1610,11 @@ export function buildCancelOrderTx(params: {
   poolId: string;
   balanceManagerId: string;
   orderId: bigint;
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `cancel_order<Q, M>`.
+   */
+  m?: string;
 }): Transaction {
   // R54 audit fix: validate `orderId > 0` at the build boundary.
   // The on-chain `prediction_market::cancel_order` does not check
@@ -1546,7 +1636,7 @@ export function buildCancelOrderTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::cancel_order`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(params.marketId)),
       tx.object(normalizeObjectId(params.poolId)),
@@ -1569,6 +1659,11 @@ export function buildCancelOrdersTx(params: {
   poolId: string;
   balanceManagerId: string;
   orderIds: bigint[];
+  /**
+   * R-WC-2: per-market phantom `M: address`. Threaded as the
+   * second type argument to `cancel_orders<Q, M>`.
+   */
+  m?: string;
 }): Transaction {
   // R54 audit fix: refuse an empty `orderIds` array at the build
   // boundary. The on-chain `cancel_live_orders` accepts the empty
@@ -1593,7 +1688,7 @@ export function buildCancelOrdersTx(params: {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PKG()}::prediction_market::cancel_orders`,
-    typeArguments: [DUSDC_TYPE],
+    typeArguments: params.m ? [DUSDC_TYPE, addressOf(params.m)] : [DUSDC_TYPE],
     arguments: [
       tx.object(normalizeObjectId(params.marketId)),
       tx.object(normalizeObjectId(params.poolId)),
@@ -2392,8 +2487,8 @@ export async function ensureMarketCreated(
         minSize,
         deepCoinId: params.deepCoinId,
         category: params.category ?? 0,
+        m: params.m,
       });
-      if (params.m) withMarketType(tx, params.m);
       const result = await executeTransaction(client, tx, signer);
       const marketId = await extractCreatedObjectId(
         client,
@@ -2512,8 +2607,8 @@ export async function ensureMarketCreated(
     expiryMs: params.expiryMs,
     poolId: existingPoolId,
     category: params.category ?? 0,
+    m: params.m,
   });
-  if (params.m) withMarketType(tx, params.m);
   const result = await executeTransaction(client, tx, signer);
   // `create_market_with_pool` returns the same object shape
   // as `create_market` minus the `Pool` (it reuses the
