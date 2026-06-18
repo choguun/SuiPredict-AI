@@ -103,71 +103,144 @@ only path.
 
 ## Migration path (next session)
 
-### Step 1: Write `migrate.move`
+### ⚠️ CRITICAL BLOCKER discovered during attempted migration (R-WC-3.1)
 
-For each shared object type, write a function that takes the v1 object as input,
-reads every field, and constructs a new shared object of the same v1 shape but
-typed against the new v2 package. The new objects must preserve field values:
+Move's type system enforces that **a function in package A cannot accept an
+object typed against package B**, even if the struct shapes are byte-identical.
+So a v2 `migrate.move` cannot write:
 
 ```move
-module suipredict_agent_policy::migration;
+public fun migrate_agent_policy(old: agent_policy::AgentPolicy_v1, ...) { ... }
+```
 
-public fun migrate_agent_policy(
-    old: AgentPolicy_v1,  // from 0xb1777f167c...
-    ctx: &mut TxContext,
-): AgentPolicy_v2 {
-    let AgentPolicy_v1 { id, agent, expires_at, max_budget, owner, paused, revoked, spent } = old;
-    object::delete(id);
-    let new = AgentPolicy_v2 { id: object::new(ctx), agent, expires_at, max_budget, owner, paused, revoked, spent };
+and have it accept the on-chain `0xb1777f167c...::agent_policy::AgentPolicy`
+object, because Move resolves `agent_policy::AgentPolicy_v1` to the v2 package
+import, not the v1 package.
+
+**Workarounds considered:**
+
+1. **Mirror v1 struct shapes in `migrate.move`** — `public struct AgentPolicyV1 has key { ... }`.
+   Move accepts this because the *struct shape* matches, but at the BCS / type-tag
+   layer the runtime still rejects the PTB because the object's actual type tag
+   (encoded in `objType`) is `0xb1777f167c...::agent_policy::AgentPolicy`, not
+   `0xNEW...::migrate::AgentPolicyV1`. Confirmed by writing a draft `migrate.move`
+   that fails the BCS check at PTB-build time.
+
+2. **Add field-extractor methods to the v1 package itself** (e.g.
+   `agent_policy::extract_all_fields(old): (address, address, u64, ...)`) then
+   re-construct in v2. Requires upgrading the v1 package — but adding new
+   methods is signature-additive, which the v1 cap's `additive` policy
+   (`policy = 0.0`) actually permits. This works.
+
+3. **Use Sui's framework-level `0x2::object` to read raw bytes** — not exposed
+   in safe Move. Requires a custom sui CLI command or off-chain Sui RPC
+   `sui_getObject` to read fields, then re-broadcast a creation tx. Doable but
+   complex.
+
+4. **Use the v1 package as a library at v2 publish time** — Move doesn't
+   support cross-package destructuring of non-copy types.
+
+**Recommended path: workaround #2** — write a v1.5 upgrade that adds
+field-extractor entrypoints to the v1 package, then have v2's `migrate.move`
+call them.
+
+#### Step 1a: Upgrade v1 package (`0xb1777f167c...`) to add field extractors
+
+Use the existing UpgradeCap `0x646dfdb6d287bb00210c060976ceb309d67456a9132cbe7d529c1f21b9b8181a`.
+The upgrade must be a `compatible` upgrade (additive only — no signature changes
+to existing functions). The new code adds:
+
+```move
+// in agent_policy.move
+public fun extract_agent_policy(old: AgentPolicy): (
+    address, address, u64, u64, u64, bool, bool, // owner, agent, max_budget, spent, expires_at, revoked, paused
+) {
+    (old.owner, old.agent, old.max_budget, old.spent, old.expires_at, old.revoked, old.paused)
+}
+
+// in registry.move
+public fun extract_market_registry(old: MarketRegistry): (address, u64, vector<ID>) {
+    let mut ids = vector[];
+    let mut i = 0;
+    while (i < old.market_count) {
+        vector::push_back(&mut ids, *table::borrow(&old.markets, i));
+        i = i + 1;
+    };
+    (old.admin, old.market_count, ids)
+}
+
+// in streak_system.move
+public fun extract_streak_registry_keys(old: StreakRegistry): vector<address> { ... }
+// + extract_user_streak_ids(...) returning vector<ID> for the values
+```
+
+This upgrade *can* succeed because it's purely additive (new public functions
+that return copies of field values). Policy `additive` permits this.
+
+#### Step 1b: Fresh-publish v2 with `migrate.move` that calls v1 extractors
+
+The fresh-publish v2 package imports v1 (yes, v2 imports v1 — backward import
+is allowed):
+
+```move
+// in v2 migrate.move
+use suipredict_v1::agent_policy::{Self, AgentPolicyV1};  // the v1 package
+
+public fun migrate_agent_policy(old: AgentPolicyV1, ctx: &mut TxContext) {
+    let v1_id = object::id(&old);
+    let (owner, agent, max_budget, spent, expires_at, revoked, paused) =
+        agent_policy::extract_agent_policy(old);
+    // v1 object is consumed by extract_agent_policy (move-by-value into the function)
+    // construct v2-typed AgentPolicy
+    let new = agent_policy::create_policy_with_state(
+        agent, max_budget, expires_at, owner, spent, revoked, paused, ctx,
+    );
     transfer::share_object(new);
-    ...
 }
 ```
 
-Affected objects:
-1. `AgentPolicy` (8 fields)
-2. `MarketRegistry` (read fields)
-3. `FeeVault` (read `fee_balance: Balance<Q>`, transfer to new vault)
-4. `StreakRegistry` (read `streaks: Table`)
-5. (Optional) `UserProfileRegistry`
+This works because `extract_agent_policy` takes the v1 AgentPolicy by value
+(consuming it), reads its fields (which are all primitives + bools — copy
+types), and returns the field values. The caller then has the values and the
+v1 object is gone. The caller constructs a v2 AgentPolicy with the same field
+values and a fresh UID.
 
-For each, decide: is the v1 and v2 layout identical (just different package id
-in the type tag)? If yes, migration is purely a typed re-share — same fields,
-same shape. If v2 added a field, supply a default.
+#### Step 2: Move tests
 
-For v2 specifically: did any of `agent_policy.move`, `registry.move`, `vault.move`,
-`streak_system.move`, `user_profile.move` change shape between the v1 and v2
-sources? Check `git log --oneline packages/contracts/sources/` for module-specific
-commits. **If they're byte-identical**, migration is trivial (just re-type and
-re-share). If they differ, supply defaults.
+`tests/migrate_tests.move`:
+- Test extract_agent_policy returns expected tuple
+- Test migrate_agent_policy produces a v2 AgentPolicy with same field values
+- Test MarketRegistry migration preserves all market IDs
+- Test StreakRegistry migration preserves all streak IDs
 
-### Step 2: Move tests
-
-`migrate_tests.move` for each migration function:
-- Create v1 object with known fields
-- Call migration
-- Assert new object has same fields
-- Assert new object is shared
-
-### Step 3: Agent-side migration script
+#### Step 3: Agent-side migration script
 
 `apps/agents/scripts/migrate-v2.ts`:
-- Builds a PTB that calls each `migrate_*` function in sequence
+- Builds a PTB per shared object that calls the appropriate `migrate_*` function
 - Signs with the deployer key (env: `AGENT_PRIVATE_KEY`)
-- Executes against testnet
-- Verifies each tx succeeded
+- Executes against testnet sequentially
+- Verifies each tx succeeded before moving to the next
 
-### Step 4: Publish v2 to fresh package id
+For `FeeVault<Q>`: this is tricky because it holds `Balance<Q>`. The migration
+needs to extract the balance amount, consume the v1 vault, and create a v2
+vault with the same balance. Add an extractor that returns the balance value,
+then re-constructs with `balance::create_for_testing` or by withdrawing from a
+temp `Coin<Q>` that the v1 vault transfers to.
 
-After migration Move is in place:
+For `UserProfile`: per-user, owner-signed. Each user calls migrate_user_profile
+themselves.
+
+#### Step 4: Publish v2 to fresh package id
+
+After v2 `migrate.move` is in place and tested:
 ```bash
-rm packages/contracts/Published.toml  # remove the old (incorrect) original-id
-sui client publish --upgrade-capability 0x...  # any upgrade-cap; this is a fresh publish
+rm packages/contracts/Published.toml
+sui client publish --upgrade-capability 0x...  # fresh publish
 ```
 
 This gets a new package id `0xNEW...` for v2.
 
-### Step 5: Update env vars + redeploy
+#### Step 5: Update env vars + redeploy
 
 ```bash
 AGENT_POLICY_PACKAGE_ID=0xNEW...  # the fresh-publish id
