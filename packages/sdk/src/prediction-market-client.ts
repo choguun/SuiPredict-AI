@@ -1023,22 +1023,87 @@ export async function getMarketMidPrice(
 // ─── Coin type helpers ───────────────────────────────────────────────────────
 
 /**
- * Compute the YES coin type for a given market's PredictionMarket object.
- * YES<Q> = <package>::prediction_market::YES<DUSDC>
+ * R-WC-2: append the per-market phantom `M: address` as the
+ * second type argument to a Move call built by the SDK's
+ * `buildXxxTx` builders. The builders hardcode
+ * `typeArguments: [DUSDC_TYPE]`; this post-processor walks the
+ * PTB's commands and rewrites the type arg array to
+ * `[DUSDC_TYPE, addressOf(marketId)]` on the first command
+ * (the buildXxxTx builders always emit a single MoveCall per
+ * tx).
  *
- * In Move, the generic type parameter is part of the type identity.
- * For a market at object ID M, the YES type is: <package>::prediction_market::YES<DUSDC>
+ * Why post-process: keeps the 22 builder signatures stable
+ * (no breaking change to the public SDK API), while still
+ * producing PTBs whose Move call targets the per-market
+ * `YES<Q, M>` type. The caller (agent service) supplies
+ * `marketId` from `extractCreatedObjectId` after the create
+ * tx completes.
+ */
+export function withMarketType(tx: Transaction, marketId: string): Transaction {
+  const m = addressOf(marketId);
+  // Sui's TransactionBlock API exposes the underlying BCS-encoded
+  // commands via `tx.getData()`. Each command's `typeArguments`
+  // array lives at `MoveCall.typeArguments`. We mutate in place
+  // because the SDK builders don't expose a clean setter.
+  const data = (tx as unknown as { getData: () => unknown }).getData();
+  if (!data || typeof data !== "object") return tx;
+  const commands = (data as { commands?: unknown[] }).commands;
+  if (!Array.isArray(commands)) return tx;
+  for (const cmd of commands) {
+    if (
+      cmd !== null &&
+      typeof cmd === "object" &&
+      "MoveCall" in cmd
+    ) {
+      const mc = (cmd as { MoveCall: { typeArguments?: string[] } }).MoveCall;
+      if (Array.isArray(mc.typeArguments)) {
+        // Append M as the second type arg if not already there.
+        if (mc.typeArguments.length === 1) {
+          mc.typeArguments.push(m);
+        }
+      }
+    }
+  }
+  return tx;
+}
+
+/**
+ * Convert a 32-byte hex `0x…` Sui object id to the
+ * `address` Move type string. Sui addresses in Move type names
+ * are written without the `0x` prefix and lowercased. Matches
+ * `object::id_address` in Move.
+ */
+export function addressOf(marketId: string): string {
+  return marketId.startsWith("0x") ? marketId.slice(2).toLowerCase() : marketId.toLowerCase();
+}
+
+/**
+ * R-WC-2: per-market phantom `M: address` is appended to
+ * the YES/NO/PredictionMarket type so each market's
+ * `Currency<YES<Q, M>>` registration is unique per
+ * `Sui CoinRegistry`. The M is the market's own object id cast
+ * to address. Pass the market object id to get the
+ * `YES<DUSDC, 0xM>` type string; omit marketId to get the
+ * legacy `<YES<DUSDC>>` shape (callers like
+ * `findExistingYesPool` prefix-match on the YES< prefix,
+ * which is unaffected by M).
+ *
+ * YES<Q, M> = <package>::prediction_market::YES<DUSDC, 0xM>
  */
 export function yesCoinType(
   packageId: string = PKG(),
+  marketId?: string,
 ): string {
-  return `${packageId}::prediction_market::YES<${DUSDC_TYPE}>`;
+  const m = marketId ? `, ${addressOf(marketId)}` : "";
+  return `${packageId}::prediction_market::YES<${DUSDC_TYPE}${m}>`;
 }
 
 export function noCoinType(
   packageId: string = PKG(),
+  marketId?: string,
 ): string {
-  return `${packageId}::prediction_market::NO<${DUSDC_TYPE}>`;
+  const m = marketId ? `, ${addressOf(marketId)}` : "";
+  return `${packageId}::prediction_market::NO<${DUSDC_TYPE}${m}>`;
 }
 
 /**
