@@ -6,6 +6,8 @@ import {
   DUSDC_TYPE,
   extractCreatedObjectId,
   listAllCoins,
+  marketTypeSeed,
+  withMarketType,
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
@@ -279,6 +281,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     }
 
     // Step 2: create the market
+    const typeM = marketTypeSeed(spec.title);
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -289,6 +292,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       deepCoinId: feeCoinId!,
       category: categoryToCode(spec.category),
     });
+    withMarketType(createTx, typeM);
 
     const createResult = await executeTransaction(client, createTx, ctx.signer);
     const marketId = await extractCreatedObjectId(client, createResult.digest, "PredictionMarket");
@@ -349,6 +353,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         created_at_ms: Date.now(),
       });
       const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
+      withMarketType(referralTx, typeM);
       const referralResult = await executeTransaction(client, referralTx, ctx.signer);
       // `extractCreatedObjectId` returns null if the struct name
       // doesn't match the suffix used by gRPC's `objectTypes[objectId]`
@@ -438,6 +443,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               dusdcCoin.objectId,
               initialMintAtoms,
             );
+            withMarketType(mintTx, typeM);
             const mintResult = await executeTransaction(client, mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;
           }

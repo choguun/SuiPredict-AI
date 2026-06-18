@@ -2,6 +2,7 @@ import {
   executeTransaction,
   DUSDC_TYPE,
   DUSDC_TREASURY_CAP_ID,
+  marketTypeSeed,
   yesCoinType,
   resolveDeepbookPackageId,
   listAllCoins,
@@ -248,7 +249,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
     return recordResult("MarketMaker", { action: "quote_demo", reasoning: `Demo quotes ${bidBps / 100}¢ / ${askBps / 100}¢ on ${target.title.slice(0, 36)}...`, confidence: 80 });
   }
 
-  const baseType = yesCoinType();
+  const baseType = yesCoinType(undefined, marketTypeSeed(target.id));
   const quoteType = DUSDC_TYPE;
   const TICK = 1_000_000n; // pool tick_size
 

@@ -3,6 +3,8 @@ import {
   executeTransaction,
   getSpotPrice,
   findNearestActiveOracle,
+  marketTypeSeed,
+  withMarketType,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, getSharedClient, recordResult, safeFloat } from "../lib.js";
@@ -158,6 +160,7 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
     // missed this worker.
     const client = getSharedClient();
     const tx = buildResolveMarketTx(market.id, outcome);
+    withMarketType(tx, marketTypeSeed(market.id));
     const result = await executeTransaction(client, tx, ctx.signer);
     upsertMarket({
       ...market,
