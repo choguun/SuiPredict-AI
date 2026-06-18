@@ -31,6 +31,7 @@ import {
   DEEP_TYPE,
   POOL_CREATION_FEE_DEEP,
   listAllCoins,
+  marketTypeSeed,
 } from "@suipredict/sdk";
 import { getSharedClient, recordResult } from "../lib.js";
 import type { AgentContext, AgentResult } from "../lib.js";
@@ -193,6 +194,7 @@ export async function runPoolProvisioner(
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
+        m: marketTypeSeed(m.id),
       });
       const marketId = result.marketId;
       const poolId = result.poolId;

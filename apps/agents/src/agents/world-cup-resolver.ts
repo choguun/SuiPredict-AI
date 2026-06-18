@@ -37,6 +37,8 @@
 import {
   buildResolveMarketTx,
   executeTransaction,
+  marketTypeSeed,
+  withMarketType,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
@@ -471,6 +473,7 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       // `!market.pool_id` branch).
       const onchainId = market.onchain_market_id ?? market.id;
       const tx = buildResolveMarketTx(onchainId, outcome);
+      withMarketType(tx, marketTypeSeed(market.id));
       const result2 = await executeTransaction(client, tx, ctx.signer);
       upsertMarket({
         ...market,
@@ -574,6 +577,7 @@ async function commitResolution(
       market.onchain_market_id ?? market.id,
       outcome,
     );
+    withMarketType(tx, marketTypeSeed(market.id));
     const onChainResult = await executeTransaction(client, tx, ctx.signer);
     upsertMarket({
       ...market,

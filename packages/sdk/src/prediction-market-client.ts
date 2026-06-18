@@ -1023,43 +1023,89 @@ export async function getMarketMidPrice(
 // ─── Coin type helpers ───────────────────────────────────────────────────────
 
 /**
+ * R-WC-2: Derive a deterministic 32-byte Sui address from any
+ * string seed. Used as the per-market phantom `M: address` type
+ * argument so each market's `Currency<YES<Q, M>>` registration
+ * is unique in the Sui CoinRegistry (without this, the second
+ * market on the same package aborts with `ECurrencyAlreadyExists`).
+ *
+ * The seed can be anything unique-per-market: a WC match id
+ * ("wc26-A1v3"), a market title, or an on-chain object id.
+ * The derivation is a simple FNV-1a + xorshift spread — NOT
+ * cryptographically secure, but collision-resistant enough for
+ * generating unique type tags across hundreds of markets.
+ *
+ * This is dependency-free (no @noble/hashes needed) and works
+ * in both Node and browser environments (TextEncoder is global).
+ */
+export function marketTypeSeed(seed: string): string {
+  const bytes = new TextEncoder().encode(seed);
+  // FNV-1a 32-bit hashes as PRNG seeds
+  let h1 = 0x811c9dc5 >>> 0;
+  let h2 = 0x01000193 >>> 0;
+  for (let i = 0; i < bytes.length; i++) {
+    h1 = Math.imul(h1 ^ bytes[i]!, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (bytes[i]! ^ (i & 0xff)), 0x85ebca77) >>> 0;
+  }
+  // Spread the two 32-bit seeds across 32 bytes via xorshift
+  const out = new Uint8Array(32);
+  let s1 = h1;
+  let s2 = h2;
+  for (let i = 0; i < 32; i++) {
+    s1 ^= s1 << 13; s1 >>>= 0;
+    s1 ^= s1 >>> 17;
+    s1 ^= s1 << 5; s1 >>>= 0;
+    s2 ^= s2 << 13; s2 >>>= 0;
+    s2 ^= s2 >>> 17;
+    s2 ^= s2 << 5; s2 >>>= 0;
+    out[i] = (s1 ^ s2 ^ (i * 0x9e3779b9)) & 0xff;
+  }
+  let hex = "0x";
+  for (const b of out) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
+
+/**
+ * Normalize a Sui object id or address to the lowercase
+ * `0x`-prefixed form that Sui expects in type argument strings.
+ * Unlike the old version (which stripped `0x`), this KEEPS the
+ * prefix — Sui's BCS type-argument serializer requires the full
+ * `0x…` address when an `address` is used as a phantom type
+ * parameter.
+ */
+export function addressOf(id: string): string {
+  const lower = id.toLowerCase();
+  return lower.startsWith("0x") ? lower : `0x${lower}`;
+}
+
+/**
  * R-WC-2: append the per-market phantom `M: address` as the
  * second type argument to a Move call built by the SDK's
  * `buildXxxTx` builders. The builders hardcode
  * `typeArguments: [DUSDC_TYPE]`; this post-processor walks the
- * PTB's commands and rewrites the type arg array to
- * `[DUSDC_TYPE, addressOf(marketId)]` on the first command
- * (the buildXxxTx builders always emit a single MoveCall per
- * tx).
+ * PTB's commands and appends `m` (a 0x-prefixed address) to the
+ * first MoveCall's typeArguments, producing the
+ * `YES<Q, M>` / `PredictionMarket<Q, M>` Move call signature.
  *
  * Why post-process: keeps the 22 builder signatures stable
- * (no breaking change to the public SDK API), while still
- * producing PTBs whose Move call targets the per-market
- * `YES<Q, M>` type. The caller (agent service) supplies
- * `marketId` from `extractCreatedObjectId` after the create
- * tx completes.
+ * (no breaking change to the public SDK API). The caller pipes
+ * `buildXxxTx(...)` through `withMarketType(tx, m)` before
+ * `executeTransaction`. The `m` value can be either an on-chain
+ * object id or a `marketTypeSeed(seed)`-derived address.
  */
-export function withMarketType(tx: Transaction, marketId: string): Transaction {
-  const m = addressOf(marketId);
-  // Sui's TransactionBlock API exposes the underlying BCS-encoded
-  // commands via `tx.getData()`. Each command's `typeArguments`
-  // array lives at `MoveCall.typeArguments`. We mutate in place
-  // because the SDK builders don't expose a clean setter.
+export function withMarketType(tx: Transaction, m: string): Transaction {
+  const addr = addressOf(m);
   const data = (tx as unknown as { getData: () => unknown }).getData();
   if (!data || typeof data !== "object") return tx;
   const commands = (data as { commands?: unknown[] }).commands;
   if (!Array.isArray(commands)) return tx;
   for (const cmd of commands) {
-    if (
-      cmd !== null &&
-      typeof cmd === "object" &&
-      "MoveCall" in cmd
-    ) {
+    if (cmd !== null && typeof cmd === "object" && "MoveCall" in cmd) {
       const mc = (cmd as { MoveCall: { typeArguments?: string[] } }).MoveCall;
       if (Array.isArray(mc.typeArguments)) {
         // Append M as the second type arg if not already there.
         if (mc.typeArguments.length === 1) {
-          mc.typeArguments.push(m);
+          mc.typeArguments.push(addr);
         }
       }
     }
@@ -1068,42 +1114,28 @@ export function withMarketType(tx: Transaction, marketId: string): Transaction {
 }
 
 /**
- * Convert a 32-byte hex `0x…` Sui object id to the
- * `address` Move type string. Sui addresses in Move type names
- * are written without the `0x` prefix and lowercased. Matches
- * `object::id_address` in Move.
- */
-export function addressOf(marketId: string): string {
-  return marketId.startsWith("0x") ? marketId.slice(2).toLowerCase() : marketId.toLowerCase();
-}
-
-/**
- * R-WC-2: per-market phantom `M: address` is appended to
- * the YES/NO/PredictionMarket type so each market's
- * `Currency<YES<Q, M>>` registration is unique per
- * `Sui CoinRegistry`. The M is the market's own object id cast
- * to address. Pass the market object id to get the
- * `YES<DUSDC, 0xM>` type string; omit marketId to get the
- * legacy `<YES<DUSDC>>` shape (callers like
- * `findExistingYesPool` prefix-match on the YES< prefix,
- * which is unaffected by M).
- *
- * YES<Q, M> = <package>::prediction_market::YES<DUSDC, 0xM>
+ * R-WC-2: per-market phantom `M: address` appended to the
+ * YES/NO/PredictionMarket type so each market's
+ * `Currency<YES<Q, M>>` registration is unique per Sui CoinRegistry.
+ * Pass the `m` address (a `marketTypeSeed` output or object id) to
+ * get `YES<DUSDC, 0xM>`; omit it to get the legacy `<YES<DUSDC>>`
+ * shape (callers like `findExistingYesPool` prefix-match on the
+ * `YES<` portion, which is unaffected by M).
  */
 export function yesCoinType(
   packageId: string = PKG(),
-  marketId?: string,
+  m?: string,
 ): string {
-  const m = marketId ? `, ${addressOf(marketId)}` : "";
-  return `${packageId}::prediction_market::YES<${DUSDC_TYPE}${m}>`;
+  const suffix = m ? `, ${addressOf(m)}` : "";
+  return `${packageId}::prediction_market::YES<${DUSDC_TYPE}${suffix}>`;
 }
 
 export function noCoinType(
   packageId: string = PKG(),
-  marketId?: string,
+  m?: string,
 ): string {
-  const m = marketId ? `, ${addressOf(marketId)}` : "";
-  return `${packageId}::prediction_market::NO<${DUSDC_TYPE}${m}>`;
+  const suffix = m ? `, ${addressOf(m)}` : "";
+  return `${packageId}::prediction_market::NO<${DUSDC_TYPE}${suffix}>`;
 }
 
 /**
@@ -2314,6 +2346,13 @@ export async function ensureMarketCreated(
     tickSize?: bigint;
     lotSize?: bigint;
     minSize?: bigint;
+    /**
+     * R-WC-2: per-market phantom type `M` (a 32-byte address from
+     * `marketTypeSeed`). Threaded via `withMarketType` so the PTB's
+     * MoveCall targets `create_market<Q, M>` / `create_market_with_pool<Q, M>`.
+     * Omit for legacy single-phantom calls (the CoinRegistry limit applies).
+     */
+    m?: string;
   },
 ): Promise<CreatedMarket> {
   // R-WC-1 fix: route both paths through the SDK's
@@ -2354,6 +2393,7 @@ export async function ensureMarketCreated(
         deepCoinId: params.deepCoinId,
         category: params.category ?? 0,
       });
+      if (params.m) withMarketType(tx, params.m);
       const result = await executeTransaction(client, tx, signer);
       const marketId = await extractCreatedObjectId(
         client,
@@ -2473,6 +2513,7 @@ export async function ensureMarketCreated(
     poolId: existingPoolId,
     category: params.category ?? 0,
   });
+  if (params.m) withMarketType(tx, params.m);
   const result = await executeTransaction(client, tx, signer);
   // `create_market_with_pool` returns the same object shape
   // as `create_market` minus the `Pool` (it reuses the

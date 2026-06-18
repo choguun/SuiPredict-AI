@@ -66,6 +66,8 @@ import {
   extractCreatedObjectId,
   findExistingYesPool,
   listAllCoins,
+  marketTypeSeed,
+  withMarketType,
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
@@ -470,6 +472,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // Every WC match now gets a real on-chain
       // `PredictionMarket` object — no more SQLite-only
       // demo rows.
+      const typeM = marketTypeSeed(dedupeKey(m.id));
       const createdMarket = await ensureMarketCreated(client, ctx.signer, deepbookRegistryId || null, {
         title: matchWinnerTitle(m),
         resolutionSource: matchWinnerResolutionSource(m),
@@ -479,6 +482,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
+        m: typeM,
       });
       const marketId = createdMarket.marketId;
       const poolId = createdMarket.poolId;
@@ -544,6 +548,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             created_at_ms: Date.now(),
           });
           const refTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
+          withMarketType(refTx, typeM);
           const refResult = await executeTransaction(client, refTx, ctx.signer);
           const refId = await extractCreatedObjectId(client, refResult.digest, "DeepBookPoolReferral");
           if (refId) patchMarketReferralId(dedupeKey(m.id), refId);
@@ -582,6 +587,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
               dusdcCoin.objectId,
               BigInt(initialMintAtoms),
             );
+            withMarketType(mintTx, typeM);
             await executeTransaction(client, mintTx, ctx.signer);
           }
         } catch (mintErr) {

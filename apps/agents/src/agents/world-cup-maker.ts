@@ -33,8 +33,10 @@ import {
   DUSDC_TYPE,
   executeTransaction,
   listAllCoins,
+  marketTypeSeed,
   noCoinType,
   resolveDeepbookPackageId,
+  withMarketType,
   yesCoinType,
 } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
@@ -395,6 +397,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         isBid: true,
         clientOrderId: BigInt(Date.now() % 1_000_000),
       });
+      withMarketType(placeTx, marketTypeSeed(`wc26-${match.id}`));
       await executeTransaction(client, placeTx, ctx.signer);
       // Mirror into SQLite so the agent feed shows the quote.
       // R60 audit fix: same bid/ask bps fix as the
