@@ -102,7 +102,21 @@ export async function executeTransaction(client, tx, signer, options) {
         catch (e) {
             lastError = e;
             const msg = e instanceof Error ? e.message : String(e);
-            const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg);
+            const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg) ||
+                // R-WC-3.3 fix: the gRPC client's
+                // `signAndExecuteTransaction` raises
+                // "Transaction needs to be rebuilt because object
+                // 0x… is unavailable for consumption, current version: 0x…"
+                // when an input object's version moved between PTB
+                // build and signing. This is a transient race
+                // (typically caused by a sibling tx consuming the
+                // SUI gas coin or a shared object) — the SDK should
+                // rebuild the PTB and retry. Pre-fix, the wc-creator
+                // surfaced the version race as a fatal error and
+                // skipped the market, even though the next tick
+                // would have succeeded.
+                /Transaction needs to be rebuilt/i.test(msg) ||
+                /is unavailable for consumption/i.test(msg);
             if (isTransient && attempt < MAX_RETRY) {
                 const delay = 1000 * 2 ** attempt;
                 console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
