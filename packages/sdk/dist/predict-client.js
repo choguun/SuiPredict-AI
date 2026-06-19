@@ -162,6 +162,34 @@ export async function executeTransaction(client, tx, signer, options) {
                 const delay = isVersionRace
                     ? 4000 * 2 ** attempt
                     : 1000 * 2 ** attempt;
+                // R-WC-3.3: the Sui SDK's `coreClientResolveTransactionPlugin`
+                // skips gas re-selection when `gasData.payment` is
+                // already set (see
+                // `@mysten/sui/src/client/core-resolver.ts:59`,
+                // `const needsPayment = !gasData.payment`). The first
+                // build populates `gasData.payment` with the gas-coin
+                // ref fetched at that moment; on the next retry the
+                // same `tx` is rebuilt, but the resolve plugin sees
+                // `gasData.payment` already truthy and skips the
+                // re-fetch — so the retry re-uses the same stale
+                // version, and the same version-race error fires
+                // again. The diagnostic log shows this directly:
+                // every retry reports the same `version 0x3623fd50`
+                // even though 4-16s have passed. Clearing
+                // `gasData.payment` on each retry forces the resolve
+                // plugin to re-run gas selection and pick up the
+                // latest version. The Sui SDK exposes
+                // `tx.setGasPayment([])` for this.
+                if (isVersionRace) {
+                    try {
+                        tx.setGasPayment([]);
+                    }
+                    catch {
+                        // The Transaction class always accepts an empty
+                        // payment array; the catch is a defensive no-op
+                        // for SDK version drift.
+                    }
+                }
                 console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
                 await new Promise((r) => setTimeout(r, delay));
                 continue;
