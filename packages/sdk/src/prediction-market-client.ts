@@ -2457,6 +2457,12 @@ export async function findExistingYesPool(
   // table becomes redundant.
   const knownRegistryPools = KNOWN_V3_POOLS[deepbookRegistryId];
   const knownPoolId = knownRegistryPools?.[marketPackageId];
+  console.warn(
+    `[findExistingYesPool] v3-table probe: deepbookRegistryId=${deepbookRegistryId} ` +
+      `marketPackageId=${marketPackageId} ` +
+      `hasRegistryEntry=${!!knownRegistryPools} ` +
+      `hasPoolEntry=${!!knownPoolId}`,
+  );
   if (knownPoolId) {
     console.warn(
       `[findExistingYesPool] no YES<Q> dynamic field found in registry ` +
