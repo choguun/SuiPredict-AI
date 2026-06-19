@@ -208,7 +208,22 @@ export async function executeTransaction(client, txOrFactory, signer, options) {
                 // skipped the market, even though the next tick
                 // would have succeeded.
                 /Transaction\s+needs\s+to\s+be\s+rebuilt/i.test(msg) ||
-                /is\s+unavailable\s+for\s+consumption/i.test(msg);
+                /is\s+unavailable\s+for\s+consumption/i.test(msg) ||
+                // R-WC-3.3 fix: the Sui validator's coin-accumulator
+                // lags by ~1-3s when sibling txs claim the same gas
+                // coin. The validator returns "Invalid withdraw
+                // reservation: Available amount in account for
+                // object id 0x<reservation-id> is less than
+                // requested: 0 < 500000000" — the reservation was
+                // built with the post-prior-tx balance but the
+                // validator still sees the pre-tx balance of 0. This
+                // is a transient race against the validator's view
+                // finality, not a real balance problem. Retrying
+                // with a freshly-pinned coin ref (see
+                // `pinFreshGasCoin`) and a longer backoff lets the
+                // validator catch up.
+                /Invalid\s+withdraw\s+reservation/i.test(msg) ||
+                /is\s+less\s+than\s+requested/i.test(msg);
             // R-WC-3.3 diag: log every caught error so the operator
             // can see whether the version-race retry is firing.
             // Pre-fix the wc-creator's `B3v4 failed: Error checking
