@@ -94,7 +94,57 @@ export async function executeTransaction(client, txOrFactory, signer, options) {
     // preserved for callers that don't need rebuild-on-retry
     // (and re-using a `tx` keeps their existing signature).
     const factory = typeof txOrFactory === "function" ? txOrFactory : () => txOrFactory;
-    let tx = await factory();
+    // R-WC-3.3 fix: explicitly pin a fresh SUI gas coin on every
+    // attempt to bypass the resolve plugin's address-level
+    // reservation system. The plugin's `setGasPayment` (see
+    // `@mysten/sui/src/client/core-resolver.mjs:99-121`) calls
+    // `createCoinReservationRef(reservedBalance, owner, ...)` to
+    // mint a virtual reservation that the validator honors
+    // address-wide. The reservation's `reservedBalance` is the
+    // agent's *full* SUI balance (12.14 SUI on this wallet)
+    // minus any `FundsWithdrawal` reservations already on the
+    // tx. When sibling agents (wc-creator, wc-maker,
+    // referral-keeper, parlay-worker, market-maker, etc.) all
+    // build txs within the same ~1-3s window, every tx
+    // claims the full 12.14 SUI as a reservation. The
+    // validator's coin-accumulator state lags by ~1-3s, so
+    // the second-and-later txs see "Available amount in
+    // account for object id 0x3a0cc764… is less than requested:
+    // 0 < 500000000" — the validator thinks the address has 0
+    // SUI because it hasn't synced the prior tx's balance
+    // change. Pinning a specific gas coin (not an
+    // address-level reservation) sidesteps this: the validator
+    // checks the coin's *own* balance, not the address
+    // accumulator, and the coin balance is updated atomically
+    // on the previous tx. A pre-fetch on every attempt also
+    // gives us the coin's *current* version (and digest),
+    // which the version-race retry needs.
+    const pinFreshGasCoin = async (tx) => {
+        const owner = signer.getPublicKey().toSuiAddress();
+        const coins = await listAllCoins(client, owner, "0x2::sui::SUI", {
+            pageSize: 5,
+            maxPages: 1,
+        });
+        if (coins.length === 0) {
+            throw new Error(`executeTransaction: agent ${owner} has no SUI gas coins; ` +
+                "fund the wallet or set AGENT_PRIVATE_KEY to one that has SUI");
+        }
+        // Pick the largest coin — the version race always targets
+        // the only gas coin in the wallet, and using a fresh
+        // sorted-largest avoids piggy-backing on a coin that a
+        // sibling tx just consumed.
+        const sorted = [...coins].sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1));
+        const fresh = sorted[0];
+        tx.setGasPayment([
+            {
+                objectId: fresh.objectId,
+                version: fresh.version,
+                digest: fresh.digest,
+            },
+        ]);
+        return tx;
+    };
+    let tx = await pinFreshGasCoin(await factory());
     for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
         try {
             tx.setSender(signer.getPublicKey().toSuiAddress());
@@ -205,7 +255,28 @@ export async function executeTransaction(client, txOrFactory, signer, options) {
                 // minutes, often against the same gas coin).
                 if (isVersionRace) {
                     try {
-                        tx = await factory();
+                        // R-WC-3.3 fix: rebuild the `Transaction` from
+                        // scratch on each version-race retry, AND
+                        // re-pin a fresh gas coin. The new `tx` has
+                        // `gasData.payment = undefined` (the factory
+                        // built a fresh `new Transaction()`), so the
+                        // resolve plugin would otherwise fall back to
+                        // the address-level reservation that triggered
+                        // the "Invalid withdraw reservation" error
+                        // before this fix. Re-pin with the *latest*
+                        // gas-coin version — sibling txs settle within
+                        // the 4s/8s backoff above, so a fresh
+                        // `listAllCoins` reads the post-sibling
+                        // version, and the validator accepts the
+                        // pin-the-coin shape.
+                        const fresh = await factory();
+                        try {
+                            tx = await pinFreshGasCoin(fresh);
+                        }
+                        catch (pinErr) {
+                            console.warn(`[executeTransaction] re-pin gas coin failed: ${pinErr.message?.slice(0, 120)}`);
+                            tx = fresh;
+                        }
                     }
                     catch (factoryErr) {
                         console.warn(`[executeTransaction] rebuild tx failed: ${factoryErr.message?.slice(0, 120)}`);
