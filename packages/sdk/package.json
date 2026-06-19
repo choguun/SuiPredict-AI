@@ -21,7 +21,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepare": "tsc"
   },
   "dependencies": {
     "@mysten/deepbook-v3": "^1.4.1",
