@@ -323,7 +323,7 @@ export async function executeTransaction(
         // version race is a hot path (the wc-creator
         // calls `create_market_with_pool` every 15
         // minutes, often against the same gas coin).
-        if (isVersionRace) {
+        if (isVersionRace || /Invalid\s+withdraw\s+reservation|is\s+less\s+than\s+requested/i.test(msg)) {
           try {
             // R-WC-3.3 fix: rebuild the `Transaction` from
             // scratch on each version-race retry, AND
