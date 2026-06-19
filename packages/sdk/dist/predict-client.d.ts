@@ -23,7 +23,7 @@ export declare function resetSharedClient(): void;
  */
 export declare function closeClient(c: SuiClient): Promise<void>;
 export declare function keypairFromPrivateKey(privateKey: string): Ed25519Keypair;
-export declare function executeTransaction(client: SuiClient, tx: Transaction, signer: Ed25519Keypair, options?: {
+export declare function executeTransaction(client: SuiClient, txOrFactory: Transaction | (() => Transaction | Promise<Transaction>), signer: Ed25519Keypair, options?: {
     maxRetry?: number;
 }): Promise<TxResult>;
 export declare function buildCreateManagerTx(): Transaction;

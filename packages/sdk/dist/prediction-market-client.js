@@ -2087,39 +2087,52 @@ export async function ensureMarketCreated(client, signer, deepbookRegistry, para
     const minSize = params.minSize ?? 1000000n;
     if (deepbookRegistry) {
         try {
-            const tx = buildCreateMarketTx({
-                title: params.title,
-                resolutionSource: params.resolutionSource,
-                expiryMs: params.expiryMs,
-                tickSize,
-                lotSize,
-                minSize,
-                deepCoinId: params.deepCoinId,
-                category: params.category ?? 0,
-                m: params.m,
-            });
-            // R-WC-3.3 fix: pin a manual gas budget so the SDK's
-            // `setGasBudget` resolve plugin returns early
-            // (`@mysten/sui/dist/client/core-resolver.mjs:79`).
-            // Without this, the gRPC client's resolve plugin
-            // (`@mysten/sui/src/grpc/core.ts:737-799`) runs an
-            // unconditional `simulateTransaction` dry-run that
-            // mis-resolves the `deepbook_registry: &mut Registry`
-            // argument at index 1 and aborts with
-            // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`
-            // — even though the actual on-chain call works fine
-            // (verified via `sui client call` — produces the expected
-            // `MoveAbort ... register_pool` abort code 1). The gRPC
-            // resolve plugin checks for `gasData.budget` being set
-            // via `doGasSelection: false` on the simulate call,
-            // but it still throws on any non-success effects; pinning
-            // a budget short-circuits the budget-resolution branch
-            // AND the resulting dry-run is a no-op because all
-            // gas fields are populated. 1 SUI is a conservative
-            // upper bound — `create_market` typically burns ~0.3 SUI
-            // on testnet (pool creation + BalanceManager + share_object).
-            tx.setGasBudget(1000000000n);
-            const result = await executeTransaction(client, tx, signer);
+            // R-WC-3.3 fix: pass a *factory* to `executeTransaction`
+            // so a version-race retry rebuilds the `Transaction` from
+            // scratch. The legacy shape (`executeTransaction(client,
+            // tx, signer)`) is kept for callers that don't need
+            // rebuild-on-retry; `create_market_with_pool` is the hot
+            // version-race path (sibling wc-creator / wc-maker txs
+            // burn the gas coin in <1s), so the factory shape is
+            // required here. See the matching comment in
+            // `predict-client.ts:executeTransaction` for the full
+            // rationale.
+            const buildTx = () => {
+                const tx = buildCreateMarketTx({
+                    title: params.title,
+                    resolutionSource: params.resolutionSource,
+                    expiryMs: params.expiryMs,
+                    tickSize,
+                    lotSize,
+                    minSize,
+                    deepCoinId: params.deepCoinId,
+                    category: params.category ?? 0,
+                    m: params.m,
+                });
+                // R-WC-3.3 fix: pin a manual gas budget so the SDK's
+                // `setGasBudget` resolve plugin returns early
+                // (`@mysten/sui/dist/client/core-resolver.mjs:79`).
+                // Without this, the gRPC client's resolve plugin
+                // (`@mysten/sui/src/grpc/core.ts:737-799`) runs an
+                // unconditional `simulateTransaction` dry-run that
+                // mis-resolves the `deepbook_registry: &mut Registry`
+                // argument at index 1 and aborts with
+                // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`
+                // — even though the actual on-chain call works fine
+                // (verified via `sui client call` — produces the expected
+                // `MoveAbort ... register_pool` abort code 1). The gRPC
+                // resolve plugin checks for `gasData.budget` being set
+                // via `doGasSelection: false` on the simulate call,
+                // but it still throws on any non-success effects; pinning
+                // a budget short-circuits the budget-resolution branch
+                // AND the resulting dry-run is a no-op because all
+                // gas fields are populated. 1 SUI is a conservative
+                // upper bound — `create_market` typically burns ~0.3 SUI
+                // on testnet (pool creation + BalanceManager + share_object).
+                tx.setGasBudget(1000000000n);
+                return tx;
+            };
+            const result = await executeTransaction(client, buildTx, signer);
             const marketId = await extractCreatedObjectId(client, result.digest, "PredictionMarket");
             if (marketId) {
                 // Also extract the pool id and balance manager id
@@ -2209,26 +2222,37 @@ export async function ensureMarketCreated(client, signer, deepbookRegistry, para
             `contain a YES<DUSDC> pool. Inspect the registry's dynamic fields manually, ` +
             `or set WC_FALLBACK_POOL_ID to a known pool id.`);
     }
-    const tx = buildCreateMarketWithPoolTx({
-        title: params.title,
-        resolutionSource: params.resolutionSource,
-        expiryMs: params.expiryMs,
-        poolId: existingPoolId,
-        category: params.category ?? 0,
-        m: params.m,
-    });
-    // R-WC-3.3 fix: pin a manual gas budget so the SDK's
-    // resolve plugin short-circuits its pre-flight
-    // `simulateTransaction` dry-run. See the matching comment
-    // in the `create_market` branch above for the full
-    // rationale (the gRPC client mis-resolves the Pool object
-    // input in the dry-run, aborting with
-    // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`).
-    // 0.5 SUI is sufficient — `create_market_with_pool` reuses
-    // an existing pool (no 500 DEEP fee, no pool creation cost),
-    // so the on-chain cost is lower than `create_market`.
-    tx.setGasBudget(500000000n);
-    const result = await executeTransaction(client, tx, signer);
+    // R-WC-3.3 fix: pass a *factory* to `executeTransaction` so
+    // a version-race retry rebuilds the `Transaction` from
+    // scratch. See the matching comment in
+    // `predict-client.ts:executeTransaction` for the full
+    // rationale. The factory re-fetches the gas coin's latest
+    // version on every retry, which is what the wc-creator
+    // needs: sibling wc-maker / MarketMaker txs burn the
+    // gas coin in <1s.
+    const buildTx = () => {
+        const tx = buildCreateMarketWithPoolTx({
+            title: params.title,
+            resolutionSource: params.resolutionSource,
+            expiryMs: params.expiryMs,
+            poolId: existingPoolId,
+            category: params.category ?? 0,
+            m: params.m,
+        });
+        // R-WC-3.3 fix: pin a manual gas budget so the SDK's
+        // resolve plugin short-circuits its pre-flight
+        // `simulateTransaction` dry-run. See the matching comment
+        // in the `create_market` branch above for the full
+        // rationale (the gRPC client mis-resolves the Pool object
+        // input in the dry-run, aborting with
+        // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`).
+        // 0.5 SUI is sufficient — `create_market_with_pool` reuses
+        // an existing pool (no 500 DEEP fee, no pool creation cost),
+        // so the on-chain cost is lower than `create_market`.
+        tx.setGasBudget(500000000n);
+        return tx;
+    };
+    const result = await executeTransaction(client, buildTx, signer);
     // R-WC-3.3 diagnostic: log the tx digest so we can cross-ref
     // on-chain. Helps verify the v3 `create_market_with_pool`
     // actually created the expected PredictionMarket.

@@ -68,9 +68,33 @@ export function keypairFromPrivateKey(privateKey) {
     const hex = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
     return Ed25519Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
 }
-export async function executeTransaction(client, tx, signer, options) {
+export async function executeTransaction(client, txOrFactory, signer, options) {
     const MAX_RETRY = options?.maxRetry ?? 2;
     let lastError;
+    // R-WC-3.3 fix: support a factory callback so a version-race
+    // retry can rebuild the `Transaction` from scratch. The Sui
+    // SDK's `coreClientResolveTransactionPlugin` (see
+    // `@mysten/sui/src/client/core-resolver.ts:59`,
+    // `const needsPayment = !gasData.payment`) skips gas
+    // re-selection when `gasData.payment` is already set. The
+    // first build populates `gasData.payment` with the gas-coin
+    // ref fetched at that moment; if the same `tx` is re-submitted
+    // after a version-race, the resolve plugin sees the
+    // truthy `gasData.payment` and skips the re-fetch — so the
+    // retry re-uses the same stale version, and the same
+    // version-race error fires again. The earlier attempt to
+    // work around this with `tx.setGasPayment([])` failed
+    // because `[]` is truthy in JS, so the resolve plugin still
+    // skipped the re-fetch, and the empty `[]` reservation
+    // caused an "Invalid withdraw reservation" error. The
+    // correct fix is to construct a fresh `Transaction` on
+    // each retry; the factory callback lets callers like the
+    // wc-creator rebuild the PTB with all input refs
+    // re-fetched, while the legacy `Transaction` shape is
+    // preserved for callers that don't need rebuild-on-retry
+    // (and re-using a `tx` keeps their existing signature).
+    const factory = typeof txOrFactory === "function" ? txOrFactory : () => txOrFactory;
+    let tx = await factory();
     for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
         try {
             tx.setSender(signer.getPublicKey().toSuiAddress());
@@ -162,36 +186,32 @@ export async function executeTransaction(client, tx, signer, options) {
                 const delay = isVersionRace
                     ? 4000 * 2 ** attempt
                     : 1000 * 2 ** attempt;
-                // R-WC-3.3: the Sui SDK's `coreClientResolveTransactionPlugin`
-                // skips gas re-selection when `gasData.payment` is
-                // already set (see
-                // `@mysten/sui/src/client/core-resolver.ts:59`,
-                // `const needsPayment = !gasData.payment`). The first
-                // build populates `gasData.payment` with the gas-coin
-                // ref fetched at that moment; on the next retry the
-                // same `tx` is rebuilt, but the resolve plugin sees
-                // `gasData.payment` already truthy and skips the
-                // re-fetch — so the retry re-uses the same stale
-                // version, and the same version-race error fires
-                // again. The diagnostic log shows this directly:
-                // every retry reports the same `version 0x3623fd50`
-                // even though 4-16s have passed. Clearing
-                // `gasData.payment` on each retry forces the resolve
-                // plugin to re-run gas selection and pick up the
-                // latest version. The Sui SDK exposes
-                // `tx.setGasPayment([])` for this.
-                if (isVersionRace) {
-                    try {
-                        tx.setGasPayment([]);
-                    }
-                    catch {
-                        // The Transaction class always accepts an empty
-                        // payment array; the catch is a defensive no-op
-                        // for SDK version drift.
-                    }
-                }
                 console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
                 await new Promise((r) => setTimeout(r, delay));
+                // R-WC-3.3 fix: rebuild the `Transaction` from
+                // scratch on each version-race retry. See the
+                // `factory` declaration above for the rationale.
+                // If the caller passed a bare `Transaction`
+                // (legacy shape) we keep re-using it; that path
+                // is best-effort — the version-race *can* recur
+                // (the gas-coin ref stays stale) but the
+                // exponential backoff gives sibling txs a chance
+                // to settle, and a rare second-attempt failure
+                // is acceptable for the simple-shape callers
+                // (mint, redeem, supply, etc.). The factory path
+                // is used by `ensureMarketCreated` where the
+                // version race is a hot path (the wc-creator
+                // calls `create_market_with_pool` every 15
+                // minutes, often against the same gas coin).
+                if (isVersionRace) {
+                    try {
+                        tx = await factory();
+                    }
+                    catch (factoryErr) {
+                        console.warn(`[executeTransaction] rebuild tx failed: ${factoryErr.message?.slice(0, 120)}`);
+                        throw e;
+                    }
+                }
                 continue;
             }
             throw e;
