@@ -101,7 +101,25 @@ export async function executeTransaction(client, tx, signer, options) {
         }
         catch (e) {
             lastError = e;
-            const msg = e instanceof Error ? e.message : String(e);
+            const rawMsg = e instanceof Error ? e.message : String(e);
+            // R-WC-3.3 fix: the protobuf-ts transport wraps the
+            // Sui validator's "Transaction needs to be rebuilt
+            // because object 0x… is unavailable for consumption,
+            // current version: 0x…" error in
+            // `decodeURIComponent` and then re-encodes the
+            // resulting Error message. The string we get has
+            // `%20` (URL-encoded space) between words. Normalize
+            // both forms via `decodeURIComponent` (a no-op on
+            // the un-encoded form) so a single regex catches
+            // both.
+            const msg = (() => {
+                try {
+                    return decodeURIComponent(rawMsg);
+                }
+                catch {
+                    return rawMsg;
+                }
+            })();
             const isTransient = /(429|TooManyRequests|408|502|503|504|fetch failed|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|Service Unavailable|Bad Gateway|Gateway Timeout|Request timeout|Too Many Requests)/i.test(msg) ||
                 // R-WC-3.3 fix: the gRPC client's
                 // `signAndExecuteTransaction` raises
@@ -115,8 +133,8 @@ export async function executeTransaction(client, tx, signer, options) {
                 // surfaced the version race as a fatal error and
                 // skipped the market, even though the next tick
                 // would have succeeded.
-                /Transaction needs to be rebuilt/i.test(msg) ||
-                /is unavailable for consumption/i.test(msg);
+                /Transaction\s+needs\s+to\s+be\s+rebuilt/i.test(msg) ||
+                /is\s+unavailable\s+for\s+consumption/i.test(msg);
             // R-WC-3.3 diag: log every caught error so the operator
             // can see whether the version-race retry is firing.
             // Pre-fix the wc-creator's `B3v4 failed: Error checking
