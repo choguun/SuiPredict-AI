@@ -160,6 +160,18 @@ export async function executeTransaction(
         // would have succeeded.
         /Transaction needs to be rebuilt/i.test(msg) ||
         /is unavailable for consumption/i.test(msg);
+      // R-WC-3.3 diag: log every caught error so the operator
+      // can see whether the version-race retry is firing.
+      // Pre-fix the wc-creator's `B3v4 failed: Error checking
+      // transaction input objects: Transaction needs to be
+      // rebuilt…` log appeared without any prior
+      // `[executeTransaction] transient error (attempt 1/3)`
+      // log — the only way that can happen is if the catch
+      // block isn't entered, or if `isTransient` is false.
+      // Surface the matching result to disambiguate.
+      console.warn(
+        `[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} msg=${msg.slice(0, 200)}`,
+      );
       if (isTransient && attempt < MAX_RETRY) {
         const delay = 1000 * 2 ** attempt;
         console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
