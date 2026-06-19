@@ -1527,3 +1527,36 @@ public fun mint_no_for_testing<Q>(
     let no_cap = borrow_no_cap_mut(shared_caps);
     coin::mint(no_cap, amount, ctx)
 }
+
+/// R-WC-3 v3 test-only helper: create a `SharedTreasuryHolder<Q>`
+/// with mock TreasuryCaps (bypassing the CoinRegistry — tests
+/// don't need real Currency registration, just a holder with
+/// the right dynamic_field entries). Use this in `setup()` to
+/// produce a shared caps object that mint_shares / redeem /
+/// etc. can borrow from.
+#[test_only]
+public fun new_shared_caps_for_testing<Q>(ctx: &mut TxContext): SharedTreasuryHolder<Q> {
+    let yes_cap = coin::create_treasury_cap_for_testing<YES<Q>>(ctx);
+    let no_cap = coin::create_treasury_cap_for_testing<NO<Q>>(ctx);
+    let mut holder = SharedTreasuryHolder<Q> { id: object::new(ctx) };
+    dynamic_object_field::add(&mut holder.id, b"yes_cap", yes_cap);
+    dynamic_object_field::add(&mut holder.id, b"no_cap", no_cap);
+    holder
+}
+
+/// R-WC-3 v3 test-only helper: destroy a `SharedTreasuryHolder<Q>`
+/// (the holder is a `key` struct without `drop`, so test harnesses
+/// need an explicit destroy). The contained TreasuryCaps are
+/// transferred to the test sender (they have `key + store` so
+/// they can sit in the test scenario's inventory; the next
+/// test transaction will see them as inputs and the test
+/// framework will drop them).
+#[test_only]
+public fun destroy_shared_caps_for_testing<Q>(holder: SharedTreasuryHolder<Q>, ctx: &mut TxContext) {
+    let SharedTreasuryHolder { mut id } = holder;
+    let yes_cap = dynamic_object_field::remove<vector<u8>, TreasuryCap<YES<Q>>>(&mut id, b"yes_cap");
+    let no_cap = dynamic_object_field::remove<vector<u8>, TreasuryCap<NO<Q>>>(&mut id, b"no_cap");
+    object::delete(id);
+    transfer::public_transfer(yes_cap, ctx.sender());
+    transfer::public_transfer(no_cap, ctx.sender());
+}
