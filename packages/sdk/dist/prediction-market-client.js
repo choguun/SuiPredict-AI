@@ -1849,6 +1849,29 @@ export async function findExistingYesPool(client, deepbookRegistryId, marketPack
     // shape is the unified pagination contract (the
     // legacy client uses `nextCursor` instead of
     // `cursor` — both shapes are handled).
+    //
+    // R-WC-3.3 fix: deepbook v3+ wraps the registry's
+    // `pools: Bag` inside a `Versioned` dynamic field
+    // (key `u64` = 8). The legacy SDK walk below
+    // queries dynamic fields on the registry id
+    // directly, which only works for the pre-v3
+    // layout. For the v3 Versioned layout, the dynamic
+    // fields visible at the top level are just the
+    // `u64`-keyed `Versioned` wrapper, not the pools.
+    //
+    // We bridge this gap with a known-pool-id lookup
+    // table keyed by `marketPackageId` → `poolId`.
+    // The table is sourced from the on-chain
+    // `RegistryInner.pools: Bag` (read once via the
+    // gRPC `getDynamicField` API, which understands
+    // BCS-encoded field names). This is the simplest
+    // way to get the right pool id without a full
+    // BCS decoder for the Bag's dynamic-field storage.
+    //
+    // If neither the dynamic-field walk NOR the
+    // known-pool-id table yields a match, fall back
+    // to `fallbackPoolId` (the user-supplied env
+    // override, typically `WC_FALLBACK_POOL_ID`).
     let cursor = null;
     // Hard cap on total pages scanned to prevent a
     // runaway loop on a misbehaving fullnode. 1000
@@ -1925,6 +1948,52 @@ export async function findExistingYesPool(client, deepbookRegistryId, marketPack
     // testnet) for this case — the SDK helper is
     // catching up to the same operational reality.
     //
+    // R-WC-3.3 fix: a known-pool-id table for the v3
+    // DeepBook registry. The self-hosted v3 deepbook
+    // (`0xc93ae840…`) wraps the `pools: Bag` inside a
+    // `Versioned` dynamic field, so the legacy
+    // dynamic-field walk above only sees the
+    // `u64`-keyed `Versioned` wrapper and never
+    // reaches the actual `<PoolKey, ID>` entries.
+    // To bridge the gap, we maintain a small table
+    // mapping `marketPackageId → poolId` for known
+    // deployments. The table is sourced from the
+    // on-chain `RegistryInner.pools: Bag` (verified
+    // via `sui_getObject` on the inner object).
+    // Update this table when re-deploying the
+    // prediction_market package to a new address.
+    const KNOWN_V3_POOLS = {
+        // `0xe14eba90…` = the self-hosted testnet v3
+        // deepbook registry (see `DEEPBOOK_REGISTRY_ID`).
+        "0xe14eba90fc8cc14a2eac1199b207d4e664931f8196f612b5aacf0c4a7f7d7a6f": {
+            // v3 prediction_market package → v3
+            // `Pool<YES<DUSDC>, DUSDC>` id. The pool is
+            // stored inside the registry's
+            // `RegistryInner.pools: Bag` (wrapped in
+            // `Versioned`). The value listed here is the
+            // `Pool` object id, NOT the `Field<PoolKey,
+            // ID>` wrapper id (the latter is what's
+            // returned by `getDynamicFields` on the
+            // `pools: Bag`).
+            "0xe98b0c9c215859ef937803ca9a2f4f94fd649c3a701fcb5b6850c115d9773dac": "0xc566210dda11ab4cd38739d2ec00c0dde54d38176f1340fc4d3d50acb3de07f6",
+        },
+    };
+    // R-WC-3.3: consult the known-pool-id table only
+    // if the legacy walk failed AND the registry
+    // matches a known v3 registry id (we don't want
+    // to return a stale pool id for an unrelated
+    // registry). This is a safety net for the v3
+    // Versioned layout — when the dynamic-field
+    // walk is fixed to traverse the wrapper, this
+    // table becomes redundant.
+    const knownRegistryPools = KNOWN_V3_POOLS[deepbookRegistryId];
+    const knownPoolId = knownRegistryPools?.[marketPackageId];
+    if (knownPoolId) {
+        console.warn(`[findExistingYesPool] no YES<Q> dynamic field found in registry ` +
+            `${deepbookRegistryId} (expected "${expectedPrefix}…${expectedSuffix}"); ` +
+            `using v3-known pool ${knownPoolId} (for marketPackageId=${marketPackageId})`);
+        return knownPoolId;
+    }
     // If neither the dynamic-field query nor the
     // fallback yields a match, return null. The
     // caller (`ensureMarketCreated`) treats null as
@@ -2028,6 +2097,27 @@ export async function ensureMarketCreated(client, signer, deepbookRegistry, para
                 category: params.category ?? 0,
                 m: params.m,
             });
+            // R-WC-3.3 fix: pin a manual gas budget so the SDK's
+            // `setGasBudget` resolve plugin returns early
+            // (`@mysten/sui/dist/client/core-resolver.mjs:79`).
+            // Without this, the gRPC client's resolve plugin
+            // (`@mysten/sui/src/grpc/core.ts:737-799`) runs an
+            // unconditional `simulateTransaction` dry-run that
+            // mis-resolves the `deepbook_registry: &mut Registry`
+            // argument at index 1 and aborts with
+            // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`
+            // — even though the actual on-chain call works fine
+            // (verified via `sui client call` — produces the expected
+            // `MoveAbort ... register_pool` abort code 1). The gRPC
+            // resolve plugin checks for `gasData.budget` being set
+            // via `doGasSelection: false` on the simulate call,
+            // but it still throws on any non-success effects; pinning
+            // a budget short-circuits the budget-resolution branch
+            // AND the resulting dry-run is a no-op because all
+            // gas fields are populated. 1 SUI is a conservative
+            // upper bound — `create_market` typically burns ~0.3 SUI
+            // on testnet (pool creation + BalanceManager + share_object).
+            tx.setGasBudget(1000000000n);
             const result = await executeTransaction(client, tx, signer);
             const marketId = await extractCreatedObjectId(client, result.digest, "PredictionMarket");
             if (marketId) {
@@ -2126,6 +2216,17 @@ export async function ensureMarketCreated(client, signer, deepbookRegistry, para
         category: params.category ?? 0,
         m: params.m,
     });
+    // R-WC-3.3 fix: pin a manual gas budget so the SDK's
+    // resolve plugin short-circuits its pre-flight
+    // `simulateTransaction` dry-run. See the matching comment
+    // in the `create_market` branch above for the full
+    // rationale (the gRPC client mis-resolves the Pool object
+    // input in the dry-run, aborting with
+    // `CommandArgumentError { arg_idx: 1, kind: TypeMismatch }`).
+    // 0.5 SUI is sufficient — `create_market_with_pool` reuses
+    // an existing pool (no 500 DEEP fee, no pool creation cost),
+    // so the on-chain cost is lower than `create_market`.
+    tx.setGasBudget(500000000n);
     const result = await executeTransaction(client, tx, signer);
     // `create_market_with_pool` returns the same object shape
     // as `create_market` minus the `Pool` (it reuses the
