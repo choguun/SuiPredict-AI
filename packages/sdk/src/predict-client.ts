@@ -190,8 +190,26 @@ export async function executeTransaction(
         `[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} msg=${msg.slice(0, 200)}`,
       );
       if (isTransient && attempt < MAX_RETRY) {
-        const delay = 1000 * 2 ** attempt;
-        console.warn(`[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`);
+        // R-WC-3.3: back off longer for version-race errors
+        // than for transient network errors. The version
+        // race is caused by a sibling tx (a sibling
+        // wc-creator, a wc-maker, or a MarketMaker
+        // running in parallel) that consumed the agent's
+        // gas coin. Sibling txs land within ~1-3s, so a
+        // 1s/2s/4s backoff (the default exponential) is
+        // not enough — the gas coin's version keeps
+        // moving on each retry. Use a longer fixed
+        // backoff (4s/8s) for version-race errors to
+        // give the sibling tx time to settle.
+        const isVersionRace =
+          /Transaction\s+needs\s+to\s+be\s+rebuilt/i.test(msg) ||
+          /is\s+unavailable\s+for\s+consumption/i.test(msg);
+        const delay = isVersionRace
+          ? 4000 * 2 ** attempt
+          : 1000 * 2 ** attempt;
+        console.warn(
+          `[executeTransaction] transient error (attempt ${attempt + 1}/${MAX_RETRY + 1}), retrying in ${delay}ms: ${msg.slice(0, 120)}`,
+        );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
