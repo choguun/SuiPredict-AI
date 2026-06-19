@@ -1988,16 +1988,6 @@ export async function findExistingYesPool(client, deepbookRegistryId, marketPack
     // table becomes redundant.
     const knownRegistryPools = KNOWN_V3_POOLS[deepbookRegistryId];
     const knownPoolId = knownRegistryPools?.[marketPackageId];
-    // R-WC-3.3 diagnostic: emit a unique marker
-    // `###V3PROBE###` + `MARKER-A:` `MARKER-B:` pairs
-    // so we can identify the call site even if the
-    // rest of the log line is filtered/truncated by
-    // the Railway log pipeline.
-    process.stdout.write(`###V3PROBE### MARKER-A:${deepbookRegistryId} MARKER-B:${marketPackageId} ` +
-        `MARKER-C:${!!knownRegistryPools} MARKER-D:${!!knownPoolId}\n`);
-    process.stderr.write(`###V3PROBE-STDERR### MARKER-A:${deepbookRegistryId} MARKER-B:${marketPackageId} ` +
-        `MARKER-C:${!!knownRegistryPools} MARKER-D:${!!knownPoolId}\n`);
-    console.error(`###V3PROBE-CERR### MARKER-A:${deepbookRegistryId} MARKER-B:${marketPackageId}`);
     if (knownPoolId) {
         console.warn(`[findExistingYesPool] no YES<Q> dynamic field found in registry ` +
             `${deepbookRegistryId} (expected "${expectedPrefix}…${expectedSuffix}"); ` +
