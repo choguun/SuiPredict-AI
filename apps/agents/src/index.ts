@@ -144,6 +144,7 @@ function validateBootConfig(): void {
     { name: "DUSDC Type",         envVar: "DUSDC_TYPE",                    agent: "ParlayWorker",   required: true },
     { name: "MarketRegistry",     envVar: "MARKET_REGISTRY_ID",            agent: "MarketCreator",  required: true },
     { name: "FeeVault",           envVar: "FEE_VAULT_ID",                  agent: "MarketCreator",  required: true },
+    { name: "SharedTreasuryHolder", envVar: "SHARED_TREASURY_HOLDER_ID",  agent: "MarketCreator",  required: true },
     { name: "AgentPolicy",        envVar: "AGENT_POLICY_ID",               agent: "RiskMonitor",    required: true },
     { name: "AgentManager",       envVar: "AGENT_MANAGER_ID",              agent: "RiskMonitor",    required: false },
     { name: "Vault",              envVar: "VAULT_OBJECT_ID",               agent: "RiskMonitor",    required: false },
