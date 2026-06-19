@@ -2769,6 +2769,13 @@ export async function ensureMarketCreated(
   // so the on-chain cost is lower than `create_market`.
   tx.setGasBudget(500_000_000n);
   const result = await executeTransaction(client, tx, signer);
+  // R-WC-3.3 diagnostic: log the tx digest so we can cross-ref
+  // on-chain. Helps verify the v3 `create_market_with_pool`
+  // actually created the expected PredictionMarket.
+  console.warn(
+    `[ensureMarketCreated:diag] create_market_with_pool digest=${result.digest} ` +
+      `status=${(result.effects as { status?: { status?: string } } | undefined)?.status?.status ?? "?"}`,
+  );
   // `create_market_with_pool` returns the same object shape
   // as `create_market` minus the `Pool` (it reuses the
   // existing one). The balanceManager is always fresh.
@@ -2782,6 +2789,9 @@ export async function ensureMarketCreated(
       `ensureMarketCreated: PredictionMarket object not found in effects (digest ${result.digest})`,
     );
   }
+  console.warn(
+    `[ensureMarketCreated:diag] create_market_with_pool returned marketId=${marketId} digest=${result.digest}`,
+  );
   const balanceManagerId = await extractCreatedObjectId(
     client,
     result.digest,
