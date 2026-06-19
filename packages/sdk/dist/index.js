@@ -59,7 +59,7 @@ QUOTE_SCALE,
 // a `qty=1` (one share) submits as 1 atom and
 // aborts with `EOrderBelowMinimumSize` (code 1)
 // because the pool's `min_size = 1_000_000`.
-BASE_SCALE, yesCoinType, noCoinType, marketTypeSeed, addressOf, withMarketType, PREDICT_MARKET_PACKAGE_ID, FEE_VAULT_ID, REFERRAL_TREASURY_ADDRESS, } from "./prediction-market-client.js";
+BASE_SCALE, yesCoinType, noCoinType, marketTypeSeed, addressOf, withMarketType, PREDICT_MARKET_PACKAGE_ID, FEE_VAULT_ID, SHARED_TREASURY_HOLDER_ID, REFERRAL_TREASURY_ADDRESS, } from "./prediction-market-client.js";
 export { getOrderBookDepth, getMidPrice, getBalanceManagerBalance, PREDICT_DEEPBOOK_POOL_KEY, } from "./deepbook/client.js";
 // Streak + prize pool (gamification)
 export * from "./streak-client.js";
