@@ -3,7 +3,6 @@ import {
   executeTransaction,
   getSpotPrice,
   findNearestActiveOracle,
-  marketTypeSeed,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { callLlm, getSharedClient, recordResult, safeFloat } from "../lib.js";
@@ -158,18 +157,12 @@ export async function runMarketResolver(ctx: AgentContext): Promise<AgentResult>
     // limiter. The R51 sweep
     // missed this worker.
     const client = getSharedClient();
-    // R-WC-3.4 fix: read the per-market phantom `M`
-    // stored at create time. Falls back to deriving
-    // from `market.id` for legacy rows. The market
-    // creator writes `marketTypeM` (computed from the
-    // spec title) into the SQLite row; the resolver
-    // reads it back so the on-chain signature
-    // `<Q, M>` is consistent across create / resolve.
-    const tx = buildResolveMarketTx(
-      market.id,
-      outcome,
-      market.pool_type_seed || marketTypeSeed(market.id),
-    );
+    // v3 contract: resolve_market<Q> takes a single
+    // type arg. The phantom `m` is intentionally
+    // dropped (cc63e62) — passing it would make the
+    // SDK emit [DUSDC_TYPE, M] which the v3 contract
+    // rejects with ArityMismatch in command 0.
+    const tx = buildResolveMarketTx(market.id, outcome);
     const result = await executeTransaction(client, () => tx, ctx.signer);
     upsertMarket({
       ...market,

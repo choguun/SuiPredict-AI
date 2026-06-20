@@ -37,7 +37,6 @@
 import {
   buildResolveMarketTx,
   executeTransaction,
-  marketTypeSeed,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
@@ -474,11 +473,10 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       const tx = buildResolveMarketTx(
         onchainId,
         outcome,
-        // R-WC-3.4 fix: read the per-market phantom `M`
-        // stored at create time. Falls back to deriving
-        // from `market.id` for legacy rows (where `id`
-        // IS the creator-time seed for `wc26-*` rows).
-        market.pool_type_seed || marketTypeSeed(market.id),
+        // v3 contract: resolve_market<Q> takes a single
+        // type arg. The phantom `m` is intentionally
+        // dropped (cc63e62) — see the long block above
+        // for the full rationale.
       );
       const result2 = await executeTransaction(client, () => tx, ctx.signer);
       upsertMarket({
@@ -582,11 +580,9 @@ async function commitResolution(
     const tx = buildResolveMarketTx(
       market.onchain_market_id ?? market.id,
       outcome,
-      // R-WC-3.4 fix: per-market phantom `m` (see
-      // primary path above — read from
-      // `market.pool_type_seed`, fall back to deriving
-      // from `market.id` for legacy rows).
-      market.pool_type_seed || marketTypeSeed(market.id),
+      // v3 contract: resolve_market<Q> takes a single
+      // type arg. The phantom `m` is intentionally
+      // dropped (cc63e62) — see the long block above.
     );
     const onChainResult = await executeTransaction(client, () => tx, ctx.signer);
     upsertMarket({

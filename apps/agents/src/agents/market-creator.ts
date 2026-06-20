@@ -300,7 +300,9 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       minSize: BigInt(1_000_000),
       deepCoinId: feeCoinId!,
       category: categoryToCode(spec.category),
-      m: marketTypeM,
+      // v3 contract: buildCreateMarketTx emits
+      // [DUSDC_TYPE] only (no phantom M). See
+      // world-cup-creator.ts for the full rationale.
     });
 
     const createResult = await executeTransaction(client, () => createTx, ctx.signer);
@@ -361,7 +363,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         referral_id: null,
         created_at_ms: Date.now(),
       });
-      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000), marketTypeM);
+      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
       const referralResult = await executeTransaction(client, () => referralTx, ctx.signer);
       // `extractCreatedObjectId` returns null if the struct name
       // doesn't match the suffix used by gRPC's `objectTypes[objectId]`
@@ -450,14 +452,13 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               feeVaultId,
               dusdcCoin.objectId,
               initialMintAtoms,
-              // R-WC-3.4 fix: per-market phantom `m` and
-              // explicit `SHARED_TREASURY_HOLDER_ID` (v3
-              // caps holder). Without `m` the mint
-              // reverts on type mismatch; without the
-              // shared caps id the SDK defaults to the
-              // env, which is fine but explicit makes the
-              // log path traceable.
-              marketTypeM,
+              // v3 contract: mint_shares<Q> takes a single
+              // type arg. `SHARED_TREASURY_HOLDER_ID` is
+              // still required (the v3 caps holder is
+              // arg index 1 of `mint_shares`, even when the
+              // phantom M isn't passed — the holder is
+              // independent of the type-arg shape).
+              undefined,
               SHARED_TREASURY_HOLDER_ID,
             );
             const mintResult = await executeTransaction(client, () => mintTx, ctx.signer);

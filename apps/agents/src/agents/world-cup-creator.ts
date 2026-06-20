@@ -480,10 +480,20 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // SQLite row's primary key (`wc26-<matchId>`). Threaded through
       // `ensureMarketCreated` → `buildCreateMarketTx<Q, M>` so every
       // market gets a unique `Currency<YES<DUSDC, M>>` registration
-      // in the Sui CoinRegistry (v3 design — see R-WC-4 design spec).
-      // Without this, all markets collide on the legacy
-      // `Currency<YES<DUSDC>>` shape and the second tick trips
-      // `ECurrencyAlreadyExists` circuit-breaker with the wrong type.
+      // v3 contract (latest): `YES<phantom Q>`, `NO<phantom Q>`,
+      // `PredictionMarket<phantom Q>`, `FeeVault<phantom Q>`,
+      // `SharedTreasuryHolder<phantom Q>` — only ONE phantom
+      // parameter. R-WC-2 attempted a `<Q, M>` design (per-market
+      // phantom `M: address`) but Sui Move's `TypeTag::Address`
+      // has no BCS body so runtime type-generation is impossible;
+      // see R-WC-3 v3 design spec in docs/R-WC-4-v3-design-spec.md.
+      //
+      // `marketTypeM` is still computed and persisted to the
+      // `pool_type_seed` SQLite column so a future v4 deploy can
+      // read it back, but the on-chain PTB intentionally omits
+      // it (cc63e62) — passing it makes the SDK emit a
+      // 2-element `typeArguments` array that the v3 contract
+      // rejects with `ArityMismatch in command 0`.
       const marketTypeM = marketTypeSeed(dedupeKey(m.id));
       const createdMarket = await ensureMarketCreated(client, ctx.signer, deepbookRegistryId || null, {
         title: matchWinnerTitle(m),
@@ -494,7 +504,6 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
-        m: marketTypeM,
       });
       const marketId = createdMarket.marketId;
       const poolId = createdMarket.poolId;
@@ -571,11 +580,11 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             marketId,
             poolId,
             BigInt(1_000_000_000),
-            // R-WC-3.4 fix: pass the per-market phantom `m`
-            // so the PTB's `setup_referral<Q, M>` reverts on
-            // type mismatch. `referral_multiplier` is 1.0;
-            // the Bps conversion handles that.
-            marketTypeM,
+            // v1 contract: setup_referral<Q> takes a single
+            // type arg. The `m` is dropped intentionally (see
+            // cc63e62 — passing it makes the SDK emit
+            // [DUSDC_TYPE, M] which the v1 contract rejects
+            // with ArityMismatch).
           );
           const refResult = await executeTransaction(client, () => refTx, ctx.signer);
           const refId = await extractCreatedObjectId(client, refResult.digest, "DeepBookPoolReferral");
@@ -620,14 +629,14 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
               feeVaultId,
               dusdcCoin.objectId,
               BigInt(initialMintAtoms),
-              // R-WC-3.4 fix: pass the per-market phantom `m`
-              // (same as `ensureMarketCreated` was called with
-              // above) and `SHARED_TREASURY_HOLDER_ID` (v3 caps
-              // holder, defaults via env when undefined). Without
-              // `m`, the PTB's `mint_shares<Q, M>` reverts on
-              // type mismatch. Without `sharedCapsId`, the SDK
-              // falls back to the env default — both must agree.
-              marketTypeM,
+              // v1 contract: mint_shares<Q> takes a single
+              // type arg. The `m` is dropped (cc63e62) and
+              // `SHARED_TREASURY_HOLDER_ID` stays as the
+              // v3 caps holder env default (still required
+              // by the SDK even when v1 contract is deployed —
+              // the builder doesn't validate the v2-vs-v1
+              // signature, it just routes the call).
+              undefined,
               SHARED_TREASURY_HOLDER_ID,
             );
             await executeTransaction(client, () => mintTx, ctx.signer);
