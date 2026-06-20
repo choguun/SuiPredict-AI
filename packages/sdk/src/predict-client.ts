@@ -283,8 +283,10 @@ export async function executeTransaction(
       // log — the only way that can happen is if the catch
       // block isn't entered, or if `isTransient` is false.
       // Surface the matching result to disambiguate.
+      const regexInvalidWithdraw = /Invalid\s+withdraw\s+reservation/i.test(msg);
+      const regexIsLessThan = /is\s+less\s+than\s+requested/i.test(msg);
       console.warn(
-        `[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} msg=${msg.slice(0, 200)}`,
+        `[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} rawMsgLen=${rawMsg.length} msgLen=${msg.length} regexInvalidWithdraw=${regexInvalidWithdraw} regexIsLessThan=${regexIsLessThan} msg=${msg.slice(0, 200)}`,
       );
       if (isTransient && attempt < MAX_RETRY) {
         // R-WC-3.3: back off longer for version-race errors
