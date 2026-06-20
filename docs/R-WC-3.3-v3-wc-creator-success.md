@@ -137,11 +137,10 @@ path, which is the main WC agent in the demo flow.
   gotcha"). The exception is env-only changes — `railway redeploy
   --yes` works fine for those because env vars are merged into the
   cached image at boot.
-- **Always `git add packages/sdk/dist` after `pnpm --filter @suipredict/sdk build`**
-  even though the trailing-slash gitignore normally skips it. The
-  dist needs to be in the tree for Railway's runtime build to pick
-  it up (and even then, `railpack.json`'s `startCommand` rebuilds it
-  fresh, so this is belt-and-suspenders).
+- **The SDK `dist/` is no longer tracked** (commit `93cc00c`,
+  2026-06-19). The `pnpm install` `prepare: tsc` hook +
+  `railpack.json`'s startCommand both rebuild the dist from src,
+  so consumers never see a stale dist. Don't `git add -f` it back.
 - **The `TURBO_FORCE=true` Railway env var should be removed** once
   the wc-creator has 24h of clean runs. It forces a full rebuild on
   every deploy, which is slow but bypasses any stale entries in

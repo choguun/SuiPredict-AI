@@ -123,13 +123,13 @@ fresh even when the image itself is reused.
 1. **`TURBO_FORCE=true`** still set on Railway. Remove once the wc-creator has
    24h of clean runs (currently 1 confirmed success). Forces a full rebuild
    on every deploy — slow, but it bypasses turbo's stale Remote Cache.
-2. **Force-committed SDK `dist/`** still tracked. Plan: once turbo's
-   Remote Cache is cleared, stop tracking `packages/sdk/dist/` (it's
-   gitignored by default with the trailing-slash rule). The
-   `gitignore` exception that force-tracks the dist exists only
-   because the Railway snapshot cache was previously serving stale
-   dist files; now that we always `railway up --detach` and the
-   startCommand rebuilds from src, this workaround can be removed.
+2. **Force-committed SDK `dist/`** — **RESOLVED in commit `93cc00c`**
+   (2026-06-19). The 84 dist files are no longer tracked; the
+   `.gitignore` now uses `packages/sdk/dist/*` (contents) with a
+   `!packages/sdk/dist/.gitkeep` exception so the directory stays
+   present in fresh clones. The `pnpm install` `prepare: tsc` hook
+   + `railpack.json`'s startCommand both rebuild the dist from src,
+   so no consumer sees a stale dist.
 3. **FeeVault\<DUSDC\>** still points at v1's `FeeVault` — needs
    `init_fee_vault_fallback<DUSDC>(ctx)` on the v3 package. The
    v3 package's `ProtocolAdminCap` is `0x0a524de9…` (see table at

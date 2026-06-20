@@ -381,7 +381,7 @@ defensively. Cache name: `suipredict-shell-${SW_VERSION}` (bump
 | Package | Output |
 |---------|--------|
 | `contracts` | Move bytecode (no on-disk artifact; deploys via `sui client publish`) |
-| `sdk` | `packages/sdk/dist/` (TypeScript → JS); exports `ensureMarketCreated`, `findExistingYesPool`, `buildCreateMarketTx`, `buildCreateMarketWithPoolTx`, `buildMintSharesTx`, `buildResolveMarketTx`, `buildRedeemTx`, etc. |
+| `sdk` | `packages/sdk/dist/` (TypeScript → JS; **gitignored** — rebuilt by `pnpm --filter @suipredict/sdk build` and by the `prepare: tsc` hook on `pnpm install`); exports `ensureMarketCreated`, `findExistingYesPool`, `buildCreateMarketTx`, `buildCreateMarketWithPoolTx`, `buildMintSharesTx`, `buildResolveMarketTx`, `buildRedeemTx`, etc. |
 | `agents` | `apps/agents/dist/` (run via `node dist/index.js`) |
 | `web` | `apps/web/.next/` (Next.js standalone); ships `public/sw.js` (offline shell) + `public/offline.html` (static fallback) |
 
