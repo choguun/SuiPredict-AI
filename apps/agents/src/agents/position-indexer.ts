@@ -27,6 +27,7 @@ import {
   decrementPosition,
   getDb,
   getMarket,
+  getMarketByPoolId,
   markMarketDisputed,
   markMarketResolved,
   markMarketUndisputed,
@@ -782,6 +783,36 @@ export async function runPositionIndexer(
     },
   );
 
+  // DeepBook `order::OrderCanceled` fallback. v3's
+  // `prediction_market::cancel_all_orders` (prediction_market.move:1226)
+  // does NOT emit the wrapper `OrderCancelledEvent` /
+  // `OrdersBatchCancelledEvent`, so the only on-chain signal that an
+  // order on a wc pool was cancelled comes from DeepBook itself. We
+  // map `pool_id` → `market.id` via the SQLite mirror and call
+  // `markOrderCancelled` to drop the stale "open" row. Per-order
+  // `cancel_order` already emits `OrderCancelledEvent`, so this
+  // subscription only fires for the bulk path.
+  const deepbookPackageId = process.env.DEEPBOOK_PACKAGE_ID;
+  if (deepbookPackageId) {
+    const deepbookCancellations = await guardedPoll(
+      "DeepBookOrderCanceled",
+      `${deepbookPackageId}::order::OrderCanceled`,
+      "position_indexer.deepbook_order_canceled",
+      (ev) => {
+        const j = ev.parsedJson as {
+          pool_id?: string;
+          order_id?: string | number;
+        };
+        if (!j?.pool_id || j?.order_id == null) return;
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        const market = getMarketByPoolId(j.pool_id);
+        if (!market) return;
+        markOrderCancelled(market.id, String(j.order_id), ts);
+      },
+    );
+    void deepbookCancellations;
+  }
+
   // MarketDisputedEvent — fired when a user calls `dispute_market` within
   // the 1-hour post-resolution window. The /markets/:id UI shows a
   // "Disputed" badge and the redeem button is hidden until the dispute
@@ -1166,17 +1197,23 @@ export async function runPositionIndexer(
     (ev) => {
       const j = ev.parsedJson as {
         agent?: string;
-        action?: string;
+        action?: string | number[];
         policy_id?: string;
         amount?: string | number;
       };
       if (!j?.agent) return;
+      // BCS encodes `vector<u8>` as a JSON number array. Decode to
+      // UTF-8 here so better-sqlite3 accepts the binding (it rejects
+      // non-primitive JS values; a number[] falls into that bucket).
+      const actionStr = Array.isArray(j.action)
+        ? Buffer.from(j.action).toString("utf8")
+        : (j.action ?? "");
       try {
         logAgentAction({
           tx_digest: ev.id?.txDigest ?? "",
           policy_id: j.policy_id ?? "",
           agent: j.agent,
-          action: j.action ?? "",
+          action: actionStr,
           ts_ms: Number(ev.timestampMs ?? Date.now()),
           details: JSON.stringify({
             amount: j.amount ?? null,

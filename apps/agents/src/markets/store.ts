@@ -653,9 +653,34 @@ export function listMarkets(limit?: number, offset?: number): MarketInfo[] {
 }
 
 export function getMarket(id: string): MarketInfo | null {
+  // Prefer the exact `id` (primary key) match over a
+  // `onchain_market_id` collision: the wc-creator backfill writes
+  // `onchain_market_id` onto a row whose `id` is `wc26-...`, and a
+  // hex lookup by `onchain_market_id` should resolve to that row,
+  // not to a stale `wc-...` row that shares the same `id` text.
+  // Without `LIMIT 1` SQLite returns rows in rowid order and an
+  // older seed row can shadow a fresher one.
   const row = getDb()
-    .prepare(`SELECT * FROM markets WHERE id = ? OR onchain_market_id = ?`)
+    .prepare(
+      `SELECT * FROM markets WHERE id = ? OR onchain_market_id = ? LIMIT 1`,
+    )
     .get(id, id);
+  return row ? rowToMarket(row) : null;
+}
+
+/**
+ * DeepBook emits `order::OrderCanceled` keyed by `pool_id`, not by our
+ * `market_id`. v3's `cancel_all_orders` does NOT emit its own
+ * `OrderCancelledEvent` (round-audit finding — see
+ * `prediction_market.move:1226`), so the only on-chain signal that
+ * an order on a given pool was cancelled comes from the underlying
+ * DeepBook event. Look up the market whose `deepbook_pool_id`
+ * matches.
+ */
+export function getMarketByPoolId(poolId: string): MarketInfo | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM markets WHERE deepbook_pool_id = ? LIMIT 1`)
+    .get(poolId);
   return row ? rowToMarket(row) : null;
 }
 
