@@ -68,15 +68,6 @@ export function keypairFromPrivateKey(privateKey) {
     const hex = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
     return Ed25519Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
 }
-// R-WC-3.3 v3.3 diag: a one-time log on module load so the
-// operator can verify which SDK dist is actually being loaded.
-// Pre-fix the wc-creator's `[executeTransaction:diag]` log
-// showed `isTransient=false` for "Invalid withdraw reservation"
-// even though the regex should match. This log disambiguates
-// whether the deployed dist is the latest (regex matches) or
-// stale (regex missing).
-const __SDK_LOADED_AT__ = new Date().toISOString();
-console.warn(`[sdk-load] predict-client loaded at=${__SDK_LOADED_AT__} — R-WC-3.3 v3.3 (per-regex diag for Invalid withdraw reservation)`);
 export async function executeTransaction(client, txOrFactory, signer, options) {
     const MAX_RETRY = options?.maxRetry ?? 2;
     let lastError;
@@ -242,9 +233,7 @@ export async function executeTransaction(client, txOrFactory, signer, options) {
             // log — the only way that can happen is if the catch
             // block isn't entered, or if `isTransient` is false.
             // Surface the matching result to disambiguate.
-            const regexInvalidWithdraw = /Invalid\s+withdraw\s+reservation/i.test(msg);
-            const regexIsLessThan = /is\s+less\s+than\s+requested/i.test(msg);
-            console.warn(`[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} rawMsgLen=${rawMsg.length} msgLen=${msg.length} regexInvalidWithdraw=${regexInvalidWithdraw} regexIsLessThan=${regexIsLessThan} msg=${msg.slice(0, 200)}`);
+            console.warn(`[executeTransaction:diag] attempt=${attempt} isTransient=${isTransient} msg=${msg.slice(0, 200)}`);
             if (isTransient && attempt < MAX_RETRY) {
                 // R-WC-3.3: back off longer for version-race errors
                 // than for transient network errors. The version
