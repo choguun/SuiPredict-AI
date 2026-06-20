@@ -93,6 +93,16 @@ export function keypairFromPrivateKey(privateKey: string): Ed25519Keypair {
   return Ed25519Keypair.fromSecretKey(Uint8Array.from(Buffer.from(hex, "hex")));
 }
 
+// R-WC-3.3 v3.3 diag: a one-time log on module load so the
+// operator can verify which SDK dist is actually being loaded.
+// Pre-fix the wc-creator's `[executeTransaction:diag]` log
+// showed `isTransient=false` for "Invalid withdraw reservation"
+// even though the regex should match. This log disambiguates
+// whether the deployed dist is the latest (regex matches) or
+// stale (regex missing).
+const __SDK_LOADED_AT__ = new Date().toISOString();
+console.warn(`[sdk-load] predict-client loaded at=${__SDK_LOADED_AT__} — R-WC-3.3 v3.3 (per-regex diag for Invalid withdraw reservation)`);
+
 export async function executeTransaction(
   client: SuiClient,
   txOrFactory: Transaction | (() => Transaction | Promise<Transaction>),
