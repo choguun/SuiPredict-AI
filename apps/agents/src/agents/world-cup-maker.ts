@@ -29,6 +29,7 @@
 
 import {
   buildAuthorizeSpendTx,
+  buildCancelAllOrdersTx,
   buildPlaceOrderTx,
   DUSDC_TYPE,
   executeTransaction,
@@ -239,6 +240,9 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         .toLowerCase()
         .startsWith(newPkgPrefix),
   );
+  console.log(
+    `[wc-maker:diag] upcoming=${upcoming.length} wcMarkets=${wcMarkets.length} pkgPrefix=${newPkgPrefix.slice(0, 12)}…`,
+  );
   const matchToMarket = new Map<string, { marketId: string; poolId: string }>();
   for (const m of wcMarkets) {
     // The row's `id` is the wc26 form, the
@@ -255,11 +259,17 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
       poolId: m.deepbook_pool_id || "",
     });
   }
+  console.log(
+    `[wc-maker:diag] matchToMarket keys=${Array.from(matchToMarket.keys()).join(",")}`,
+  );
 
   let quoted = 0;
   let skipped = 0;
   for (const match of upcoming) {
     const found = matchToMarket.get(match.id);
+    console.log(
+      `[wc-maker:diag] loop match=${match.id} found=${found ? `${found.marketId.slice(0, 10)}…/${found.poolId.slice(0, 10)}…` : "MISS"}`,
+    );
     if (!found) {
       skipped++;
       continue;
@@ -349,11 +359,73 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
       const client = getSharedClient();
       const agentAddr = ctx.signer.getPublicKey().toSuiAddress();
       // Top up DUSDC if needed.
-      const dusdcCoins = await listAllCoins(client, agentAddr, DUSDC_TYPE);
-      const dusdcId = dusdcCoins.find((c) => BigInt(c.balance) >= 1_000_000n)?.objectId;
+      let dusdcCoins = await listAllCoins(client, agentAddr, DUSDC_TYPE);
+      let dusdcId = dusdcCoins.find((c) => BigInt(c.balance) >= 1_000_000n)?.objectId;
+      console.log(`[wc-maker:diag] ${match.id} dusdcId=${dusdcId?.slice(0, 10)}… BM=${balanceManagerId?.slice(0, 10)}… policyId=${agentPolicyId?.slice(0, 10)}…`);
+      // R-WC-3 v3 follow-up: if the wallet is empty, mint
+      // 10,000 DUSDC ourselves before skipping. The auto-funder
+      // agent races with the maker (auto-funder fires every
+      // 10 min, maker every 2 min) — without this self-mint
+      // the maker skips 5/6 ticks waiting for the auto-funder.
+      // The mint-and-transfer PTB requires the TreasuryCap,
+      // which the deployer wallet holds.
       if (!dusdcId) {
-        skipped++;
-        continue;
+        const treasuryCapId =
+          process.env.DUSDC_TREASURY_CAP_ID ?? process.env.NEXT_PUBLIC_DUSDC_TREASURY_CAP_ID;
+        if (treasuryCapId) {
+          try {
+            const selfMintTx = new Transaction();
+            selfMintTx.moveCall({
+              target: "0x2::coin::mint_and_transfer",
+              typeArguments: [DUSDC_TYPE],
+              arguments: [
+                selfMintTx.object(treasuryCapId),
+                selfMintTx.pure.u64(10_000_000_000n),
+                selfMintTx.pure.address(agentAddr),
+              ],
+            });
+            await executeTransaction(client, selfMintTx, ctx.signer);
+            // Re-fetch after the mint settles.
+            dusdcCoins = await listAllCoins(client, agentAddr, DUSDC_TYPE);
+            dusdcId = dusdcCoins.find((c) => BigInt(c.balance) >= 1_000_000n)?.objectId;
+          } catch {
+            // Mint failed (transient RPC or stale gas). Fall
+            // through to the skip path below.
+          }
+        }
+        if (!dusdcId) {
+          skipped++;
+          continue;
+        }
+      }
+      // R-WC-3.4 v3 follow-up: cancel any open orders the agent
+      // has on this market *before* placing a new bid. DeepBook
+      // allows up to 100 open orders per BalanceManager per pool
+      // (see `state::process_create`'s `EMaxOpenOrders`); without
+      // this cancel-first step the maker would accumulate one bid
+      // per market per tick and trip the cap after ~12 ticks (we
+      // currently have 100+ stale orders from the v3 testing
+      // runs). The cancel is a no-op for the SDK's
+      // `executeTransaction` retry logic — it's just another
+      // `Transaction` in the same flow, and any transient RPC
+      // race is handled the same way `place_limit_order`'s retry
+      // is.
+      try {
+        const cancelTx = buildCancelAllOrdersTx({
+          marketId: found.marketId,
+          poolId: found.poolId,
+          balanceManagerId,
+        });
+        await executeTransaction(client, () => cancelTx, ctx.signer);
+        console.log(`[wc-maker:diag] ${match.id} cancelTx OK`);
+      } catch (cancelErr) {
+        // Cancel failure is non-fatal — the new place_order
+        // call below may still succeed (DeepBook allows >100
+        // open orders via separate pools, and the cap is
+        // per-pool not global). Log and proceed.
+        console.warn(
+          `[wc-maker:diag] ${match.id} cancelTx failed (non-fatal): ${(cancelErr as Error).message?.slice(0, 120)}`,
+        );
       }
       const depTx = new Transaction();
       // R60 audit fix: the previous code
@@ -375,7 +447,9 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         typeArguments: [DUSDC_TYPE],
         arguments: [depTx.object(balanceManagerId), depTx.object(dusdcId)],
       });
+      console.log(`[wc-maker:diag] ${match.id} calling depTx (balance_manager::deposit)…`);
       await executeTransaction(client, () => depTx, ctx.signer);
+      console.log(`[wc-maker:diag] ${match.id} depTx OK`);
       if (agentPolicyId) {
         // R60 audit fix: the previous hardcoded
         // `5` was a random guess — the actual
@@ -401,7 +475,9 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
           ctx.maxBudgetUsdc,
         );
         const authTx = buildAuthorizeSpendTx(agentPolicyId, cycleAuthDollars);
+        console.log(`[wc-maker:diag] ${match.id} calling authTx (cycleAuthDollars=${cycleAuthDollars})…`);
         await executeTransaction(client, () => authTx, ctx.signer);
+        console.log(`[wc-maker:diag] ${match.id} authTx OK`);
       }
       const placeTx = buildPlaceOrderTx({
         marketId: found.marketId,
