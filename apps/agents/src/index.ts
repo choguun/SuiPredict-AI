@@ -915,7 +915,18 @@ function startHealthServer() {
   // still arriving. A request
   // mid-drain would hit
   // "database is closed".
-  .listen(port, () => console.log(`[agents] API on :${port}`));
+  .listen(port, () => {
+    console.log(`[agents] API on :${port}`);
+    // R-WC-3.3 v3.3 diag: a one-time log on boot so the
+    // operator can verify which agents dist is loaded
+    // (and indirectly which SDK dist via dynamic import).
+    // Pre-fix the wc-creator's `[executeTransaction:diag]`
+    // log showed `isTransient=false` for "Invalid withdraw
+    // reservation" even though the regex should match.
+    // This log disambiguates whether the deployed agents
+    // dist is the latest (commit 4943859) or stale.
+    console.warn(`[agents-load] agents index booted — R-WC-3.3 v3.3 sentinel (commit 4943859)`);
+  });
   healthServer = server;
   return server;
 }
