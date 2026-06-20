@@ -2,7 +2,7 @@
   "$schema": "https://schema.railpack.com",
   "provider": "node",
   "deploy": {
-    "startCommand": "rm -rf packages/sdk/dist packages/sdk/tsconfig.tsbuildinfo apps/agents/dist apps/agents/tsconfig.tsbuildinfo && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build && node apps/agents/dist/index.js"
+    "startCommand": "rm -rf packages/sdk/dist packages/sdk/tsconfig.tsbuildinfo apps/agents/dist apps/agents/tsconfig.tsbuildinfo && pnpm --filter @suipredict/sdk build && pnpm --filter @suipredict/agents build && echo '=== sdk dist files ===' && ls -la /app/packages/sdk/dist/predict-client.js && echo '=== agents dist files ===' && ls -la /app/apps/agents/dist/index.js && grep -c 'sdk-load' /app/packages/sdk/dist/predict-client.js && grep -c 'agents-load' /app/apps/agents/dist/index.js && node apps/agents/dist/index.js"
   },
   "steps": {
     "build": {
