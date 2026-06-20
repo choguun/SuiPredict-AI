@@ -24,7 +24,7 @@ SuiPredict-AI/
 │   │   │   ├── agent_policy.move        agent permissions, pause/revoke
 │   │   │   ├── registry.move            market registry
 │   │   │   └── types.move               shared structs / events
-│   │   └── tests/                        122 unit tests (all pass)
+│   │   └── tests/                        130 unit tests (all pass)
 │   └── sdk/              TypeScript SDK (PTB builders + read helpers)
 ├── apps/
 │   ├── agents/           Node 20 + better-sqlite3 — autonomous workers + REST
@@ -51,7 +51,9 @@ SuiPredict-AI/
     ├── SOP-DEPLOYMENT.md
     ├── SOP-DEEPBOOK-TRADING.md
     ├── agent-prompts.md
-    └── demo-script.md
+    ├── demo-script.md
+    ├── R-WC-3.3-v3-deployment-complete.md   v3 SharedTreasuryHolder deploy + env mapping
+    └── R-WC-3.3-v3-wc-creator-success.md   SDK rebuild-on-reservation fix + Railway snapshot-cache gotcha
 ```
 
 ## Build & test commands
@@ -60,7 +62,7 @@ SuiPredict-AI/
 pnpm install
 pnpm build                # Build all (Move + SDK + agents + web). 0 errors expected.
 pnpm contracts:build      # sui move build only
-pnpm contracts:test       # 122 Move unit tests
+pnpm contracts:test       # 130 Move unit tests
 pnpm dev:agents           # http://localhost:3001 — REST + WS
 pnpm dev:web              # http://localhost:3000 — UI
 ```
@@ -72,7 +74,7 @@ pnpm dev:web              # http://localhost:3000 — UI
 - One `Move.toml` per package; the canonical published package is
   `AGENT_POLICY_PACKAGE_ID` (and aliases `PREDICT_PACKAGE_ID` /
   `MARKET_PACKAGE_ID`).
-- Tests live in `tests/` next to `sources/`. 122/122 pass.
+- Tests live in `tests/` next to `sources/`. 130/130 pass.
 - Every state-mutating public function takes a capability (admin /
   streak admin / etc.) and asserts on the clock when relevant.
 
@@ -164,6 +166,8 @@ See `.env.example` for the full list. The most critical:
 | Move build warnings about `unused_use` | Pre-existing, can be ignored | `sui move build --silence-warnings` |
 | Pool already exists for YES/DUSDC | First market already created | Falls back to `demo-*` market in SQLite |
 | `pnpm build` fails on `tsx` | The `dist/` is stale | `rm -rf apps/agents/dist && pnpm build` |
+| `Invalid withdraw reservation` or `is less than requested` on `executeTransaction` | Sui coin-accumulator reservation race — sibling agent consumed the same gas coin between `tx.setSender` and submit | `predict-client.ts:326` rebuilds the PTB via `txFactory` + re-pins the freshest gas coin via `pinFreshGasCoin` (see [R-WC-3.3-v3-wc-creator-success.md](docs/R-WC-3.3-v3-wc-creator-success.md)) |
+| `railway redeploy --yes` ships stale code | Redeploys the **cached image** of the last deployment, NOT the latest commit | Use `railway up --detach --yes -m "msg"` or `railway redeploy --from-source --yes` (see [R-WC-3.3-v3-deployment-complete.md](docs/R-WC-3.3-v3-deployment-complete.md#railway-snapshot-cache-gotcha)) |
 
 ## Hackathon submission
 

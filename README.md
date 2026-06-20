@@ -6,7 +6,7 @@
 
 > **MVP vertical:** FIFA World Cup 2026 (June 11 – July 19, 2026, USA/Canada/Mexico). 48 teams, 12 groups, 72 group matches, all of which are scraped from Wikipedia and priced by an Elo-based market maker — zero human in the loop.
 
-## Quality status (post-UAT 2026-06-17, post-deploy 2026-06-18)
+## Quality status (post-UAT 2026-06-17, post-deploy 2026-06-18, post-v3-success 2026-06-19)
 
 - **130 / 130** Move contracts tests pass
 - **38 / 38** agents tests pass
@@ -14,10 +14,12 @@
 - **14 routes** (`/`, `/markets`, `/markets/[id]`, `/worldcup`, `/worldcup/group/[letter]`, `/leaderboard`, `/portfolio`, `/parlay`, `/vault`, `/agents`, `/friends`, `/agent-policy`, `/auth`, `/admin`) all return HTTP 200
 - **All 19 UAT findings resolved** (FN-01 through FN-19, see [UAT-REPORT-FIXES.md](UAT-REPORT-FIXES.md))
 - **Production deploys live** (post-R-WC-1.7): web on `https://suipredict-web.vercel.app`, agents on `https://agents-production-11fd.up.railway.app`, 1 on-chain WC market created, MM correctly skips stale-pool markets
+- **v3 SharedTreasuryHolder live** (post-R-WC-3.3, 2026-06-19): package `0xe98b0c9c…`, shared holder `0x90a788b2…`. `world-cup-creator` verified end-to-end on the 11:00 cron tick — see [docs/R-WC-3.3-v3-deployment-complete.md](docs/R-WC-3.3-v3-deployment-complete.md) + [docs/R-WC-3.3-v3-wc-creator-success.md](docs/R-WC-3.3-v3-wc-creator-success.md)
 - **Per-WC-match on-chain markets** — the `world-cup-creator` mints a real on-chain `PredictionMarket` for every upcoming match (per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`, shared DeepBook pool) instead of falling back to SQLite-only ghost rows
 - **Wallet-funding gate** — underfunded agent wallets surface as a single `noop` decision with a clear "fund with X SUI + Y DEEP" message instead of N stack-tracey warnings per tick
 - **Offline-shell SW** — `public/sw.js` registered on first mount; offline navigation serves `/offline.html` instead of a blank `chrome-error://chromewebdata/` page
 - **Agents-down banner** — every page that talks to the agents service shows a single uniform error UI when the upstream is unreachable (no more 21-byte `Internal Server Error` bodies)
+- **Reservation-race resilient SDK** — `executeTransaction` rebuilds the PTB on `Invalid withdraw reservation` / `is less than requested` errors with a freshly-pinned gas coin (the Sui coin-accumulator reservation was racing sibling agents on the shared gas coin)
 
 ## What it does
 
@@ -141,18 +143,21 @@ draw) and applies the standard logistic with a draw adjustment.
 See **[docs/worldcup-2026.md](docs/worldcup-2026.md)** for the full
 architecture.
 
-> **Production note (CoinRegistry limit, R-WC-1.2):** Sui v1.73's
-> `coin_registry::new_currency<T>` is the only production-grade way
-> to create a `TreasuryCap<T>`, and it allows only ONE `Currency<T>`
-> per type T per package. The current contract uses `YES<DUSDC>` for
-> all WC markets, so **only one WC market can be on-chain at a time**
-> (the `wc26-A1v4` demo on testnet). The `world-cup-creator` agent
-> short-circuits after the first `ECurrencyAlreadyExists` and the
-> remaining 44 group matches are SQLite-only previews. The long-term
-> fix is a contract upgrade to per-market coin types
-> (`YES<DUSDC, MarketId>`); see
-> **[docs/SOP-DEPLOYMENT.md#coinregistry-limit](docs/SOP-DEPLOYMENT.md#coinregistry-limit)**
-> for the full deploy story and recovery checklist.
+> **Production note (CoinRegistry limit, R-WC-1.2, resolved in v3, R-WC-3.3):**
+> Sui v1.73's `coin_registry::new_currency<T>` allows only ONE
+> `Currency<T>` per type T per package. The v1+v2 contracts used
+> `YES<DUSDC>` for all WC markets, so only one market could be
+> on-chain at a time. **v3 fixes this** with a
+> `SharedTreasuryHolder<DUSDC>` (created once per package via
+> `init_yes_no_currencies<DUSDC>`) that lends the `Currency<YES<DUSDC>>`
+> + `Currency<NO<DUSDC>>` caps to every `create_market` call, so the
+> CoinRegistry init runs exactly once and every subsequent market
+> reuses the same caps. The v3 package
+> (`0xe98b0c9c…`, shared holder `0x90a788b2…`) is live on testnet —
+> see [docs/R-WC-3.3-v3-deployment-complete.md](docs/R-WC-3.3-v3-deployment-complete.md)
+> for the full deploy story. The v1 CoinRegistry limit SOP remains
+> in [docs/SOP-DEPLOYMENT.md#coinregistry-limit](docs/SOP-DEPLOYMENT.md#coinregistry-limit)
+> as a historical reference.
 
 ## Quick start
 
@@ -412,7 +417,11 @@ To redeploy after a code change:
 # 1. Build locally to make sure nothing is broken
 pnpm build
 
-# 2. Push the changes to Railway (auto-deploys the latest git tree)
+# 2. Push the changes to Railway (auto-deploys the latest git tree).
+#    IMPORTANT: use `railway up --detach` for code changes — the plain
+#    `railway redeploy` form redeploys the CACHED IMAGE of the last
+#    deployment (not the latest commit). See
+#    docs/R-WC-3.3-v3-deployment-complete.md#railway-snapshot-cache-gotcha.
 railway up --detach -m "<short message>"
 
 # 3. Vercel auto-deploys the web on git push. Manual redeploy:
@@ -451,6 +460,8 @@ section above for the long-term resolution plan.
 - **Deployment SOP:** [docs/SOP-DEPLOYMENT.md](docs/SOP-DEPLOYMENT.md)
 - **Gamification spec:** [docs/gamification.md](docs/gamification.md)
 - **Agent prompts:** [docs/agent-prompts.md](docs/agent-prompts.md)
+- **v3 SharedTreasuryHolder deploy:** [docs/R-WC-3.3-v3-deployment-complete.md](docs/R-WC-3.3-v3-deployment-complete.md)
+- **wc-creator end-to-end success:** [docs/R-WC-3.3-v3-wc-creator-success.md](docs/R-WC-3.3-v3-wc-creator-success.md)
 
 **Judge narrative:** A multi-market prediction exchange on Sui. DeepBook V3 is the CLOB backend; **14 autonomous agents** handle the full lifecycle (creation, market-making, resolution, parlays, streaks, prizes, referrals, risk). The flagship vertical is **FIFA World Cup 2026** — 48 teams, 12 groups, 72 group matches, all driven by a Wikipedia-scraping fetcher, an Elo-based market maker with time-decaying spread, and a multi-source resolver. Three agents (`world-cup-creator`, `world-cup-maker`, `world-cup-resolver`) form the end-to-end autonomous loop with zero humans in the loop. A single Move package composes the market, vault, parlay, and prize-pool modules so a deployer can spin up the full exchange with one PTB.
 
