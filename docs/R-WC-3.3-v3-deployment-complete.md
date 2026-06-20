@@ -46,7 +46,7 @@ The `SharedTreasuryHolder<DUSDC>` was created via `init_yes_no_currencies<DUSDC>
 1. **`TURBO_FORCE=true`** should be removed from Railway once the v3 deploy stabilizes (it forces a full rebuild on every deploy, which is slow).
 2. **Force-committed SDK `dist/`** should be removed from git tracking once turbo's Remote Cache is cleared (run `turbo clean --force` locally, then a fresh deploy to warm the cache with v3).
 3. **FeeVault\<DUSDC\>** needs to be initialized on the v3 package via `init_fee_vault_fallback<DUSDC>(ctx)` — the current `FEE_VAULT_ID` env points at the v1 FeeVault.
-4. **MarketRegistry / AgentPolicy / StreakRegistry** are still stamped with v1 (`0xb1777f167c…`). The wc-creator will hit `AGENT_POLICY_PACKAGE_ID drift` until these are migrated. This is non-blocking for market creation (register_market is best-effort).
+4. **MarketRegistry / AgentPolicy / StreakRegistry** are still stamped with v1 (`0xb1777f167c…`). The wc-creator will hit `AGENT_POLICY_PACKAGE_ID drift` until these are migrated. This is non-blocking for market creation (register_market is best-effort). **Migration:** `apps/agents/scripts/init-v3-registry.mjs` initializes a v3 `MarketRegistry` (Task #60). The AgentPolicy + StreakRegistry re-bootstrap still requires a manual `bootstrap-gamification.ts` run against the v3 package; see Task #60 follow-ups.
 
 ## Verification pending
 
