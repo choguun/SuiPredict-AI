@@ -205,6 +205,25 @@ export function readCursor(stateKey: string): EventCursor {
         `runtime=(network=${expectedTag.network}, pkg=${expectedTag.packageId}); ` +
         `discarding stale cursor and re-bootstrapping.`,
     );
+    // R-WC-3.4: rewrite the row with the current tag and a null
+    // cursor so subsequent polls stop logging the mismatch.
+    // Without this the warning spams every minute for any cursor
+    // whose event type never fires (e.g. PolicyPaused on testnet
+    // has 0 events since v3 launch — `writeCursor` is never
+    // called because `page.nextCursor` stays null when the
+    // result set is empty, so the stored (network, pkg) tag
+    // never updates on its own).
+    getDb()
+      .prepare(
+        `INSERT INTO indexer_state (key, cursor, network, package_id, updated_at_ms)
+         VALUES (?, NULL, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           cursor=NULL,
+           network=excluded.network,
+           package_id=excluded.package_id,
+           updated_at_ms=excluded.updated_at_ms`,
+      )
+      .run(stateKey, expectedTag.network, expectedTag.packageId, Date.now());
     return null as unknown as EventCursor;
   }
   if (!row.cursor) return null as unknown as EventCursor;
