@@ -63,6 +63,18 @@ export async function runPoolProvisioner(
     if (m.status !== "active") return false;
     if (typeof m.deepbook_pool_id === "string" && m.deepbook_pool_id.length === 66) return false;
     if (m.id.startsWith("wc26-") && m.onchain_market_id) return false;
+    // R-WC-3.4 v3 fresh-publish follow-up: skip `demo-*` markets.
+    // The seeded demo markets (demo-btc-100k, demo-sui-ath) live in
+    // the SQLite mirror only — they have no on-chain
+    // `PredictionMarket`, and the resolver treats them off-chain via
+    // `m.id.startsWith("demo-")`. Re-running `ensureMarketCreated`
+    // for them after a fresh package publish emits a PTB whose
+    // `MarketRegistry` arg (from the new package) doesn't match the
+    // `PredictionMarket` it would mint (which would need to be on
+    // the new package too) — Move aborts with `arg_idx: 0,
+    // kind: TypeMismatch` every tick. They never had a chain
+    // presence; skip them.
+    if (m.id.startsWith("demo-")) return false;
     return true;
   });
   if (candidates.length === 0) {
