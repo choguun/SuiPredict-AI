@@ -31,9 +31,8 @@ deps/deepbookv3-self-hosted/
 **/tsconfig.tsbuildinfo
 
 # Agents service dist (large; rebuilt on every deploy).
-# The SDK dist is still tracked so consumers can install
-# the prebuilt package; the agents service is only run
-# from source via `pnpm dev:agents` or rebuilt on deploy.
+# The agents service is only run from source via `pnpm dev:agents`
+# or rebuilt on deploy, so the dist does not need to be tracked.
 apps/agents/dist/
 
 # SQLite temp files
@@ -41,4 +40,12 @@ apps/agents/dist/
 *.db-shm
 *.db-journal
 
-packages/sdk/dist
+# SDK dist (large; rebuilt by `pnpm --filter @suipredict/sdk build`).
+# Was force-tracked previously to work around Railway's snapshot cache
+# serving stale dist files; now that we always `railway up --detach`
+# and `railpack.json`'s startCommand rebuilds the dist from src,
+# tracking the dist is no longer needed (R-WC-3.3, 2026-06-19).
+# Note: we ignore the *contents* (with `*`) but not the directory itself,
+# so the dir + a .gitkeep marker stay tracked.
+packages/sdk/dist/*
+!packages/sdk/dist/.gitkeep
