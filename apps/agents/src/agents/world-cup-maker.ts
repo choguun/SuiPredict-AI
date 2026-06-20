@@ -34,6 +34,7 @@ import {
   executeTransaction,
   listAllCoins,
   noCoinType,
+  PREDICT_MARKET_PACKAGE_ID,
   resolveDeepbookPackageId,
   yesCoinType,
 } from "@suipredict/sdk";
@@ -217,10 +218,26 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
   // the same wc26 id without needing a separate
   // join to a now-defunct on-chain row. Filter
   // for the wc26 row + a set on-chain marketId.
+  //
+  // R-WC-3.4 v3 fresh-publish follow-up: also
+  // require the cached `deepbook_base_coin_type`
+  // to start with the current `PREDICT_MARKET_PACKAGE_ID`
+  // (the type embeds the package id as its first
+  // segment). Stale rows from a previous publish
+  // would point `buildPlaceOrderTx` at an
+  // unreachable YES coin type and abort with
+  // `arg_idx: 0, kind: TypeMismatch`. The filter
+  // is cheap (string prefix on a cached column)
+  // and self-corrects on the next maker tick
+  // once the wc-creator backfills fresh rows.
+  const newPkgPrefix = PREDICT_MARKET_PACKAGE_ID.toLowerCase();
   const wcMarkets = allMarkets.filter(
     (m) =>
       m.category === "worldcup" &&
-      m.status === "active",
+      m.status === "active" &&
+      ((m as { deepbook_base_coin_type?: string | null }).deepbook_base_coin_type ?? "")
+        .toLowerCase()
+        .startsWith(newPkgPrefix),
   );
   const matchToMarket = new Map<string, { marketId: string; poolId: string }>();
   for (const m of wcMarkets) {

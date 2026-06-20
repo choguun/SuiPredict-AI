@@ -67,6 +67,7 @@ import {
   findExistingYesPool,
   listAllCoins,
   marketTypeSeed,
+  PREDICT_MARKET_PACKAGE_ID,
   // R-WC-3.4: SHARED_TREASURY_HOLDER_ID is the v3 caps holder
   // shared across all `mint_shares` / `redeem` calls. The
   // SDK defaults to the env var when this isn't passed, but
@@ -179,6 +180,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
   // `maxActive` on-chain markets on the next tick,
   // backfilling the missing on-chain state).
   const upcomingKeys = new Set(upcoming.map((m) => dedupeKey(m.id)));
+  const newPkgPrefix = PREDICT_MARKET_PACKAGE_ID.toLowerCase();
   const existing = new Set(
     listMarkets()
       .filter(
@@ -192,7 +194,22 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
           // creator would re-mint it on-chain. A
           // post-R-WC-1 row has `onchain_market_id`
           // set and the creator skips it.
-          (m as { onchain_market_id?: string | null }).onchain_market_id,
+          (m as { onchain_market_id?: string | null }).onchain_market_id &&
+          // R-WC-3.4 v3 fresh-publish follow-up: also
+          // require the on-chain market to live on the
+          // CURRENT package. After a fresh publish, the
+          // SQLite still holds rows whose `onchain_market_id`
+          // points at the old package; the creator can't
+          // reach them (every PTB aborts with `arg_idx: 0,
+          // kind: TypeMismatch`), so they should not
+          // occupy the cap. The cheap proxy is the cached
+          // `deepbook_base_coin_type` — it embeds the
+          // package id as the first segment. If the row is
+          // missing it (a pre-DB-schema-3 market) we fall
+          // through and treat it as stale.
+          ((m as { deepbook_base_coin_type?: string | null }).deepbook_base_coin_type ?? "")
+            .toLowerCase()
+            .startsWith(newPkgPrefix),
       )
       .map((m) => m.id),
   );
