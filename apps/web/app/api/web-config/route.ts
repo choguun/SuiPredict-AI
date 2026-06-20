@@ -79,6 +79,17 @@ const PUBLIC_ENV = {
   // before a user hits the wallet spinner.
   NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID:
     process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID ?? "",
+  // R-WC-3.4: include the v3 caps-holder id in the
+  // drift-detector surface. The SDK defaults to
+  // `SHARED_TREASURY_HOLDER_ID` for every
+  // `mint_shares` / `redeem` call when this env var
+  // is empty; an unset value at bundle-build time
+  // would silently fall back to a dev testnet id.
+  // Surfacing it here lets the agents dashboard
+  // flag bundle ↔ agents drift before the user
+  // sees a "CapsHolderMismatch" abort on mint.
+  NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID:
+    process.env.NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID ?? "",
 } as const;
 
 export function GET() {

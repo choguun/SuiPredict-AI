@@ -53,10 +53,11 @@ try {
     }
   }
   console.log(
-    "\nNEXT STEP: copy the FeeVault<DUSDC> id above and set it on Railway as",
+    "\nNEXT STEP: copy the FeeVault<DUSDC> id above and set it on Railway + Vercel as",
     "\n  FEE_VAULT_ID=<that-id>",
     "\n  NEXT_PUBLIC_FEE_VAULT_ID=<that-id>",
-    "\n  NEXT_PUBLIC_FEE_VAULT_ID_V3=<that-id>",
+    "\n  SHARED_TREASURY_HOLDER_ID=<that-id>",
+    "\n  NEXT_PUBLIC_SHARED_TREASURY_HOLDER_ID=<that-id>",
   );
 } catch (e) {
   console.error("\n❌ v3 FeeVault init failed:", e instanceof Error ? e.message : e);

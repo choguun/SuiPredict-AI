@@ -9,7 +9,7 @@ import {
   useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { buildDisputeMarketTx, getMarket, isMoveAbortCode, marketTypeSeed, withMarketType } from "@suipredict/sdk";
+import { buildDisputeMarketTx, getMarket, isMoveAbortCode, marketTypeSeed } from "@suipredict/sdk";
 import { Card } from "@/components/ui";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";

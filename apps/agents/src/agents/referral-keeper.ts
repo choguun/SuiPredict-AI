@@ -152,7 +152,7 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
       const { market, poolId } = work[i]!;
       try {
         const tx = buildClaimReferralRewardsTx(poolId, market.referral_id!);
-        const result = await executeTransaction(client, tx, ctx.signer);
+        const result = await executeTransaction(client, () => tx, ctx.signer);
         results[i] = {
           kind: "claimed",
           label: `${market.id.slice(0, 12)}... → ${result.digest.slice(0, 8)}`,
@@ -223,7 +223,7 @@ export async function runReferralKeeper(ctx: AgentContext): Promise<AgentResult>
     if (newCoinIds.length > 0) {
       try {
         const fwdTx = buildForwardTx(newCoinIds, REFERRAL_TREASURY_ADDRESS);
-        const r = await executeTransaction(client, fwdTx, ctx.signer);
+        const r = await executeTransaction(client, () => fwdTx, ctx.signer);
         forwardedDigest = r.digest;
       } catch (err) {
         // Don't fail the whole sweep if the forward fails — the

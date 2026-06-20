@@ -330,7 +330,7 @@ See **[.env.example](.env.example)** for the full list. Key groups:
 | `DEEPBOOK_PACKAGE_ID` / `DEEPBOOK_REGISTRY_ID` | on-chain mode | Testnet defaults baked in (`0xdee9` / `0xe0ce`) |
 | `AGENT_PRIVATE_KEY` | on-chain mode | Base58 ed25519 secret — server-side only |
 | `PRIZE_ADMIN_PRIVATE_KEY` | prize distribution | Base64 ed25519; signs weekly claim payloads |
-| `OPENAI_API_KEY` | LLM agents | market-creator / market-resolver; blank → deterministic mock |
+| `MINIMAX_API_KEY` | LLM agents | market-creator / market-resolver; blank → deterministic mock |
 | `PORT` | agents service | Defaults to 3001 |
 | `LOG_LEVEL` | agents service | `debug` / `info` / `warn` / `error` |
 | `RISK_PAUSE_UTILIZATION` | risk monitor | Pause threshold (0-1, default 0.80) |
@@ -407,7 +407,7 @@ The deployed services:
 
 | Component | URL | Stack |
 |---|---|---|
-| **Web (Vercel)** | `https://suipredict-web.vercel.app` | Next.js 15 + React 19, 52 production env vars mirrored from local `.env` (skipping the four secrets: `AGENT_PRIVATE_KEY`, `PRIZE_ADMIN_PRIVATE_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`) |
+| **Web (Vercel)** | `https://suipredict-web.vercel.app` | Next.js 15 + React 19, 52 production env vars mirrored from local `.env` (skipping the three secrets: `AGENT_PRIVATE_KEY`, `PRIZE_ADMIN_PRIVATE_KEY`, `MINIMAX_API_KEY`) |
 | **Agents (Railway)** | `https://agents-production-11fd.up.railway.app` | Node 20 + `pnpm start` via Railpack (the `railpack.json` at repo root rebuilds SDK + agents at container start so `dist/` is always fresh). 5 GB persistent volume at `/data` mounted as `DATA_DIR` so the SQLite mirror survives redeploys. |
 | **Vercel → agents wire** | `NEXT_PUBLIC_AGENTS_URL=https://agents-production-11fd.up.railway.app` on Vercel | CORS locked to `https://suipredict-web.vercel.app` via `ALLOWED_ORIGIN` on Railway (`apps/agents/src/http-cors.ts:90-97` hard-fails the boot in `NODE_ENV=production` if unset) |
 

@@ -62,6 +62,21 @@ export interface MarketInfo {
    * markets (no on-chain creation) leave it null.
    */
   onchain_market_id?: string | null;
+  /**
+   * R-WC-3.4: per-market phantom `M` (a 32-byte hex address from
+   * `marketTypeSeed`). Written by the creator at create time and
+   * read back by the maker / resolver so they thread the
+   * *exact* same `M` into `buildPlaceOrderTx` /
+   * `buildResolveMarketTx` / `buildMintSharesTx` — without
+   * agreeing on `M`, the on-chain `<Q, M>` signature aborts with
+   * a `TypeMismatch` on the second PTB.
+   *
+   * NULL for pre-R-WC-3.4 rows. The resolver falls back to
+   * `marketTypeSeed(id)` for `wc26-*` rows (where `id` IS the
+   * creator-time seed) and to `undefined` for legacy
+   * single-phantom markets.
+   */
+  pool_type_seed?: string | null;
 }
 
 export interface OrderBookLevel {

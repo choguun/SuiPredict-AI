@@ -16,7 +16,6 @@ import {
   normalizeObjectId,
   isMoveAbortInModule,
   marketTypeSeed,
-  withMarketType,
 } from "@suipredict/sdk";
 import { EmptyState, openConnectModal } from "@/components/EmptyState";
 import { useRouter } from "next/navigation";

@@ -35,3 +35,18 @@ jobs:
 
       - name: Move build
         run: pnpm contracts:build
+
+      - name: Move tests
+        run: pnpm contracts:test
+
+      - name: SDK tests
+        run: pnpm --filter @suipredict/sdk test --if-present
+
+      - name: Agents tests
+        run: pnpm --filter @suipredict/agents test --if-present
+
+      - name: Web lint
+        run: pnpm --filter @suipredict/web lint --if-present
+
+      - name: Agents lint
+        run: pnpm --filter @suipredict/agents lint --if-present

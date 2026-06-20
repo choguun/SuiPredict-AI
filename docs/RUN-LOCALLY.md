@@ -14,7 +14,7 @@ If you have an `AGENT_PRIVATE_KEY` and want to see real on-chain state, see the 
 | Git | any | — |
 
 Optional:
-- An `OPENAI_API_KEY` if you want LLM-driven market proposals (otherwise the WC creator + generic creator fall back to deterministic mock markets)
+- A `MINIMAX_API_KEY` if you want LLM-driven market proposals (otherwise the WC creator + generic creator fall back to deterministic mock markets)
 
 ## 1. First-time setup (~2 min)
 

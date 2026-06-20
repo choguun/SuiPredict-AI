@@ -38,7 +38,6 @@ import {
   buildResolveMarketTx,
   executeTransaction,
   marketTypeSeed,
-  withMarketType,
 } from "@suipredict/sdk";
 import type { AgentContext, AgentResult } from "../lib.js";
 import { getSharedClient, recordResult, safeInt } from "../lib.js";
@@ -472,8 +471,16 @@ export async function runWorldCupResolver(ctx: AgentContext): Promise<AgentResul
       // already have caught via the
       // `!market.pool_id` branch).
       const onchainId = market.onchain_market_id ?? market.id;
-      const tx = buildResolveMarketTx(onchainId, outcome);
-      const result2 = await executeTransaction(client, tx, ctx.signer);
+      const tx = buildResolveMarketTx(
+        onchainId,
+        outcome,
+        // R-WC-3.4 fix: read the per-market phantom `M`
+        // stored at create time. Falls back to deriving
+        // from `market.id` for legacy rows (where `id`
+        // IS the creator-time seed for `wc26-*` rows).
+        market.pool_type_seed || marketTypeSeed(market.id),
+      );
+      const result2 = await executeTransaction(client, () => tx, ctx.signer);
       upsertMarket({
         ...market,
         status: "resolved",
@@ -575,8 +582,13 @@ async function commitResolution(
     const tx = buildResolveMarketTx(
       market.onchain_market_id ?? market.id,
       outcome,
+      // R-WC-3.4 fix: per-market phantom `m` (see
+      // primary path above — read from
+      // `market.pool_type_seed`, fall back to deriving
+      // from `market.id` for legacy rows).
+      market.pool_type_seed || marketTypeSeed(market.id),
     );
-    const onChainResult = await executeTransaction(client, tx, ctx.signer);
+    const onChainResult = await executeTransaction(client, () => tx, ctx.signer);
     upsertMarket({
       ...market,
       status: "resolved",

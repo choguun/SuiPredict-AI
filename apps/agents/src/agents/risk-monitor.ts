@@ -92,7 +92,7 @@ export async function runRiskMonitor(ctx: AgentContext): Promise<AgentResult> {
     }
     try {
       const tx = buildPausePolicyTx(ctx.policyId, agentPolicyPkg);
-      const result = await executeTransaction(client, tx, ctx.signer);
+      const result = await executeTransaction(client, () => tx, ctx.signer);
       return recordResult("RiskMonitor", {
         action: "pause_policy",
         reasoning: `Critical vault utilization ${(utilization * 100).toFixed(2)}% — paused agent policy.`,

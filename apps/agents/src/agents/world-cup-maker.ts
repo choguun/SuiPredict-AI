@@ -36,7 +36,6 @@ import {
   marketTypeSeed,
   noCoinType,
   resolveDeepbookPackageId,
-  withMarketType,
   yesCoinType,
 } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
@@ -224,7 +223,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
       m.category === "worldcup" &&
       m.status === "active",
   );
-  const matchToMarket = new Map<string, { marketId: string; poolId: string }>();
+  const matchToMarket = new Map<string, { marketId: string; poolId: string; m: string }>();
   for (const m of wcMarkets) {
     // The row's `id` is the wc26 form, the
     // `onchain_market_id` is the on-chain
@@ -238,6 +237,13 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
     matchToMarket.set(wcId, {
       marketId: m.onchain_market_id || m.id,
       poolId: m.deepbook_pool_id || "",
+      // R-WC-3.4 fix: read the per-market phantom `M`
+      // stored at create time. Falls back to deriving
+      // from the SQLite `id` for legacy rows (where
+      // `id` IS the creator-time seed — `wc26-E1v4`
+      // form). Without this, the PTB's
+      // `place_order<Q, M>` reverts on type mismatch.
+      m: m.pool_type_seed || marketTypeSeed(m.id),
     });
   }
 
@@ -360,7 +366,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         typeArguments: [DUSDC_TYPE],
         arguments: [depTx.object(balanceManagerId), depTx.object(dusdcId)],
       });
-      await executeTransaction(client, depTx, ctx.signer);
+      await executeTransaction(client, () => depTx, ctx.signer);
       if (agentPolicyId) {
         // R60 audit fix: the previous hardcoded
         // `5` was a random guess — the actual
@@ -386,7 +392,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
           ctx.maxBudgetUsdc,
         );
         const authTx = buildAuthorizeSpendTx(agentPolicyId, cycleAuthDollars);
-        await executeTransaction(client, authTx, ctx.signer);
+        await executeTransaction(client, () => authTx, ctx.signer);
       }
       const placeTx = buildPlaceOrderTx({
         marketId: found.marketId,
@@ -396,8 +402,15 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         quantity: BigInt(quoteSize),
         isBid: true,
         clientOrderId: BigInt(Date.now() % 1_000_000),
+        // R-WC-3.4 fix: pass the per-market phantom `m`
+        // (pre-computed in the matchToMarket map above) so
+        // the PTB's `place_order<Q, M>` reverts on type
+        // mismatch. The maker's every-2-min cadence means
+        // this is the *next* failure to surface after
+        // Task #70 (wc-creator m) is fixed.
+        m: found.m,
       });
-      await executeTransaction(client, placeTx, ctx.signer);
+      await executeTransaction(client, () => placeTx, ctx.signer);
       // Mirror into SQLite so the agent feed shows the quote.
       // R60 audit fix: same bid/ask bps fix as the
       // demo-path above. Use the on-chain bid

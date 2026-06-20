@@ -7,7 +7,8 @@ import {
   extractCreatedObjectId,
   listAllCoins,
   marketTypeSeed,
-  withMarketType,
+  // R-WC-3.4: SHARED_TREASURY_HOLDER_ID is the v3 caps holder.
+  SHARED_TREASURY_HOLDER_ID,
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
@@ -269,7 +270,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         typeArguments: [DEEP_TYPE],
         arguments: [splitTx.object(deepCoin.objectId), splitTx.pure.u64(POOL_CREATION_FEE_DEEP)],
       });
-      await executeTransaction(client, splitTx, ctx.signer);
+      await executeTransaction(client, () => splitTx, ctx.signer);
       // Retry finding the exact 500M coin (gRPC may lag)
       for (let attempt = 0; attempt < 10; attempt++) {
         if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
@@ -281,6 +282,15 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     }
 
     // Step 2: create the market
+    // R-WC-3.4 fix: derive the per-market phantom `m` from
+    // a stable string (the spec's `title`, normalized) so
+    // create / mint / resolve all share the same `m`. The
+    // resolver will re-derive the same seed from
+    // `market.id` (the SQLite row, which equals the
+    // `title` slug for the parent creator — see
+    // `upsertMarket` at line 245).
+    const marketSeed = spec.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60);
+    const marketTypeM = marketTypeSeed(marketSeed);
     const createTx = buildCreateMarketTx({
       title: spec.title,
       resolutionSource: spec.resolution_source,
@@ -290,9 +300,10 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
       minSize: BigInt(1_000_000),
       deepCoinId: feeCoinId!,
       category: categoryToCode(spec.category),
+      m: marketTypeM,
     });
 
-    const createResult = await executeTransaction(client, createTx, ctx.signer);
+    const createResult = await executeTransaction(client, () => createTx, ctx.signer);
     const marketId = await extractCreatedObjectId(client, createResult.digest, "PredictionMarket");
     if (!marketId) throw new Error("PredictionMarket object not found in effects");
 
@@ -350,8 +361,8 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         referral_id: null,
         created_at_ms: Date.now(),
       });
-      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
-      const referralResult = await executeTransaction(client, referralTx, ctx.signer);
+      const referralTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000), marketTypeM);
+      const referralResult = await executeTransaction(client, () => referralTx, ctx.signer);
       // `extractCreatedObjectId` returns null if the struct name
       // doesn't match the suffix used by gRPC's `objectTypes[objectId]`
       // render — a typo here means `referral_id` is never persisted,
@@ -400,7 +411,7 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
     if (marketRegistryId) {
       try {
         const registerTx = buildRegisterMarketTx(marketRegistryId, marketId);
-        await executeTransaction(client, registerTx, ctx.signer);
+        await executeTransaction(client, () => registerTx, ctx.signer);
       } catch (regErr) {
         console.warn(
           `[market-creator] register_market failed for ${marketId}:`,
@@ -439,8 +450,17 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
               feeVaultId,
               dusdcCoin.objectId,
               initialMintAtoms,
+              // R-WC-3.4 fix: per-market phantom `m` and
+              // explicit `SHARED_TREASURY_HOLDER_ID` (v3
+              // caps holder). Without `m` the mint
+              // reverts on type mismatch; without the
+              // shared caps id the SDK defaults to the
+              // env, which is fine but explicit makes the
+              // log path traceable.
+              marketTypeM,
+              SHARED_TREASURY_HOLDER_ID,
             );
-            const mintResult = await executeTransaction(client, mintTx, ctx.signer);
+            const mintResult = await executeTransaction(client, () => mintTx, ctx.signer);
             initialMintDigest = mintResult.digest;
           }
         } else {
@@ -482,6 +502,13 @@ export async function runMarketCreator(ctx: AgentContext): Promise<AgentResult> 
         deepbook_quote_scalar: 1_000_000,
         referral_id: null,
         created_at_ms: Date.now(),
+        // R-WC-3.4 fix: store the per-market phantom
+        // `M` so the resolver can re-derive it on
+        // resolve. The market-creator's seed string
+        // is the normalised title (see `marketSeed`
+        // at line 287) — store the same value the
+        // builder used.
+        pool_type_seed: marketTypeM,
       });
     }
 

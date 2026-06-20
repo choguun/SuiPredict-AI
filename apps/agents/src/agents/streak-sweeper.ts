@@ -834,7 +834,7 @@ export async function runStreakSweeper(
       process.env.AGENT_POLICY_PACKAGE_ID ?? "",
     );
     try {
-      const res = await executeTransaction(client, tx, ctx.signer);
+      const res = await executeTransaction(client, () => tx, ctx.signer);
       // Re-read `current_streak` for every user in the batch so the
       // off-chain `daily_scores.streak_after` reflects the on-chain
       // state immediately rather than waiting for the next indexer
@@ -898,7 +898,7 @@ export async function runStreakSweeper(
         let outcome: Outcome = { kind: "failed", err: null };
         for (let attempt = 0; attempt <= PER_USER_MAX_RETRY; attempt++) {
           try {
-            await executeTransaction(client, singleTx, ctx.signer);
+            await executeTransaction(client, () => singleTx, ctx.signer);
             outcome = { kind: "ok" };
             break;
           } catch (e) {

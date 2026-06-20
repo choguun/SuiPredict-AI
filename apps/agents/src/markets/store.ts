@@ -66,7 +66,17 @@ export function getDb(): Database.Database {
         deepbook_quote_scalar INTEGER,
         referral_id TEXT,
         onchain_market_id TEXT,
-        created_at_ms INTEGER NOT NULL
+        created_at_ms INTEGER NOT NULL,
+        -- R-WC-3.4: per-market phantom M (a 32-byte hex
+        -- address from marketTypeSeed). Stored on the
+        -- row at create time so the maker, resolver,
+        -- and any future caller can re-derive the
+        -- exact same M without knowing the creator-time
+        -- seed string. NULL for legacy / pre-R-WC-3.4
+        -- markets — those callers fall back to deriving
+        -- from id for wc26-* rows or skip the m arg
+        -- (legacy single-phantom).
+        pool_type_seed TEXT
       );
       CREATE TABLE IF NOT EXISTS demo_orders (
         market_id TEXT NOT NULL,
@@ -331,6 +341,15 @@ function migrateMarketColumns() {
     // `buildResolveMarketTx` and the maker's
     // `buildPlaceOrderTx` calls.
     onchain_market_id: "TEXT",
+    // R-WC-3.4: per-market phantom `M` (a 32-byte hex
+    // address from `marketTypeSeed`). Stored on the row
+    // at create time so the maker / resolver / future
+    // callers can re-derive the exact same `M` without
+    // needing to know the creator-time seed string.
+    // NULL for pre-R-WC-3.4 rows; the resolver falls
+    // back to `marketTypeSeed(id)` for `wc26-*` rows
+    // and skips `m` for legacy single-phantom markets.
+    pool_type_seed: "TEXT",
   };
   for (const [name, type] of Object.entries(columns)) {
     if (!existing.has(name)) {
@@ -579,10 +598,12 @@ export function upsertMarket(market: MarketInfo): void {
       `INSERT INTO markets
        (id, title, description, category, expiry_ms, resolution_source, status, outcome, pool_id, order_book_id,
         deepbook_pool_key, deepbook_pool_id, deepbook_base_coin_type, deepbook_quote_coin_type,
-        deepbook_base_scalar, deepbook_quote_scalar, referral_id, onchain_market_id, created_at_ms)
+        deepbook_base_scalar, deepbook_quote_scalar, referral_id, onchain_market_id, created_at_ms,
+        pool_type_seed)
        VALUES (@id, @title, @description, @category, @expiry_ms, @resolution_source, @status, @outcome, @pool_id, @order_book_id,
         @deepbook_pool_key, @deepbook_pool_id, @deepbook_base_coin_type, @deepbook_quote_coin_type,
-        @deepbook_base_scalar, @deepbook_quote_scalar, @referral_id, @onchain_market_id, @created_at_ms)
+        @deepbook_base_scalar, @deepbook_quote_scalar, @referral_id, @onchain_market_id, @created_at_ms,
+        @pool_type_seed)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, description=excluded.description, category=excluded.category,
          expiry_ms=excluded.expiry_ms, resolution_source=excluded.resolution_source,
@@ -594,7 +615,8 @@ export function upsertMarket(market: MarketInfo): void {
          deepbook_base_scalar=excluded.deepbook_base_scalar,
          deepbook_quote_scalar=excluded.deepbook_quote_scalar,
          referral_id=excluded.referral_id,
-         onchain_market_id=excluded.onchain_market_id`,
+         onchain_market_id=excluded.onchain_market_id,
+         pool_type_seed=excluded.pool_type_seed`,
     )
     .run({
       ...market,
@@ -608,6 +630,7 @@ export function upsertMarket(market: MarketInfo): void {
       deepbook_base_scalar: market.deepbook_base_scalar ?? null,
       deepbook_quote_scalar: market.deepbook_quote_scalar ?? null,
       referral_id: market.referral_id ?? null,
+      pool_type_seed: market.pool_type_seed ?? null,
       // R60 audit fix: persist the on-chain marketId
       // for the consolidated wc26 row. The resolver
       // and maker read this for their on-chain PTBs.
@@ -1364,5 +1387,11 @@ function rowToMarket(row: unknown): MarketInfo {
     // creation succeeds; the wc-resolver and
     // wc-maker read it for their on-chain PTBs.
     onchain_market_id: (r.onchain_market_id as string) ?? null,
+    // R-WC-3.4: per-market phantom `M`. Written by the
+    // creator at create time; read back by the
+    // maker / resolver so they thread the same `M`
+    // into their PTBs (without this, the on-chain
+    // `<Q, M>` signature aborts with TypeMismatch).
+    pool_type_seed: (r.pool_type_seed as string) ?? null,
   };
 }

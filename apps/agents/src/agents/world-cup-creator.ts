@@ -67,7 +67,11 @@ import {
   findExistingYesPool,
   listAllCoins,
   marketTypeSeed,
-  withMarketType,
+  // R-WC-3.4: SHARED_TREASURY_HOLDER_ID is the v3 caps holder
+  // shared across all `mint_shares` / `redeem` calls. The
+  // SDK defaults to the env var when this isn't passed, but
+  // passing explicitly makes the path traceable in logs.
+  SHARED_TREASURY_HOLDER_ID,
   yesCoinType,
 } from "@suipredict/sdk";
 import { DEEP_TYPE, POOL_CREATION_FEE_DEEP } from "@suipredict/sdk";
@@ -437,7 +441,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
               splitTx.pure.u64(POOL_CREATION_FEE_DEEP),
             ],
           });
-          const splitResult = await executeTransaction(client, splitTx, ctx.signer);
+          const splitResult = await executeTransaction(client, () => splitTx, ctx.signer);
           // The split PTB's effects list the newly
           // minted coin. The SDK's `extractCreatedObjectId`
           // returns the first object of the matching
@@ -472,6 +476,15 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // Every WC match now gets a real on-chain
       // `PredictionMarket` object — no more SQLite-only
       // demo rows.
+      // R-WC-3.4 fix: derive the per-market phantom `m` from the
+      // SQLite row's primary key (`wc26-<matchId>`). Threaded through
+      // `ensureMarketCreated` → `buildCreateMarketTx<Q, M>` so every
+      // market gets a unique `Currency<YES<DUSDC, M>>` registration
+      // in the Sui CoinRegistry (v3 design — see R-WC-4 design spec).
+      // Without this, all markets collide on the legacy
+      // `Currency<YES<DUSDC>>` shape and the second tick trips
+      // `ECurrencyAlreadyExists` circuit-breaker with the wrong type.
+      const marketTypeM = marketTypeSeed(dedupeKey(m.id));
       const createdMarket = await ensureMarketCreated(client, ctx.signer, deepbookRegistryId || null, {
         title: matchWinnerTitle(m),
         resolutionSource: matchWinnerResolutionSource(m),
@@ -481,6 +494,7 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
         tickSize: BigInt(1_000_000),
         lotSize: BigInt(1_000_000),
         minSize: BigInt(1_000_000),
+        m: marketTypeM,
       });
       const marketId = createdMarket.marketId;
       const poolId = createdMarket.poolId;
@@ -544,9 +558,26 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
             referral_id: null,
             onchain_market_id: marketId,
             created_at_ms: Date.now(),
+            // R-WC-3.4 fix: store the per-market phantom
+            // `M` so the maker + resolver can re-derive
+            // the same `M` without knowing the
+            // creator-time seed string. Falls back to
+            // `marketTypeSeed(id)` for `wc26-*` rows
+            // (where `id` IS the seed) but storing
+            // explicitly removes the dependency.
+            pool_type_seed: marketTypeM,
           });
-          const refTx = buildSetupReferralTx(marketId, poolId, BigInt(1_000_000_000));
-          const refResult = await executeTransaction(client, refTx, ctx.signer);
+          const refTx = buildSetupReferralTx(
+            marketId,
+            poolId,
+            BigInt(1_000_000_000),
+            // R-WC-3.4 fix: pass the per-market phantom `m`
+            // so the PTB's `setup_referral<Q, M>` reverts on
+            // type mismatch. `referral_multiplier` is 1.0;
+            // the Bps conversion handles that.
+            marketTypeM,
+          );
+          const refResult = await executeTransaction(client, () => refTx, ctx.signer);
           const refId = await extractCreatedObjectId(client, refResult.digest, "DeepBookPoolReferral");
           if (refId) patchMarketReferralId(dedupeKey(m.id), refId);
         }
@@ -560,8 +591,14 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
       // Step 4: register in the global market registry (best effort)
       if (marketRegistryId) {
         try {
+          // R-WC-3.4 fix: `buildRegisterMarketTx` targets
+          // `registry::register_market` (no per-market
+          // phantom — it's a flat-id registry), so no `m`
+          // param. We DO wrap in factory shape so the
+          // rebuild-on-retry path catches any sibling
+          // gas-coin races.
           const regTx = buildRegisterMarketTx(marketRegistryId, marketId);
-          await executeTransaction(client, regTx, ctx.signer);
+          await executeTransaction(client, () => regTx, ctx.signer);
         } catch (regErr) {
           console.warn(
             `[wc-creator] register_market failed for ${m.id}:`,
@@ -583,8 +620,17 @@ export async function runWorldCupCreator(ctx: AgentContext): Promise<AgentResult
               feeVaultId,
               dusdcCoin.objectId,
               BigInt(initialMintAtoms),
+              // R-WC-3.4 fix: pass the per-market phantom `m`
+              // (same as `ensureMarketCreated` was called with
+              // above) and `SHARED_TREASURY_HOLDER_ID` (v3 caps
+              // holder, defaults via env when undefined). Without
+              // `m`, the PTB's `mint_shares<Q, M>` reverts on
+              // type mismatch. Without `sharedCapsId`, the SDK
+              // falls back to the env default — both must agree.
+              marketTypeM,
+              SHARED_TREASURY_HOLDER_ID,
             );
-            await executeTransaction(client, mintTx, ctx.signer);
+            await executeTransaction(client, () => mintTx, ctx.signer);
           }
         } catch (mintErr) {
           console.warn(

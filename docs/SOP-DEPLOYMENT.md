@@ -37,7 +37,7 @@ This document is the runbook for taking SuiPredict-AI from a fresh clone to a li
 │  Agents host (apps/agents)                                     │
 │    - Node 20 LTS, persistent disk (./data/*.db)                │
 │    - private env: AGENT_PRIVATE_KEY, PRIZE_ADMIN_PRIVATE_KEY,  │
-│      OPENAI_API_KEY, internal RPC/GRPC URLs                    │
+│      MINIMAX_API_KEY, internal RPC/GRPC URLs                    │
 │    - exposes :3001 (or $PORT)                                  │
 └─────────────────────┬──────────────────────────────────────────┘
                       │ gRPC / REST

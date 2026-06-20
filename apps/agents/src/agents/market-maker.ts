@@ -289,7 +289,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
         typeArguments: [quoteType],
         arguments: [mintTx.object(treasuryCapId), mintTx.pure.u64(1_000_000_000_000n), mintTx.pure.address(agentAddr)],
       });
-      await executeTransaction(client, mintTx, ctx.signer);
+      await executeTransaction(client, () => mintTx, ctx.signer);
       const freshCoins = await listAllCoins(client, agentAddr, quoteType);
       dusdcId = freshCoins.find((c: any) => BigInt(c.balance) >= 1_000_000n)?.objectId;
       if (!dusdcId) throw new Error("Failed to mint DUSDC");
@@ -349,7 +349,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
         ],
       });
     }
-    await executeTransaction(client, setupTx, ctx.signer);
+    await executeTransaction(client, () => setupTx, ctx.signer);
 
     // 2. Atomic PTB #2: place_limit_order bid + place_limit_order ask.
     // The bid and ask are placed in the same PTB with
@@ -408,7 +408,7 @@ export async function runMarketMaker(ctx: AgentContext): Promise<AgentResult> {
         orderTx.object.clock(),
       ],
     });
-    const result = await executeTransaction(client, orderTx, ctx.signer);
+    const result = await executeTransaction(client, () => orderTx, ctx.signer);
 
     // Record on-chain orders in SQLite so the frontend order book stays in sync.
     // Use unique numeric IDs derived from the shared

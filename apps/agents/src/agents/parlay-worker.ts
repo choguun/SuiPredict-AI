@@ -176,7 +176,7 @@ async function recordOneLeg(
   for (let attempt = 0; attempt <= PER_LEG_MAX_RETRY; attempt++) {
     try {
       const tx = buildSingleRecordLegTx(parlayId, marketId, legIndex);
-      const res = await executeTransaction(client, tx, signer);
+      const res = await executeTransaction(client, () => tx, signer);
       return { kind: "ok", digest: res.digest };
     } catch (e) {
       if (isPermanentParlayError(e)) {
@@ -465,7 +465,7 @@ export async function runParlayWorker(
         poolId: parlay.pool_id,
         coinType: DUSDC_TYPE,
       });
-      const res = await executeTransaction(client, tx, ctx.signer);
+      const res = await executeTransaction(client, () => tx, ctx.signer);
       finalized++;
       console.log(
         `[parlay-worker] finalized parlay ${parlay.parlay_id} → ${res.digest}`,

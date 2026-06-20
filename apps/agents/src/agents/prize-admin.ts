@@ -206,7 +206,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
           eligible.objectId,
           prizeFundAmount,
         );
-        const r = await executeTransaction(client, fundTx, ctx.signer);
+        const r = await executeTransaction(client, () => fundTx, ctx.signer);
         fundedAmount = prizeFundAmount;
         notes.push(
           `funded ${prizeFundAmount} DUSDC: ${r.digest.slice(0, 12)}…`,
@@ -288,7 +288,7 @@ export async function runPrizeAdmin(ctx: AgentContext): Promise<AgentResult> {
             BigInt(priorWeek),
           );
           try {
-            const r = await executeTransaction(client, settleTx, ctx.signer);
+            const r = await executeTransaction(client, () => settleTx, ctx.signer);
             settledWeek = priorWeek;
             notes.push(
               `settled week ${priorWeek} (weekly_prize=${priorWeeklyPrize}): ` +

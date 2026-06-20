@@ -37,7 +37,6 @@ import {
   tupleBookToSnapshot,
   yesCoinType,
   marketTypeSeed,
-  withMarketType,
   isMoveAbortInModule,
   type MarketInfo,
   type OrderBookSnapshot,
@@ -480,8 +479,12 @@ function MarketDetailBody({
     // 1m ago" rather than a
     // misleading "Updated now"
     // that suggests data that's
-    // not there).
-    setLastBookRefreshMs(Date.now());
+    // not there). The stamp is
+    // now set INSIDE the `try`
+    // block below, after the
+    // successful `getMarket`
+    // resolution (R-Refresh audit
+    // fix).
     let m: MarketInfo;
     try {
       // R55 audit fix: normalize the market id before
@@ -513,6 +516,21 @@ function MarketDetailBody({
       // wc26-* page errored out at the load step.
       const isLikelySuiId = /^0x[0-9a-fA-F]{64}$/.test(marketId);
       m = await getMarket(isLikelySuiId ? normalizeObjectId(marketId) : marketId);
+      // R-Refresh audit fix: stamp the refresh
+      // timestamp AFTER the successful fetch,
+      // not before. Pre-fix, `setLastBookRefreshMs(Date.now())`
+      // ran at line 483 BEFORE the `try`, so a
+      // thrown `getMarket` error (404, agents
+      // 5xx, network down) left the page
+      // displaying "Updated 0s ago" against
+      // empty book data. The user thought the
+      // data was fresh but missing — the actual
+      // cause was the failed fetch. Moving the
+      // stamp into the `try` block, after the
+      // awaited call resolves, ensures the
+      // "Updated Ns ago" copy matches the
+      // freshness of the data it's labelling.
+      setLastBookRefreshMs(Date.now());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // R58 audit fix: classify the error so the UI doesn't

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Card } from "@/components/ui";
 import { LeaderboardTable } from "@/components/LeaderboardTable";
+import { AgentsDownBanner } from "@/components/AgentsDownBanner";
 
 export const dynamic = "force-dynamic";
 
@@ -174,6 +175,33 @@ export default async function LeaderboardPage({
           </p>
         )}
       </div>
+
+      {/* R-UX-AGENTSBANNER fix: surface a
+          "service down" banner above the
+          hero when the agents /leaderboard
+          endpoint 5xx's. Pre-fix, the page
+          still rendered the empty Filter
+          card + a "no rows" message inside
+          LeaderboardTable with no hint why;
+          the user assumed the data was
+          just empty. The banner leads with
+          the operator-actionable fix
+          ("Start the agents service") so
+          a deploy gone wrong surfaces
+          immediately on the first page
+          load instead of a stale
+          "no rows" message. The banner
+          renders BEFORE the filter card so
+          the user sees it above the fold
+          without scrolling. Only the
+          top-level fetch error surfaces
+          here; per-user address lookup
+          errors (the second try/catch
+          below) keep their inline row
+          treatment as before. */}
+      {initialError && !initialData && (
+        <AgentsDownBanner message={initialError} />
+      )}
 
       <Card title="Filter" className="border-white/10">
         <form className="flex flex-wrap items-end gap-3" method="get">

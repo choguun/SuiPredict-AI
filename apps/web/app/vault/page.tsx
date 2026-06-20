@@ -17,6 +17,7 @@ import {
 } from "@suipredict/sdk";
 import { Card, Stat } from "@/components/ui";
 import { EmptyState, openConnectModal } from "@/components/EmptyState";
+import { AgentsDownBanner } from "@/components/AgentsDownBanner";
 import { clampNumberString } from "@/lib/forms";
 import { submitAndWait } from "@/lib/dapp-kit";
 import { toast } from "sonner";
@@ -133,6 +134,21 @@ export default function VaultPage() {
     total_balance: string;
     allocated: string;
   } | null>(null);
+  // R-UX-AGENTSBANNER fix: track the latest
+  // agents-fetch error so the page can render
+  // `<AgentsDownBanner />` instead of a silent
+  // empty state when the agents service is
+  // unreachable. The vault summary endpoint is
+  // the only data source for the top stats; if
+  // it 5xx's, the previous build just rendered
+  // three "—" tiles and the user had no way to
+  // tell the service was down vs. just empty.
+  // Pre-fix, the same 5xx on /vault rendered
+  // a raw 21-byte "Internal Server Error"
+  // page — the banner gives the user the
+  // operator-actionable next step
+  // (`pnpm --filter @suipredict/agents dev`).
+  const [agentsError, setAgentsError] = useState<string | null>(null);
   const [amount, setAmount] = useState(10);
   const [vlpBalance, setVlpBalance] = useState(0);
   const [vlpCoinId, setVlpCoinId] = useState("");
@@ -165,12 +181,36 @@ export default function VaultPage() {
   }, [queryClient, account?.address]);
 
   async function refresh() {
-    const s = await getVaultSummaryClob();
+    // R-UX-AGENTSBANNER fix: surface
+    // a human-readable error string
+    // so the page can render
+    // `<AgentsDownBanner />` above
+    // the hero. The previous
+    // signature swallowed the
+    // exception and left the user
+    // staring at three "—" stat
+    // tiles. The banner explains
+    // "Start the agents service
+    // with pnpm --filter
+    // @suipredict/agents dev" so
+    // operators get the right
+    // next step on the first try.
+    const s = await getVaultSummaryClob().catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      setAgentsError(msg);
+      throw err;
+    });
     setSummary({
       vault_id: s.vault_id,
       total_balance: s.total_balance,
       allocated: s.allocated,
     });
+    // Clear the banner the moment a
+    // successful refresh comes back;
+    // a transient blip shouldn't leave
+    // a sticky "service down" warning
+    // once the agents come back.
+    setAgentsError(null);
   }
 
   useEffect(() => {
@@ -462,6 +502,25 @@ export default function VaultPage() {
          pattern the markets/[id] page
          uses). */}
       <HowItWorksCallout />
+
+      {/* R-UX-AGENTSBANNER fix: surface a
+          "service down" banner above the
+          hero when the agents `/vault`
+          endpoint 5xx's. The pre-fix build
+          rendered a silent empty state with
+          three "—" stat tiles, leaving the
+          user with no clue whether the
+          vault was genuinely empty or the
+          agents service was down. The
+          banner leads with the user-actionable
+          fix ("Start the agents service")
+          instead of a raw error. Once a
+          successful refresh comes back the
+          banner clears itself (see `setAgentsError(null)`
+          in `refresh()`). */}
+      {agentsError && (
+        <AgentsDownBanner message={agentsError} />
+      )}
 
       {/* Stats Section */}
       <div className="grid gap-4 sm:grid-cols-3">
