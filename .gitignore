@@ -27,6 +27,14 @@ deps/deepbookv3-self-hosted/
 .env.deployed*
 .vercel
 
+# Backup env files — these have historically contained real
+# AGENT_PRIVATE_KEY and PRIZE_ADMIN_PRIVATE_KEY. Never commit.
+# If you need to back up .env, copy it to a path outside the repo.
+.env.bak*
+.env.backup
+*.env.local.bak
+*.env.bkp
+
 # Compiled output
 **/tsconfig.tsbuildinfo
 
