@@ -14,6 +14,13 @@ const REGISTRY_ID = process.env.NEXT_PUBLIC_STREAK_REGISTRY_ID ?? "";
 export function useUserStreakId(address: string | null | undefined): {
   streakId: string | null;
   isLoading: boolean;
+  /** Re-fetch the streak id from the registry. Bypasses
+   *  the `staleTime` so a "Check again" button or a focus
+   *  refetch can recover from a transient `null` (e.g. the
+   *  user just signed `create_streak` via an external
+   *  wallet tool and the UI cached `null` before the tx
+   *  finalized). */
+  refetch: () => void;
 } {
   const query = useQuery<string | null>({
     queryKey: ["userStreakId", REGISTRY_ID, address],
@@ -43,5 +50,8 @@ export function useUserStreakId(address: string | null | undefined): {
   return {
     streakId: query.data ?? null,
     isLoading: query.isLoading,
+    refetch: () => {
+      void query.refetch();
+    },
   };
 }

@@ -39,7 +39,7 @@ export function StreakProfile() {
   const client = useCurrentClient();
   const dAppKit = useDAppKit();
   const queryClient = useQueryClient();
-  const { streakId, isLoading: idLoading } = useUserStreakId(account?.address);
+  const { streakId, isLoading: idLoading, refetch: refetchStreakId } = useUserStreakId(account?.address);
   const streak = useStreakInfo(streakId);
   // Fire confetti when the current streak crosses a milestone
   // (3, 7, 14, 30, 100). The component no-ops on every other
@@ -73,69 +73,92 @@ export function StreakProfile() {
       <StreakProfileEmpty
         reason="You don't have a streak yet."
         cta={
-          <button
-            disabled={!REGISTRY_ID}
-            onClick={async () => {
-              if (!REGISTRY_ID) return;
-              // R56.9 audit fix: gate on `client` like every
-              // other `submitAndWait` call site. The non-null
-              // assertion `client!` (below) throws when
-              // dapp-kit is still initializing (race on initial
-              // mount) or after a wallet disconnect mid-render.
-              if (!client) {
-                toast.error("Wallet not ready");
-                return;
-              }
-              const toastId = toast.loading("Creating your streak…");
-              try {
-                const tx = buildCreateStreakTx(REGISTRY_ID);
-                // R54 audit fix: route through `submitAndWait`
-                // so the subsequent `invalidateQueries` hits a
-                // node that has finalized the tx. The previous
-                // raw `signAndExecuteTransaction` returned the
-                // moment the wallet signed, so a markets-page
-                // navigation immediately after the toast saw a
-                // stale `useUserStreakId()` result and rendered
-                // the wrong "redeem" button.
-                const r = await submitAndWait(dAppKit, client, tx);
-                // `$kind === "Transaction"` means the fullnode accepted
-                // the tx; other variants ("Failed", "EffectsCert")
-                // carry a different shape. Without this guard a failed
-                // streak-create would still invalidate the cache and
-                // toasting "created" — the round-17 L5 finding.
-                if (r.$kind === "Transaction") {
-                  toast.success(`Streak created: ${r.digest.slice(0, 16)}…`, { id: toastId });
-                  // The registry dynamic field is updated by the tx, so
-                  // any component currently reading the streak id needs
-                  // to refetch — the markets page especially, which
-                  // chooses between `redeem_with_streak` and the plain
-                  // `redeem` based on this hook's result.
-                  //
-                  // R40 audit fix: TanStack Query's default invalidation
-                  // is exact-match. The actual keys are
-                  // ["userStreakId", REGISTRY_ID, address] and
-                  // ["streakInfo", streakId] (see useUserStreakId.ts:19
-                  // and useStreakInfo.ts:46). Pass type: "active" so
-                  // the prefix matches every concrete key. Without
-                  // this the refetch silently no-ops and the markets
-                  // page keeps showing "redeem" instead of
-                  // "redeem_with_streak".
-                  queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
-                  queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
-                } else {
-                  toast.error("Streak creation failed", { id: toastId });
+          <div className="mt-3 flex flex-col items-center gap-2">
+            <button
+              disabled={!REGISTRY_ID}
+              onClick={async () => {
+                if (!REGISTRY_ID) return;
+                // R56.9 audit fix: gate on `client` like every
+                // other `submitAndWait` call site. The non-null
+                // assertion `client!` (below) throws when
+                // dapp-kit is still initializing (race on initial
+                // mount) or after a wallet disconnect mid-render.
+                if (!client) {
+                  toast.error("Wallet not ready");
+                  return;
                 }
-              } catch (err) {
-                toast.error(
-                  err instanceof Error ? err.message : "Streak creation failed",
-                  { id: toastId },
-                );
-              }
-            }}
-            className="mt-3 rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-50"
-          >
-            Start your streak
-          </button>
+                const toastId = toast.loading("Creating your streak…");
+                try {
+                  const tx = buildCreateStreakTx(REGISTRY_ID);
+                  // R54 audit fix: route through `submitAndWait`
+                  // so the subsequent `invalidateQueries` hits a
+                  // node that has finalized the tx. The previous
+                  // raw `signAndExecuteTransaction` returned the
+                  // moment the wallet signed, so a markets-page
+                  // navigation immediately after the toast saw a
+                  // stale `useUserStreakId()` result and rendered
+                  // the wrong "redeem" button.
+                  const r = await submitAndWait(dAppKit, client, tx);
+                  // `$kind === "Transaction"` means the fullnode accepted
+                  // the tx; other variants ("Failed", "EffectsCert")
+                  // carry a different shape. Without this guard a failed
+                  // streak-create would still invalidate the cache and
+                  // toasting "created" — the round-17 L5 finding.
+                  if (r.$kind === "Transaction") {
+                    toast.success(`Streak created: ${r.digest.slice(0, 16)}…`, { id: toastId });
+                    // The registry dynamic field is updated by the tx, so
+                    // any component currently reading the streak id needs
+                    // to refetch — the markets page especially, which
+                    // chooses between `redeem_with_streak` and the plain
+                    // `redeem` based on this hook's result.
+                    //
+                    // R40 audit fix: TanStack Query's default invalidation
+                    // is exact-match. The actual keys are
+                    // ["userStreakId", REGISTRY_ID, address] and
+                    // ["streakInfo", streakId] (see useUserStreakId.ts:19
+                    // and useStreakInfo.ts:46). Pass type: "active" so
+                    // the prefix matches every concrete key. Without
+                    // this the refetch silently no-ops and the markets
+                    // page keeps showing "redeem" instead of
+                    // "redeem_with_streak".
+                    queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+                    queryClient.invalidateQueries({ queryKey: ["streakInfo"], type: "active" });
+                  } else {
+                    toast.error("Streak creation failed", { id: toastId });
+                  }
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error ? err.message : "Streak creation failed",
+                    { id: toastId },
+                  );
+                }
+              }}
+              className="rounded-lg bg-gradient-to-r from-orange-500 to-rose-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110 disabled:opacity-50"
+            >
+              Start your streak
+            </button>
+            {/* R-WC-3.6 fix: "Check again" recovery button.
+                The user may have signed `create_streak` via an
+                external wallet tool (Sui CLI, Sui Wallet dApp
+                browser, etc.) — in that case the in-app
+                `submitAndWait` path never ran and the
+                `invalidateQueries` never fired, so the TanStack
+                cache holds the pre-tx `null` for 30s. Hard-
+                refreshing also clears it, but a one-tap button
+                is the cheaper fix. Tap → refetch the dynamic
+                field → if the chain has the new streak, the
+                empty state unmounts and the streak card renders. */}
+            <button
+              type="button"
+              onClick={() => {
+                queryClient.invalidateQueries({ queryKey: ["userStreakId"], type: "active" });
+                refetchStreakId();
+              }}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-zinc-300 transition hover:bg-white/10 disabled:opacity-50"
+            >
+              Check again
+            </button>
+          </div>
         }
       />
     );
