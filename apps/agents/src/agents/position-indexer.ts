@@ -458,6 +458,38 @@ async function pollAndApply(
   return page.data.length;
 }
 
+// R-WC-3.4 fix: one-time category backfill for on-chain
+// mirror rows. See the call site in `runPositionIndexer` for
+// the rationale. Bumping `PRAGMA user_version` on success
+// makes the operation idempotent — the next indexer tick
+// hits the cheap `if (user_version >= WC_CATEGORY_BACKFILL_VERSION)`
+// short-circuit and the function returns in < 100µs.
+const WC_CATEGORY_BACKFILL_VERSION = 1;
+function backfillWcCategory(): void {
+  const db = getDb();
+  const row = db.pragma("user_version", { simple: true }) as number;
+  if (row >= WC_CATEGORY_BACKFILL_VERSION) return;
+  // Match the same title pattern the live upsert uses
+  // (see `isWcTitle` above) so this is forward-compatible
+  // with future MD4+ matches — the regex is intentionally
+  // permissive on the MD digit.
+  const updated = db
+    .prepare(
+      `UPDATE markets
+         SET category = 'worldcup'
+       WHERE category = 'other'
+         AND id LIKE '0x%'
+         AND title LIKE '%(Group %MD%'`,
+    )
+    .run().changes;
+  db.pragma(`user_version = ${WC_CATEGORY_BACKFILL_VERSION}`);
+  if (updated > 0) {
+    console.log(
+      `[position-indexer] WC category backfill: re-categorized ${updated} on-chain mirror row(s) from "other" → "worldcup".`,
+    );
+  }
+}
+
 export async function runPositionIndexer(
   _ctx: AgentContext,
 ): Promise<AgentResult> {
@@ -503,6 +535,22 @@ export async function runPositionIndexer(
         "Set DUSDC_TYPE in .env (full type string e.g. 0x…::dusdc::DUSDC).",
     });
   }
+  // R-WC-3.4 fix: one-time backfill of
+  // `category = "worldcup"` for any existing on-chain mirror
+  // row (`id LIKE '0x%'`) whose title matches the WC pattern
+  // (`(Group <letter> MD<n>)`). The position-indexer used to
+  // create these rows with `category = "other"` because the
+  // on-chain u8 enum maps 3 → "other" (no `worldcup` code
+  // exists in the contract). Without the backfill, the
+  // /markets list surfaces the same WC match twice — once
+  // under "World Cup" (the canonical `wc26-*` row) and once
+  // under "Other" (the on-chain mirror). Guarded with a
+  // `pragma_user_version` bump so the backfill only runs
+  // once per SQLite file; subsequent runs hit the cheap
+  // short-circuit. The user_version is independent of the
+  // indexer cursor, so a crashed or restarted indexer won't
+  // re-run the backfill.
+  backfillWcCategory();
   // R49 audit fix: read the network inside the function body. See
   // the module-level note for the rationale.
   //
@@ -714,6 +762,22 @@ export async function runPositionIndexer(
         : "";
       const existing = getMarket(j.market_id);
       const onChainCategory = j.category != null ? categoryLabel(Number(j.category)) : null;
+      // R-WC-3.4 fix: the on-chain `category: u8` enum in
+      // `prediction_market.move` only knows about 4 buckets
+      // (0=none, 1=ai_news, 2=crypto_price, 3=other) — it has
+      // no `worldcup` code, so a WC market published on-chain
+      // shows up with `category = "other"` in SQLite. The
+      // world-cup-creator writes `category: "worldcup"` on
+      // its canonical `wc26-<matchId>` row, but the indexer
+      // also creates a separate mirror row keyed by the
+      // on-chain `0x...` object id, and that mirror row gets
+      // the bad category. Detect the WC shape by the title
+      // pattern (every world-cup-creator title contains
+      // "(Group <letter> MD<n>)") and force the category so
+      // the `/markets` filter pills surface the 8 on-chain
+      // mirrors under the World Cup bucket alongside their
+      // canonical siblings.
+      const isWcTitle = /\(Group [A-L] MD[1-3]\)/.test(safeTitle);
       // Prefer the on-chain emission timestamp (always present on
       // Sui events) over the host clock. Host-clock skew would
       // mis-order the leaderboard after the local MarketCreator
@@ -723,7 +787,9 @@ export async function runPositionIndexer(
         id: existing?.id ?? j.market_id,
         title: existing?.title ?? safeTitle,
         description: existing?.description ?? "",
-        category: existing?.category ?? onChainCategory ?? "general",
+        category:
+          existing?.category
+          ?? (isWcTitle ? "worldcup" : onChainCategory ?? "general"),
         // R49 audit fix: route through `u64ToSafeNumber` for the
         // 2^53-1 boundary check (the right-hand `BigInt(...)` cast
         // was unconditional even when `existing` was set; even

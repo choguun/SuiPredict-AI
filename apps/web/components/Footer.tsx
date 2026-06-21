@@ -55,7 +55,15 @@ const NAV_GROUPS: Array<{
       // pre-fix "Settings" label mismatched the
       // page content.
       { label: "Agent policy", href: "/agent-policy" },
-      { label: "Submit a dispute", href: "/dispute/wc26-K1v4" },
+      // R-WC-3.4 fix: the previous deep-link pointed at
+      // `wc26-K1v4`, which is a RESOLVED market. The dispute
+      // flow only accepts active markets (the on-chain
+      // `dispute_resolution` PTB aborts with
+      // `EMarketNotActive` on a settled market), so the old
+      // link 404'd once the user reached the form. The new
+      // link points at `wc26-A1v2`, the soonest-kicking
+      // active match in Matchday 3.
+      { label: "Submit a dispute", href: "/dispute/wc26-A1v2" },
     ],
   },
 ];

@@ -223,6 +223,30 @@ export default async function MarketsPage({
   } catch (err) {
     marketsError = err instanceof Error ? err.message : String(err);
   }
+  // R-WC-3.4 fix: hide the on-chain mirror rows. The
+  // position-indexer creates a separate row keyed by the
+  // on-chain `0x…` object id whenever a `MarketCreated` event
+  // fires, even though the WC creator already wrote a
+  // canonical `wc26-<matchId>` row pointing at the same
+  // on-chain id via `onchain_market_id`. Pre-fix, the list
+  // page rendered both rows for every published WC match,
+  // so a user filtering to "World Cup" saw each match
+  // twice (once under the `wc26-…` id with the friendly
+  // title, once under the `0x…` id with a sanitized
+  // character-array title). Build a set of the on-chain
+  // ids that are already covered by a canonical row, then
+  // drop the mirrors. The set is computed once per request
+  // (cheap — at most a few hundred rows in production).
+  const coveredOnchainIds = new Set<string>();
+  for (const m of markets) {
+    if (
+      m.id.startsWith("wc26-") &&
+      m.onchain_market_id &&
+      m.onchain_market_id.startsWith("0x")
+    ) {
+      coveredOnchainIds.add(m.onchain_market_id);
+    }
+  }
   // Apply the category filter client-side (the list is small, the
   // server already returned everything). The worldcup category is
   // case-insensitive so a link from `/worldcup` with a bare
@@ -234,7 +258,23 @@ export default async function MarketsPage({
   // non-standard categories. The previous
   // strict-equality check silently dropped every
   // AI market when a user clicked the "AI" pill.
-  const visible = markets.filter((m) => categoryMatches(categoryFilter, m.category));
+  //
+  // R-WC-3.4 fix: also drop on-chain mirror rows
+  // (`id` starts with `0x`) that are already covered
+  // by a canonical `wc26-*` row in the same response.
+  // The check happens here (not at `listMarkets`
+  // time) so any consumer that needs the raw mirror
+  // row (e.g. the /agents page wiring trades) can
+  // still get it.
+  const visible = markets.filter((m) => {
+    if (
+      m.id.startsWith("0x") &&
+      coveredOnchainIds.has(m.id)
+    ) {
+      return false;
+    }
+    return categoryMatches(categoryFilter, m.category);
+  });
   // R61 audit fix: text search across title, description,
   // and category. Uses `includes()` rather than a strict
   // word-boundary match so a query for "eth" still finds
