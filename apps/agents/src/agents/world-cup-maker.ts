@@ -307,13 +307,26 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
     // complement of 100% is 0, filtered out by
     // the page's `price_bps > 0` check).
     const TICK = 1_000; // 1 DeepBook tick = 0.001 probability
-    let bidBps = Math.max(
-      TICK, // 0.1% minimum (DeepBook min price)
-      Math.round((yesClamped - halfSpreadBps / 10_000) * 1_000_000),
+    // R-WC-3.8 second follow-up: the
+    // market's `tick_size` (DeepBook
+    // constant) is 1_000_000 atoms (= 0.001
+    // USDC = 0.1% probability). The maker's
+    // `bidBps * 1000` on-chain price must be a
+    // multiple of tick_size, i.e. `bidBps`
+    // must be a multiple of TICK. Round to
+    // the nearest tick before clamping; the
+    // pre-round price had arbitrary precision
+    // (e.g. 724_543) and `validate_inputs`
+    // aborted with EOrderInvalidPrice (code
+    // 0) on the first tick after the TICK
+    // fix above.
+    const roundToTick = (v: number) =>
+      Math.max(TICK, Math.min(1_000_000 - TICK, Math.round(v / TICK) * TICK));
+    let bidBps = roundToTick(
+      (yesClamped - halfSpreadBps / 10_000) * 1_000_000,
     );
-    let askBps = Math.min(
-      1_000_000 - TICK, // just under 100% to avoid a u64 boundary
-      Math.round((yesClamped + halfSpreadBps / 10_000) * 1_000_000),
+    let askBps = roundToTick(
+      (yesClamped + halfSpreadBps / 10_000) * 1_000_000,
     );
     // Force a 1-tick minimum spread so both orders land on the
     // book. (Without this, a tight Elo-derived spread < 0.001
