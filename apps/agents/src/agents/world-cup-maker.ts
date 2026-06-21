@@ -321,11 +321,15 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
       // semantically wrong and produced a bid ABOVE the ask
       // (the crossed-book bug) on every demo tick. The bid
       // for a YES-share order at probability `yes` is `yes`,
-      // not `1 - yes`. Use the same `bidBps` /
-      // `askBps` values the on-chain path uses, in the same
-      // bps unit the SQLite mirror records.
-      const demoBidBps = Math.max(1, Math.min(9_999, Math.round(yesClamped * 10_000)));
-      const demoAskBps = Math.max(1, Math.min(9_999, Math.round(yesClamped * 10_000)));
+      // not `1 - yes`. R-WC-3.7 follow-up: convert
+      // `bidBps`/`askBps` from the on-chain 1e6 tick scale
+      // to the UI's 10_000-bps scale so the mirror matches
+      // what the on-chain book will eventually show. Pre-fix
+      // the demo mirror used `yesClamped * 10_000` for both
+      // sides, producing a `spread_bps=0` book and a
+      // crossed-looking NO book.
+      const demoBidBps = Math.max(1, Math.min(9_999, Math.round(bidBps / 100)));
+      const demoAskBps = Math.max(1, Math.min(9_999, Math.round(askBps / 100)));
       upsertOrder({
         market_id: found.marketId,
         order_id: Date.now() * 1000 + quoted,
@@ -516,19 +520,75 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         // world-cup-creator.ts for the full rationale.
       });
       await executeTransaction(client, () => placeTx, ctx.signer);
+      // R-WC-3.7 fix: also place the YES ASK on-chain.
+      // Pre-fix the maker only placed a YES bid; the
+      // UI's "NO order book" card is derived from the
+      // complement of the YES book (yes bid @ P ==
+      // no offer @ (1-P)), so a one-sided YES book
+      // produced an empty NO book and a one-sided
+      // spread display ("spread_bps=0"). The second
+      // placeOrder writes the ask at `askBps` and
+      // gives the UI a real two-sided book to render.
+      // We skip the ask placement when `bidBps >=
+      // askBps` (the spread-guard clamp above would
+      // have produced a degenerate book anyway) and
+      // when `askBps` overflows the 1e9 ceiling
+      // (DeepBook rejects `price >= 1_000_000_000`).
+      // The ask shares the same `cycleAuthDollars`
+      // authorized above — placing a second
+      // order on the same market doesn't need a
+      // fresh authorize_spend call.
+      if (askBps > bidBps) {
+        const askPlaceTx = buildPlaceOrderTx({
+          marketId: found.marketId,
+          poolId: found.poolId,
+          balanceManagerId,
+          price: BigInt(askBps) * (QUOTE_SCALE / BigInt(1_000_000)),
+          quantity: BigInt(quoteSize),
+          isBid: false,
+          clientOrderId: BigInt((Date.now() + 1) % 1_000_000),
+        });
+        await executeTransaction(client, () => askPlaceTx, ctx.signer).catch(
+          (askErr) => {
+            // Ask failure is non-fatal — a one-sided
+            // book is still better than no book. Log
+            // and continue.
+            console.warn(
+              `[wc-maker:diag] ${match.id} askPlaceTx failed (non-fatal): ${
+                askErr instanceof Error
+                  ? askErr.message.slice(0, 120)
+                  : String(askErr)
+              }`,
+            );
+          },
+        );
+      }
       // Mirror into SQLite so the agent feed shows the quote.
       // R60 audit fix: same bid/ask bps fix as the
       // demo-path above. Use the on-chain bid
       // (`bidBps`) for the SQLite row so the mirror
       // matches the on-chain book, and write both a
       // bid and an ask row so the UI order book has
-      // a real spread to render.
+      // a real spread to render. R-WC-3.7 fix:
+      // convert the on-chain `bidBps`/`askBps` (1e6
+      // tick-scaled) into the UI's 10_000-bps scale
+      // so the mirror price_bps matches what
+      // `tupleBookToSnapshot` will produce from the
+      // on-chain book. Pre-fix the mirror wrote
+      // `yesClamped * 10_000` for both bid and ask
+      // (one price for both sides) so the displayed
+      // book had `spread_bps=0` and the NO-book
+      // derivation at apps/web/app/markets/[id]/
+      // page.tsx:2301-2320 produced two "ghost"
+      // price levels at the same point.
+      const bidPriceBps = Math.max(1, Math.min(9_999, Math.round(bidBps / 100)));
+      const askPriceBps = Math.max(1, Math.min(9_999, Math.round(askBps / 100)));
       upsertOrder({
         market_id: found.marketId,
         order_id: Date.now() * 1000 + quoted,
         owner: agentAddr,
         is_bid: true,
-        price_bps: Math.round(yesClamped * 10_000),
+        price_bps: bidPriceBps,
         quantity: quoteSize,
         timestamp_ms: Date.now(),
       });
@@ -537,7 +597,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         order_id: Date.now() * 1000 + quoted + 0.5,
         owner: agentAddr,
         is_bid: false,
-        price_bps: Math.round(yesClamped * 10_000),
+        price_bps: askPriceBps,
         quantity: quoteSize,
         timestamp_ms: Date.now(),
       });
