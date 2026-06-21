@@ -9,6 +9,7 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "smoke-test": "pnpm --filter @suipredict/agents smoke-test",
+    "seed:leaderboard:clear": "pnpm --filter @suipredict/agents seed:leaderboard:clear",
     "contracts:build": "pnpm --filter @suipredict/contracts build",
     "contracts:test": "pnpm --filter @suipredict/contracts test",
     "test:sdk": "cd apps/agents && ./node_modules/.bin/tsx --test ../../packages/sdk/tests/*.test.ts",

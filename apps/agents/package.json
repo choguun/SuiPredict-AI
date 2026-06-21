@@ -9,16 +9,17 @@
     "build": "tsc",
     "smoke-test": "tsx scripts/smoke-test.ts",
     "test:wc": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts",
-    "test:seed": "node --import tsx --test tests/wc-demo-seed.test.ts",
+    "test:seed": "node --import tsx --test tests/wc-demo-seed.test.ts tests/leaderboard-demo-seed.test.ts",
     "test:llm": "node --import tsx --test tests/llm-extractor.test.ts",
-    "test": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/llm-extractor.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts tests/wc-demo-seed.test.ts tests/world-cup-resolver.test.ts tests/team-analysis.test.ts",
+    "test": "node --import tsx --test tests/world-cup-fetcher.test.ts tests/llm-extractor.test.ts tests/world-cup-creator.test.ts tests/cursor-serialization.test.ts tests/wc-demo-seed.test.ts tests/leaderboard-demo-seed.test.ts tests/world-cup-resolver.test.ts tests/team-analysis.test.ts",
     "bootstrap": "tsx scripts/bootstrap-gamification.ts",
     "bootstrap-parlay": "tsx scripts/bootstrap-parlay.ts",
     "resume-bootstrap": "tsx scripts/resume-bootstrap.ts",
     "verify-config": "tsx scripts/verify-config.ts",
     "rotate-prize-pubkey": "tsx scripts/rotate-prize-pubkey.ts",
     "rotate-prize-admin-address": "tsx scripts/rotate-prize-admin-address.ts",
-    "postinstall": "node -e \"try { require('better-sqlite3'); } catch (e) { console.warn('[agents] better-sqlite3 native binding missing; run \\`pnpm rebuild better-sqlite3\\` to build it. This is required for the SQLite mirror and the WC demo seed.'); }\""
+    "postinstall": "node -e \"try { require('better-sqlite3'); } catch (e) { console.warn('[agents] better-sqlite3 native binding missing; run \\`pnpm rebuild better-sqlite3\\` to build it. This is required for the SQLite mirror and the WC demo seed.'); }\"",
+    "seed:leaderboard:clear": "tsx -e \"import('./src/agents/leaderboard-demo-seed.js').then(async (m) => { const r = await m.clearLeaderboardDemo(); console.log('Removed ' + r.removed + ' demo rows.'); })\""
   },
   "dependencies": {
     "@mysten/sui": "^2.17.0",

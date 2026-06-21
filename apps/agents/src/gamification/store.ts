@@ -643,6 +643,87 @@ export function recordDailyScoreIfAbsent(score: DailyScore): boolean {
   return res.changes > 0;
 }
 
+/**
+ * R-UAT-FN-19.1 fix: bulk-upsert `daily_scores` rows in a single
+ * transaction. The previous single-row `recordDailyScore` was
+ * the only public write path, so any bulk seed (the
+ * `leaderboard-demo-seed` runs at agent-service boot) had to
+ * call it in a loop with N statement preparations + N implicit
+ * transactions. The boot path writes 35 rows (5 forecasters × 7
+ * days); under that load the per-row overhead is negligible,
+ * but the win is the atomicity guarantee: a SIGTERM between
+ * two inserts leaves half the demo rows present, which the
+ * home page renders as a partial leaderboard until the next
+ * boot.
+ *
+ * Semantics match `recordDailyScore` (UPSERT on
+ * (user, day_index); existing rows for the same key are
+ * overwritten with the new values). Idempotent on the
+ * input array: re-running the same seed converges to the
+ * same final state.
+ *
+ * Returns the count of `INSERT OR REPLACE` operations
+ * executed (= `scores.length`). The count is informational;
+ * a caller that needs strict success/failure should check
+ * the function's return value via `try/catch` (a constraint
+ * violation surfaces as a thrown error before the
+ * transaction commits).
+ */
+export function recordDailyScores(scores: DailyScore[]): number {
+  if (scores.length === 0) return 0;
+  const stmt = getDb().prepare(
+    `INSERT OR REPLACE INTO daily_scores
+       (user, day_index, participated, all_correct, streak_after, category)
+     VALUES (@user, @day_index, @participated, @all_correct, @streak_after, @category)`,
+  );
+  const tx = getDb().transaction((rows: DailyScore[]) => {
+    for (const r of rows) stmt.run(r);
+  });
+  tx(scores);
+  return scores.length;
+}
+
+/**
+ * R-UAT-FN-19.1 fix: bounded bulk delete for the demo-seed
+ * removal path. Deletes `daily_scores` rows for any user in
+ * `users` with `day_index` in `[startInclusive, endExclusive)`.
+ *
+ * Bounded scope (specific users + specific day range) so the
+ * clear path can target only the demo addresses' current-week
+ * rows without touching any other user's data. Used by
+ * `clearLeaderboardDemo` in `agents/leaderboard-demo-seed.ts`
+ * and exposed here so the SQL is co-located with the schema
+ * definition (and so future callers — admin tooling,
+ * migrations — don't have to re-derive the WHERE clause).
+ *
+ * Returns the number of rows actually deleted. Note: SQLite's
+ * `changes` column reports the per-statement count, not the
+ * per-row count, so we sum `stmt.run(...).changes` across the
+ * loop rather than relying on a single bulk DELETE's return.
+ * The pattern is the same `archiveAndClearAtomic` uses
+ * elsewhere in this file.
+ */
+export function clearDailyScoresForUsersInRange(
+  users: string[],
+  startInclusive: number,
+  endExclusive: number,
+): number {
+  if (users.length === 0) return 0;
+  const stmt = getDb().prepare(
+    `DELETE FROM daily_scores
+      WHERE user = ? AND day_index >= ? AND day_index < ?`,
+  );
+  const tx = getDb().transaction(() => {
+    let removed = 0;
+    for (const user of users) {
+      const res = stmt.run(user, startInclusive, endExclusive);
+      removed += Number(res.changes ?? 0);
+    }
+    return removed;
+  });
+  return tx();
+}
+
 export function listDailyScoresForDay(dayIndex: number): DailyScore[] {
   return getDb()
     .prepare(`SELECT * FROM daily_scores WHERE day_index = ?`)

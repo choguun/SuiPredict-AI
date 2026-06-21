@@ -13,6 +13,7 @@
 - **28 / 28** SDK tests pass (23 pre + 5 new for `ensureMarketCreated` / `findExistingYesPool`)
 - **14 routes** (`/`, `/markets`, `/markets/[id]`, `/worldcup`, `/worldcup/group/[letter]`, `/leaderboard`, `/portfolio`, `/parlay`, `/vault`, `/agents`, `/friends`, `/agent-policy`, `/auth`, `/admin`) all return HTTP 200
 - **All 19 UAT findings resolved** (FN-01 through FN-19, see [UAT-REPORT-FIXES.md](UAT-REPORT-FIXES.md))
+- **R-UAT-FN-19.1 follow-up:** the "Top forecasters" widget on the home page now seeds 5 demo forecasters automatically at agent-service boot (R-UAT-FN-19 fixed the empty-state, R-UAT-FN-19.1 ships the data). The seed is idempotent and never touches any real user's rows.
 - **Production deploys live** (post-R-WC-1.7): web on `https://suipredict-web.vercel.app`, agents on `https://agents-production-11fd.up.railway.app`, 1 on-chain WC market created, MM correctly skips stale-pool markets
 - **v3 SharedTreasuryHolder live** (post-R-WC-3.3, 2026-06-19): package `0xe98b0c9c…`, shared holder `0x90a788b2…`. `world-cup-creator` verified end-to-end on the 11:00 cron tick — see [docs/R-WC-3.3-v3-deployment-complete.md](docs/R-WC-3.3-v3-deployment-complete.md) + [docs/R-WC-3.3-v3-wc-creator-success.md](docs/R-WC-3.3-v3-wc-creator-success.md)
 - **Per-WC-match on-chain markets** — the `world-cup-creator` mints a real on-chain `PredictionMarket` for every upcoming match (per-market `BalanceManager` + `TreasuryCap<YES<DUSDC>>`, shared DeepBook pool) instead of falling back to SQLite-only ghost rows

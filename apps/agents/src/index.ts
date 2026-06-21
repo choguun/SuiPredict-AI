@@ -979,6 +979,33 @@ async function main() {
       `[agents] World Cup demo seed failed: ${err instanceof Error ? err.message : err}`,
     );
   }
+  // R-UAT-FN-19.1 fix: seed the "Top forecasters" weekly
+  // leaderboard so the home page widget renders 5 demo
+  // forecasters on a fresh deploy / in API-only mode.
+  // Same idempotency model as `seedWcDemoMarkets` above
+  // (narrow scope to known demo addresses, current UTC
+  // week only, `INSERT OR REPLACE` so re-runs converge),
+  // and explicitly does NOT touch any real user's rows.
+  // See `apps/agents/src/agents/leaderboard-demo-seed.ts`
+  // for the full lifecycle (demo address set, score
+  // formula, removal path).
+  try {
+    const { seedLeaderboardDemo } = await import(
+      "./agents/leaderboard-demo-seed.js"
+    );
+    const { seeded: lSeeded } = await seedLeaderboardDemo();
+    if (lSeeded > 0) {
+      console.log(
+        `[agents] Seeded ${lSeeded} Top-Forecasters demo rows for the current week.`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[agents] Top-Forecasters demo seed failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
   const ctx = loadContext();
   if (!ctx) {
     console.log("[agents] Running in API-only mode (no wallet configured)");
