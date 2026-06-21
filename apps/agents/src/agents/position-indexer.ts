@@ -877,7 +877,15 @@ export async function runPositionIndexer(
   // `markOrderCancelled` to drop the stale "open" row. Per-order
   // `cancel_order` already emits `OrderCancelledEvent`, so this
   // subscription only fires for the bulk path.
-  const deepbookPackageId = process.env.DEEPBOOK_PACKAGE_ID;
+  // R-WC-3.9: the production Railway env only sets the
+  // NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID (the value the web bundle
+  // reads); the unprefixed DEEPBOOK_PACKAGE_ID isn't in the
+  // service variables, so the indexer never subscribed to
+  // DeepBook's OrderCanceled events and stale bids accumulated
+  // on every WC pool (the v3 cancel_all_orders emits no wrapper
+  // event — see comment below). Accept either prefix.
+  const deepbookPackageId =
+    process.env.DEEPBOOK_PACKAGE_ID ?? process.env.NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID;
   if (deepbookPackageId) {
     console.log(`[position-indexer:diag] subscribing to ${deepbookPackageId}::order::OrderCanceled`);
     let dbCancelSeen = 0;
