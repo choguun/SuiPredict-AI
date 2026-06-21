@@ -453,6 +453,35 @@ function MarketDetailBody({
   } | null>(null);
   const clientRef = useRef(client);
   clientRef.current = client;
+  // R-WC-3.6 fix: the 4s polling tick must not be able
+  // to overwrite a previously-good book with an empty
+  // one. The `book` state is the "live" view; the
+  // `bookRef` mirrors it for synchronous reads inside
+  // the polling closure (and avoids the eslint
+  // `react-hooks/exhaustive-deps` warning that adding
+  // `book` to the useCallback deps would create — the
+  // callback would then re-create on every render and
+  // the polling `useEffect` (line 592) would tear down
+  // and re-install the interval on every book update,
+  // resetting the 4s countdown each time). The
+  // `emptyTickCountRef` is the diagnostic counter
+  // (see the 5-tick threshold comment in `refresh`).
+  const bookRef = useRef<OrderBookSnapshot | null>(null);
+  const emptyTickCountRef = useRef(0);
+  // Keep the ref in sync with the state via a tiny
+  // effect — the alternative is a `useEffect` inside
+  // `refresh` that calls `bookRef.current = book`, but
+  // a single render-time mirror is cheaper and avoids
+  // the same stale-closure issue.
+  useEffect(() => {
+    bookRef.current = book;
+    // Reset the empty-tick counter as soon as we
+    // receive a non-empty snapshot, so the threshold
+    // re-arms cleanly after a transient blip.
+    if (book && (book.bids.length > 0 || book.asks.length > 0)) {
+      emptyTickCountRef.current = 0;
+    }
+  }, [book]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     // R36 audit fix: bail out before any state writes if the
@@ -581,7 +610,46 @@ function MarketDetailBody({
       b = await getMarketOrderBook(marketId).catch(() => null);
     }
     if (b) {
-      setBook(b);
+      // R-WC-3.6 fix: don't replace a previously-good
+      // book with an empty `{bids:[], asks:[]}` snapshot.
+      // `getOrderBookDepth` swallows RPC errors and
+      // returns an empty OrderBookDepth
+      // (`packages/sdk/src/deepbook/client.ts:389`),
+      // which `tupleBookToSnapshot` then turns into a
+      // non-null `OrderBookSnapshot` with
+      // `mid_price: 0.5`. On the next 4s tick that
+      // empty-but-truthy snapshot would `setBook()`
+      // over the real book, so the user sees the
+      // bids/asks flash for a moment and then the
+      // card collapses to "No YES bids" / "No YES asks"
+      // placeholders until the next successful tick.
+      // The two prior layers of error handling
+      // (line 565 try/catch around DeepBook, line 581
+      // `.catch(() => null)` around the REST fallback)
+      // do NOT protect us because both swallow the
+      // error and produce a "successful" empty result.
+      // Keep the snapshot only if it has at least one
+      // order, or if the user has no book loaded yet
+      // (so a genuinely-empty market still shows the
+      // "No YES bids" placeholder).
+      const hasOrders = b.bids.length > 0 || b.asks.length > 0;
+      const hadNoBook = !bookRef.current;
+      if (hasOrders || hadNoBook) {
+        setBook(b);
+      } else {
+        // Optional diag: count consecutive empty ticks so a
+        // permanent outage (not a transient blip) can be
+        // surfaced. The threshold is 5 (~20s of empty
+        // ticks at the 4s poll cadence) — past that the
+        // user has likely been looking at stale data for
+        // a while and should know the live view is down.
+        emptyTickCountRef.current += 1;
+        if (emptyTickCountRef.current === 5) {
+          console.warn(
+            `[markets/${marketId}] order book has been empty for 5 consecutive ticks (~20s) — the live DeepBook read or REST fallback may be down.`,
+          );
+        }
+      }
       if (b.mid_price && !initializedPrice.current) {
         setPrice(b.mid_price);
         initializedPrice.current = true;
