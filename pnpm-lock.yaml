@@ -122,6 +122,9 @@ importers:
       '@mysten/sui':
         specifier: ^2.17.0
         version: 2.17.0(typescript@5.9.3)
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
     devDependencies:
       '@suipredict/config':
         specifier: workspace:*
@@ -129,9 +132,6 @@ importers:
       '@types/node':
         specifier: ^22.15.21
         version: 22.19.19
-      typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
 
 packages:
 
