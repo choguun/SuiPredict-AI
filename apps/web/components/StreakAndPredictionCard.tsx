@@ -74,7 +74,7 @@ export function StreakAndPredictionCard() {
 
   return (
     <div className="space-y-6">
-      <StreakProfile />
+      {/* <StreakProfile /> */}
       <DailyPredictionCard />
     </div>
   );
