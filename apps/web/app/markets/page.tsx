@@ -237,6 +237,22 @@ export default async function MarketsPage({
   // ids that are already covered by a canonical row, then
   // drop the mirrors. The set is computed once per request
   // (cheap — at most a few hundred rows in production).
+  //
+  // R-WC-3.4b fix: also dedup by normalized title. The
+  // `onchain_market_id` link fails for markets that the
+  // WC creator demo-seeded into SQLite BEFORE the
+  // on-chain publish — those rows have `onchain_market_id
+  // = null` and so don't populate `coveredOnchainIds`.
+  // The matching 0x mirror still ends up in the
+  // position-indexer's table though, and the title is
+  // identical apart from emoji-encoding noise (some
+  // seed paths emit the flag glyph as a surrogate
+  // pair, the on-chain side emits it as a grapheme
+  // cluster). We strip emoji + punctuation + whitespace
+  // and compare — if a 0x mirror's normalized title
+  // matches a canonical wc26-* row's normalized title
+  // and they're within ±24h kickoff of each other, the
+  // 0x row is treated as a duplicate and hidden.
   const coveredOnchainIds = new Set<string>();
   for (const m of markets) {
     if (
@@ -247,6 +263,39 @@ export default async function MarketsPage({
       coveredOnchainIds.add(m.onchain_market_id);
     }
   }
+  // Normalized-title dedup for mirrors whose canonical
+  // sibling never got its `onchain_market_id` link
+  // populated (legacy demo seeds, race with the
+  // on-chain publish).
+  const titleKey = (s: string): string =>
+    s
+      // strip emoji — both the seed and the on-chain side
+      // use different encodings for flag glyphs
+      .replace(/\p{Extended_Pictographic}/gu, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const canonicalTitles = new Set<string>();
+  for (const m of markets) {
+    if (m.id.startsWith("wc26-")) canonicalTitles.add(titleKey(m.title));
+  }
+  const dedupByTitle = (m: { id: string; title: string; kickoff_ms?: number }): boolean => {
+    if (!m.id.startsWith("0x")) return false;
+    const key = titleKey(m.title);
+    if (!canonicalTitles.has(key)) return false;
+    // kickoff proximity check: a wc26-* row for the
+    // same title within ±24h means it's almost
+    // certainly the same match. Without this guard a
+    // future "Group A MD3" duplicate title (different
+    // year) would be silently hidden.
+    const myKickoff = m.kickoff_ms ?? Number.POSITIVE_INFINITY;
+    return markets.some(
+      (c) =>
+        c.id.startsWith("wc26-") &&
+        titleKey(c.title) === key &&
+        Math.abs((c.kickoff_ms ?? 0) - myKickoff) < 24 * 60 * 60 * 1000,
+    );
+  };
   // Apply the category filter client-side (the list is small, the
   // server already returned everything). The worldcup category is
   // case-insensitive so a link from `/worldcup` with a bare
@@ -269,7 +318,7 @@ export default async function MarketsPage({
   const visible = markets.filter((m) => {
     if (
       m.id.startsWith("0x") &&
-      coveredOnchainIds.has(m.id)
+      (coveredOnchainIds.has(m.id) || dedupByTitle(m))
     ) {
       return false;
     }

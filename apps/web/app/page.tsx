@@ -73,10 +73,69 @@ function probabilityFromBook(
 }
 
 export default async function HomePage() {
-  const [markets, vault] = await Promise.all([
+  const [rawMarkets, vault] = await Promise.all([
     listMarkets().catch(() => []),
     getVaultSummaryClob().catch(() => null),
   ]);
+
+  // R-WC-3.4 fix: drop on-chain mirror rows
+  // (id starting with 0x) that are duplicates
+  // of a `wc26-*` SQLite row. The agents
+  // service persists two parallel rows for
+  // the same market — one with the friendly
+  // `wc26-A1v2` id and one with the
+  // on-chain hex id — and the home page used
+  // to surface both, doubling the visual
+  // count. The filter is identical to the
+  // /markets list page so the two pages stay
+  // in sync. See `apps/web/app/markets/page.tsx`
+  // for the matching fix.
+  //
+  // R-WC-3.4b fix: also dedup by normalized
+  // title. Markets demo-seeded into SQLite
+  // before the on-chain publish leave
+  // `onchain_market_id = null`, so the
+  // `onchain_market_id` lookup misses them
+  // and the mirror row leaks through.
+  // Normalize titles (strip emoji +
+  // punctuation, lowercase) and compare
+  // within a ±24h kickoff window so the two
+  // rows collapse into one.
+  const coveredOnchainIds = new Set<string>();
+  for (const m of rawMarkets) {
+    if (
+      m.id.startsWith("wc26-") &&
+      m.onchain_market_id &&
+      m.onchain_market_id.startsWith("0x")
+    ) {
+      coveredOnchainIds.add(m.onchain_market_id);
+    }
+  }
+  const titleKey = (s: string): string =>
+    s
+      .replace(/\p{Extended_Pictographic}/gu, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const canonicalTitles = new Set<string>();
+  for (const m of rawMarkets) {
+    if (m.id.startsWith("wc26-")) canonicalTitles.add(titleKey(m.title));
+  }
+  const markets = rawMarkets.filter((m) => {
+    if (!m.id.startsWith("0x")) return true;
+    if (coveredOnchainIds.has(m.id)) return false;
+    // Title-based dedup
+    const key = titleKey(m.title);
+    if (!canonicalTitles.has(key)) return true;
+    const myKickoff = m.kickoff_ms ?? Number.POSITIVE_INFINITY;
+    const hasSiblingWithin24h = rawMarkets.some(
+      (c) =>
+        c.id.startsWith("wc26-") &&
+        titleKey(c.title) === key &&
+        Math.abs((c.kickoff_ms ?? 0) - myKickoff) < 24 * 60 * 60 * 1000,
+    );
+    return !hasSiblingWithin24h;
+  });
 
   const active = markets.filter((m) => m.status === "active").length;
   // Show how many of those are World Cup markets so the
@@ -111,11 +170,28 @@ export default async function HomePage() {
     .filter((m) => m.status === "active" && m.category === "worldcup")
     .sort((a, b) => (a.kickoff_ms ?? a.expiry_ms) - (b.kickoff_ms ?? b.expiry_ms))
     .slice(0, 2);
+  // R-WC-3.4b fix: skip "Test …" markets in the
+  // non-WC featured slot. The position-indexer
+  // occasionally writes `category="other"` rows
+  // titled "Test WC v3 — …" (a smoke-test market
+  // the agents published during the v3 CoinRegistry
+  // migration). Pre-fix, those surfaced on the home
+  // page as the "non-WC active" pick and broke the
+  // hero card layout — a user landed on `/` and saw
+  // "Test WC v3 — Brazil vs Argentina" as the most
+  // prominent non-WC market. Filter by title prefix.
   const otherActive = markets
-    .filter((m) => m.status === "active" && m.category !== "worldcup")
+    .filter(
+      (m) =>
+        m.status === "active" &&
+        m.category !== "worldcup" &&
+        !/^test\s/i.test(m.title.trim()),
+    )
     .slice(0, 1);
   const recentlyResolved = markets
-    .filter((m) => m.status === "resolved")
+    .filter(
+      (m) => m.status === "resolved" && !/^test\s/i.test(m.title.trim()),
+    )
     .sort((a, b) => (b.created_at_ms ?? 0) - (a.created_at_ms ?? 0))
     .slice(0, 1);
   const featured = [...wcActive, ...otherActive, ...recentlyResolved].slice(0, 4);
