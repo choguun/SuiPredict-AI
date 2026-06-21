@@ -879,6 +879,10 @@ export async function runPositionIndexer(
   // subscription only fires for the bulk path.
   const deepbookPackageId = process.env.DEEPBOOK_PACKAGE_ID;
   if (deepbookPackageId) {
+    let dbCancelSeen = 0;
+    let dbCancelApplied = 0;
+    let dbCancelSkipNoPool = 0;
+    let dbCancelSkipNoMarket = 0;
     const deepbookCancellations = await guardedPoll(
       "DeepBookOrderCanceled",
       `${deepbookPackageId}::order::OrderCanceled`,
@@ -888,13 +892,26 @@ export async function runPositionIndexer(
           pool_id?: string;
           order_id?: string | number;
         };
-        if (!j?.pool_id || j?.order_id == null) return;
-        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
+        dbCancelSeen++;
+        if (!j?.pool_id || j?.order_id == null) {
+          dbCancelSkipNoPool++;
+          return;
+        }
         const market = getMarketByPoolId(j.pool_id);
-        if (!market) return;
+        if (!market) {
+          dbCancelSkipNoMarket++;
+          return;
+        }
+        const ts = ev.timestampMs ? Number(ev.timestampMs) : Date.now();
         markOrderCancelled(market.id, String(j.order_id), ts);
+        dbCancelApplied++;
       },
     );
+    if (dbCancelSeen > 0) {
+      console.log(
+        `[position-indexer:diag] DeepBookOrderCanceled seen=${dbCancelSeen} applied=${dbCancelApplied} skipNoPool=${dbCancelSkipNoPool} skipNoMarket=${dbCancelSkipNoMarket}`,
+      );
+    }
     void deepbookCancellations;
   }
 
