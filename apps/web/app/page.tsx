@@ -494,7 +494,7 @@ export default async function HomePage() {
       </section>
 
       {/* 4. Gamification Row (Prioritized on Mobile) */}
-      <StreakWelcomeBanner />
+      
       {/* R61 audit fix: render the "How it works"
          card BEFORE the wallet-gated StreakProfile /
          DailyWcCard so a first-time user has an
