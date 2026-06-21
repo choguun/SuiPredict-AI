@@ -2414,7 +2414,20 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
                     }`}
                   >
                     <div className="flex items-center justify-between bg-emerald-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-emerald-300">
-                      <span>YES order book</span>
+                      <div className="flex items-center gap-2">
+                        <span>YES order book</span>
+                        {/* R-WC-3.7 follow-up: "primary
+                           pool" badge so the user knows
+                           this is the real on-chain
+                           CLOB. The NO card is
+                           derived from this one. */}
+                        <span
+                          className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-mono normal-case tracking-normal text-emerald-200/80"
+                          title="The on-chain DeepBook CLOB. The NO book on the right is derived from this one as the complement (100¢ - price)."
+                        >
+                          ★ live CLOB
+                        </span>
+                      </div>
                       {side === "yes" && (
                         <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px]">
                           active
@@ -2474,7 +2487,31 @@ node scripts/bootstrap-wc-markets.mjs`}</pre>
                     }`}
                   >
                     <div className="flex items-center justify-between bg-rose-500/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-rose-300">
-                      <span>NO order book</span>
+                      <div className="flex items-center gap-2">
+                        <span>NO order book</span>
+                        {/* R-WC-3.7 follow-up: explain
+                           the complement derivation
+                           inline. Pre-fix the
+                           secondary card had no
+                           hint that NO is derived
+                           from YES, so a user
+                           looking at the empty
+                           'No NO bids / No NO asks'
+                           placeholders assumed
+                           the on-chain pool was
+                           broken. The badge
+                           survives even when the
+                           book is empty so the
+                           user understands why
+                           the NO side mirrors
+                           the YES side. */}
+                        <span
+                          className="rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] font-mono normal-case tracking-normal text-rose-200/80"
+                          title="The NO book is derived from the YES book as the complement (100¢ - price). Trading on the YES pool is equivalent to trading on the NO pool at the inverse price."
+                        >
+                          ⇄ 100¢ − YES
+                        </span>
+                      </div>
                       {side === "no" && (
                         <span className="rounded-full bg-rose-500/20 px-1.5 py-0.5 text-[9px]">
                           active

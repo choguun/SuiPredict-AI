@@ -33,6 +33,7 @@ import {
   buildPlaceOrderTx,
   DUSDC_TYPE,
   executeTransaction,
+  getBalanceManagerBalance,
   listAllCoins,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,
@@ -484,6 +485,32 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         await executeTransaction(client, () => authTx, ctx.signer);
         console.log(`[wc-maker:diag] ${match.id} authTx OK`);
       }
+      // R-WC-3.7 follow-up: check the BM's
+      // YES base balance before attempting the
+      // ask. An ask sells YES, and the maker
+      // doesn't have YES to sell unless it
+      // (a) previously minted YES via
+      // `mint_yes_shares` on this market, or
+      // (b) received YES from a counter-party
+      // via DeepBook settlement. The pre-fix
+      // code skipped this check and the ask
+      // always aborted with
+      // `EBalanceManagerBalanceTooLow` (code 3)
+      // in `withdraw_with_proof` because the
+      // maker has 0 YES in its BM. Use the
+      // SDK's `getBalanceManagerBalance`
+      // helper (a dry-run simulateTransaction
+      // against `balance_manager::balance`)
+      // so the maker can skip the ask on
+      // markets it can't back, instead of
+      // burning a gas-budget retry on a
+      // guaranteed-abort PTB.
+      const yesBalance = await getBalanceManagerBalance(
+        client,
+        balanceManagerId,
+        yesCoinType(),
+      ).catch(() => 0n);
+      const hasYesBase = yesBalance >= BigInt(quoteSize);
       const placeTx = buildPlaceOrderTx({
         marketId: found.marketId,
         poolId: found.poolId,
@@ -532,13 +559,20 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
       // We skip the ask placement when `bidBps >=
       // askBps` (the spread-guard clamp above would
       // have produced a degenerate book anyway) and
-      // when `askBps` overflows the 1e9 ceiling
-      // (DeepBook rejects `price >= 1_000_000_000`).
-      // The ask shares the same `cycleAuthDollars`
-      // authorized above — placing a second
-      // order on the same market doesn't need a
-      // fresh authorize_spend call.
-      if (askBps > bidBps) {
+      // when the maker's BalanceManager doesn't have
+      // enough YES base-asset to back the ask (an
+      // ask sells YES, which the maker has to have
+      // minted first — the wc-maker's
+      // `authorize_spend` budget covers the QUOTE
+      // leg, not the BASE leg). DeepBook's
+      // `place_limit_order` calls
+      // `balance_manager::withdraw_with_proof` for
+      // `quantity` (in YES atoms) and aborts with
+      // `EBalanceManagerBalanceTooLow` (code 3) if
+      // the BM has 0 YES. The bid leg is unaffected
+      // (it withdraws QUOTE, which we just
+      // deposited).
+      if (askBps > bidBps && hasYesBase) {
         const askPlaceTx = buildPlaceOrderTx({
           marketId: found.marketId,
           poolId: found.poolId,
