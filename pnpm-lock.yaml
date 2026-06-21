@@ -81,6 +81,9 @@ importers:
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3
@@ -106,9 +109,6 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.3.0
-      typescript:
-        specifier: ^5
-        version: 5.9.3
 
   packages/config: {}
 
