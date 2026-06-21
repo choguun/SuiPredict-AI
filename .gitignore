@@ -57,3 +57,10 @@ apps/agents/dist/
 # so the dir + a .gitkeep marker stay tracked.
 packages/sdk/dist/*
 !packages/sdk/dist/.gitkeep
+
+# Vercel CLI dump files — these contain VERCEL_OIDC_TOKEN and other
+# secrets. Created by `vercel env pull` and similar. Never commit.
+.env.prodcheck
+.env.prodcheck*
+.env.test
+.vercel/
