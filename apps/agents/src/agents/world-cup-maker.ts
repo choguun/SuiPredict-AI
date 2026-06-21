@@ -291,13 +291,28 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
     // tight 1¢–99¢ band so the worst-case quote is still a
     // real market price, just a silly one.
     const yesClamped = Math.min(0.99, Math.max(0.01, yes));
-    const TICK = 1_000_000; // 0.001 USDC — matches prediction_market tick_size
+    // R-WC-3.8 follow-up fix: TICK was
+    // 1_000_000 (= 1.0 in 1e6-scaled probability
+    // units = 100% YES), which clamped every
+    // bid to the maximum price. The maker's
+    // internal `bidBps` / `askBps` are in
+    // 1e6-scaled probability units where
+    // probability 0.001 (= 0.1% YES, the
+    // DeepBook minimum) = 1_000. TICK must be
+    // 1_000, not 1_000_000. Pre-fix all bids
+    // landed at 100% (bidBps = 1_000_000 →
+    // on-chain price 1.0 USDC), which produced
+    // a one-sided YES book at the top of the
+    // range and an empty NO book (the
+    // complement of 100% is 0, filtered out by
+    // the page's `price_bps > 0` check).
+    const TICK = 1_000; // 1 DeepBook tick = 0.001 probability
     let bidBps = Math.max(
-      TICK, // 0.001 USDC = 1 tick (DeepBook min price)
+      TICK, // 0.1% minimum (DeepBook min price)
       Math.round((yesClamped - halfSpreadBps / 10_000) * 1_000_000),
     );
     let askBps = Math.min(
-      1_000_000_000 - TICK, // just under 1.0 USDC to avoid a u64 boundary
+      1_000_000 - TICK, // just under 100% to avoid a u64 boundary
       Math.round((yesClamped + halfSpreadBps / 10_000) * 1_000_000),
     );
     // Force a 1-tick minimum spread so both orders land on the
@@ -306,7 +321,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
     if (askBps - bidBps < TICK) {
       const mid = Math.round((bidBps + askBps) / 2);
       bidBps = Math.max(TICK, mid - TICK / 2);
-      askBps = Math.min(1_000_000_000 - TICK, mid + TICK / 2);
+      askBps = Math.min(1_000_000 - TICK, mid + TICK / 2);
       if (askBps - bidBps < TICK) {
         // Last-resort: bid at TICK, ask at 2*TICK
         bidBps = TICK;
