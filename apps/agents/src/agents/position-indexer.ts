@@ -879,6 +879,7 @@ export async function runPositionIndexer(
   // subscription only fires for the bulk path.
   const deepbookPackageId = process.env.DEEPBOOK_PACKAGE_ID;
   if (deepbookPackageId) {
+    console.log(`[position-indexer:diag] subscribing to ${deepbookPackageId}::order::OrderCanceled`);
     let dbCancelSeen = 0;
     let dbCancelApplied = 0;
     let dbCancelSkipNoPool = 0;
