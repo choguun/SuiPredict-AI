@@ -990,12 +990,35 @@ export function getOrderBook(marketId: string): OrderBookSnapshot {
     const baseScalar = (r.deepbook_base_scalar as number | null) ?? 1_000_000;
     const quoteScalar = (r.deepbook_quote_scalar as number | null) ?? 1_000_000;
     const rawPrice = r.price as number;
-    // DeepBook stores price as `rawPrice = normalized * quoteScalar / baseScalar`
-    // so to recover the [0,1] probability we invert: normalized = raw * base / quote.
-    // If the scalars are missing for some reason, fall back to treating `price`
-    // as already-normalized rather than emitting 0/NaN.
-    const normalized =
-      baseScalar && quoteScalar ? (rawPrice * baseScalar) / quoteScalar : rawPrice;
+    // R-WC-3.5 fix: the on-chain `price` from
+    // OrderPlacedEvent is in DeepBook's internal
+    // 9-decimal tick space — the SDK's
+    // `QUOTE_SCALE = 1e9` constant captures this.
+    // Pre-fix we normalized via
+    //   `normalized = raw * baseScalar / quoteScalar`
+    // which produced `rawPrice * 1e6 / 1e6 = rawPrice`
+    // (a 6- or 7-digit integer) instead of the
+    // intended probability `rawPrice / 1e9`. The
+    // result: every order in the UI book showed a
+    // price like "500000000¢" / "49.9%" / etc.
+    // instead of "50.0%". The wc-maker was also
+    // posting 1e3× under-priced bids because its
+    // bidBps formula is in 1e6-scaled DUSDC (the
+    // market's tick_size units) but the wrapper
+    // contract expects 1e9. See
+    // `apps/agents/src/agents/world-cup-maker.ts`
+    // for the maker-side fix. On this side
+    // (the SQLite mirror) we just need to invert
+    // to the [0,1] probability:
+    //   probability = rawPrice / QUOTE_SCALE
+    // We keep the per-market scalar columns on
+    // the row for back-compat with any external
+    // reader; they're no longer used in the math
+    // here (DeepBook's price field is independent
+    // of the market's lot_size / min_size — those
+    // are base-quantity scalars, not price
+    // scalars).
+    const normalized = rawPrice / 1_000_000_000;
     const level: OrderBookLevel = {
       price: normalized,
       price_bps: Math.round(normalized * 10_000),

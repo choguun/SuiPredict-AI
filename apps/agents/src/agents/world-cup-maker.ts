@@ -36,6 +36,7 @@ import {
   listAllCoins,
   noCoinType,
   PREDICT_MARKET_PACKAGE_ID,
+  QUOTE_SCALE,
   resolveDeepbookPackageId,
   yesCoinType,
 } from "@suipredict/sdk";
@@ -483,7 +484,29 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         marketId: found.marketId,
         poolId: found.poolId,
         balanceManagerId,
-        price: BigInt(bidBps),
+        // R-WC-3.5 fix: bidBps is in 1e6-scaled
+        // DUSDC quote units (the same units
+        // tick_size=1_000_000 uses on-chain).
+        // The SDK's `buildPlaceOrderTx` wrapper
+        // however expects 1e9-scaled quote units
+        // (`QUOTE_SCALE = 1_000_000_000n`); the
+        // Move docstring on place_order confirms
+        // "Price in quote units (e.g. 500_000_000
+        // = 0.5 Q with 9 decimals)". Pre-fix we
+        // passed bidBps (e.g. 500_000) directly,
+        // making every maker order land on the
+        // book at 0.0005 DUSDC — 1000× below the
+        // intended YES price. The position-indexer
+        // happily wrote those raw on-chain prices
+        // to chain_orders, and the store's
+        // getOrderBook divided by baseScalar
+        // (which is also 1e6) leaving the price
+        // column showing 500_000 instead of 0.5
+        // — every order looked like a 50,000¢
+        // bid on the UI. Multiply bidBps by 1000
+        // (= QUOTE_SCALE / TICK_SCALE) so a 0.5
+        // bid becomes 500_000_000 on-chain.
+        price: BigInt(bidBps) * (QUOTE_SCALE / BigInt(1_000_000)),
         quantity: BigInt(quoteSize),
         isBid: true,
         clientOrderId: BigInt(Date.now() % 1_000_000),
