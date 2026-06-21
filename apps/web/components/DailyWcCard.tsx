@@ -60,8 +60,38 @@ export function DailyWcCard() {
     queryFn: async (): Promise<WcMatchLite[]> => {
       const markets = await listMarkets();
       const now = Date.now();
-      const horizon = now + 48 * 60 * 60 * 1000;
-      return markets
+      // R-WC-3.5 fix: widen the horizon from 48h to 7d.
+      // WC group matches are clustered on 2-3 kickoff
+      // slots per matchday with 4-5 day gaps between
+      // matchdays, so a 48h cap blanks the card for
+      // most of the tournament. A 7-day rolling window
+      // covers a full group-round while keeping the
+      // list short enough to render on mobile.
+      const horizon = now + 7 * 24 * 60 * 60 * 1000;
+      // R-WC-3.5 fix: dedup on-chain mirror rows.
+      // The position-indexer occasionally writes
+      // a second row with the on-chain hex id
+      // (e.g. `0x43c708e…`) alongside the friendly
+      // `wc26-*` row. The home page main grid
+      // already drops those via a sibling-title
+      // match; mirror that here so a stale mirror
+      // row (Group A MD2, kickoff 4 days ago) does
+      // not leak into the "Daily World Cup" card.
+      const titleKey = (s: string): string =>
+        s
+          .replace(/\p{Extended_Pictographic}/gu, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+      const canonicalTitles = new Set<string>();
+      for (const m of markets) {
+        if (m.id.startsWith("wc26-")) canonicalTitles.add(titleKey(m.title));
+      }
+      const deduped = markets.filter((m) => {
+        if (!m.id.startsWith("0x")) return true;
+        return !canonicalTitles.has(titleKey(m.title));
+      });
+      return deduped
         .filter(
           (m) =>
             m.category === "worldcup" &&
@@ -69,13 +99,21 @@ export function DailyWcCard() {
             // Filter on the kickoff time, not the
             // expiry time, so a market whose kickoff
             // is in 47h but whose resolution is in 49h
-            // is still surfaced in the 48h ticker.
+            // is still surfaced in the ticker.
             // `kickoff_ms` is only set for WC markets
             // (R61 audit fix); a future category that
             // wants the same field can derive it
             // similarly.
             m.kickoff_ms !== undefined &&
-            m.kickoff_ms > now &&
+            // R-WC-3.5 fix: 6h in-play tail. A match
+            // that has already kicked off (kickoff_ms
+            // <= now) but hasn't been resolved yet
+            // should still appear, rendered as "Live
+            // now" by the UI on line 215-216. The
+            // pre-fix strict `> now` filter excluded
+            // live matches and made the "Live now"
+            // label unreachable.
+            m.kickoff_ms > now - 6 * 60 * 60 * 1000 &&
             m.kickoff_ms <= horizon,
         )
         .sort((a, b) => (a.kickoff_ms ?? 0) - (b.kickoff_ms ?? 0))
@@ -144,8 +182,8 @@ export function DailyWcCard() {
 
         {wcQuery.data && wcQuery.data.length === 0 && (
           <p className="rounded-xl border border-dashed border-white/10 bg-white/5 p-6 text-center text-sm text-zinc-400">
-            No World Cup matches in the next 48h. The agents will seed
-            markets 7 days before each fixture.
+            No World Cup matches in the next 7 days. The agents seed
+            markets ~7 days before each fixture.
           </p>
         )}
 
