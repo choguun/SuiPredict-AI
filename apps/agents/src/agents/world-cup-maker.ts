@@ -30,6 +30,7 @@
 import {
   buildAuthorizeSpendTx,
   buildCancelAllOrdersTx,
+  buildMintSharesTx,
   buildPlaceOrderTx,
   DUSDC_TYPE,
   executeTransaction,
@@ -39,6 +40,7 @@ import {
   PREDICT_MARKET_PACKAGE_ID,
   QUOTE_SCALE,
   resolveDeepbookPackageId,
+  SHARED_TREASURY_HOLDER_ID,
   yesCoinType,
 } from "@suipredict/sdk";
 import { Transaction } from "@mysten/sui/transactions";
@@ -188,6 +190,7 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
   );
   const balanceManagerId = process.env.BALANCE_MANAGER_ID ?? "";
   const agentPolicyId = process.env.AGENT_POLICY_ID ?? "";
+  const feeVaultId = process.env.FEE_VAULT_ID ?? process.env.NEXT_PUBLIC_FEE_VAULT_ID ?? "";
 
   if (!balanceManagerId) {
     return recordResult("WorldCupMaker", {
@@ -402,6 +405,126 @@ export async function runWorldCupMaker(ctx: AgentContext): Promise<AgentResult> 
         if (!dusdcId) {
           skipped++;
           continue;
+        }
+      }
+      // R-WC-3.8 fix: when the maker's BM
+      // lacks YES base, mint shares via
+      // `mint_shares<Q>` (which transfers the
+      // freshly minted Coin<YES<Q>> to the
+      // sender — the maker), then deposit the
+      // YES coin into the BM so the
+      // subsequent ask leg can be backed.
+      // Without this step the maker always
+      // skips the ask (R-WC-3.7 follow-up),
+      // leaving the NO order book empty (the
+      // UI derives NO from the YES complement:
+      // yes bid @ P == no offer @ (1-P)). The
+      // mint is a 2-PTB flow because
+      // `mint_shares` returns the coins via
+      // `transfer::public_transfer` rather
+      // than as Move return values (no way to
+      // chain a follow-up moveCall in the same
+      // PTB). We do this BEFORE the DUSDC
+      // deposit so wallet DUSDC is still
+      // available to fund the mint (the
+      // `depTx` below consumes the entire
+      // `dusdcId`). Best-effort: a mint
+      // failure is logged and the maker
+      // proceeds with a bid-only book; the
+      // next tick will retry.
+      if (feeVaultId && SHARED_TREASURY_HOLDER_ID && dusdcId) {
+        try {
+          const preYes = await getBalanceManagerBalance(
+            client,
+            balanceManagerId,
+            yesCoinType(),
+          ).catch(() => 0n);
+          if (preYes < BigInt(quoteSize)) {
+            // Mint enough YES base to back a single tick's
+            // ask leg. `quoteSize` is in 6-decimal base units
+            // (e.g. 5_000_000 = 5 YES shares);
+            // `mint_shares<Q>` takes DUSDC atom units (also
+            // 6-decimal) and produces `net = amount - 1% fee`
+            // YES atoms. To get exactly `quoteSize` YES after
+            // the fee, deposit `quoteSize * 101 / 100` DUSDC
+            // atoms. The +1 ceiling prevents round-down when
+            // `quoteSize` isn't divisible by 99.
+            const mintAmount =
+              (BigInt(quoteSize) * BigInt(101)) / BigInt(100) + BigInt(1);
+            // Re-fetch the maker's DUSDC coins (the deposit
+            // below hasn't run yet, so all wallet DUSDC is
+            // available). Use the largest coin that has
+            // enough for the mint; if the largest is too
+            // small, the maker skips the mint this tick.
+            const mintCoins = await listAllCoins(
+              client,
+              agentAddr,
+              DUSDC_TYPE,
+            );
+            const mintCoin = mintCoins
+              .filter((c) => BigInt(c.balance) >= mintAmount)
+              .sort((a, b) =>
+                BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+              )[0];
+            if (mintCoin) {
+              const mintTx = buildMintSharesTx(
+                found.marketId,
+                feeVaultId,
+                mintCoin.objectId,
+                mintAmount,
+                undefined,
+                SHARED_TREASURY_HOLDER_ID,
+              );
+              console.log(
+                `[wc-maker:diag] ${match.id} minting ${mintAmount} YES atoms (no inventory)…`,
+              );
+              await executeTransaction(client, () => mintTx, ctx.signer);
+              // mint_shares transfers Coin<YES> to
+              // ctx.sender() (= the maker). Find the freshly
+              // minted YES coin and deposit it into the BM.
+              // Sort by balance descending so the largest
+              // YES coin (likely the one we just minted)
+              // wins.
+              const yesCoins = await listAllCoins(
+                client,
+                agentAddr,
+                yesCoinType(),
+              );
+              const yesCoin = yesCoins
+                .filter((c) => BigInt(c.balance) >= BigInt(quoteSize))
+                .sort((a, b) =>
+                  BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+                )[0];
+              if (yesCoin) {
+                const yesDepTx = new Transaction();
+                yesDepTx.moveCall({
+                  target: `${resolveDeepbookPackageId()}::balance_manager::deposit`,
+                  typeArguments: [yesCoinType()],
+                  arguments: [
+                    yesDepTx.object(balanceManagerId),
+                    yesDepTx.object(yesCoin.objectId),
+                  ],
+                });
+                console.log(
+                  `[wc-maker:diag] ${match.id} depositing YES (${yesCoin.balance}) to BM…`,
+                );
+                await executeTransaction(client, () => yesDepTx, ctx.signer);
+                console.log(`[wc-maker:diag] ${match.id} YES deposit OK`);
+              } else {
+                console.warn(
+                  `[wc-maker:diag] ${match.id} no YES coin found after mint (skipped ask this tick)`,
+                );
+              }
+            } else {
+              console.warn(
+                `[wc-maker:diag] ${match.id} no DUSDC coin big enough for mint (skipped ask this tick)`,
+              );
+            }
+          }
+        } catch (mintErr) {
+          console.warn(
+            `[wc-maker:diag] ${match.id} mint flow failed (non-fatal): ${mintErr instanceof Error ? mintErr.message.slice(0, 160) : String(mintErr)}`,
+          );
         }
       }
       // R-WC-3.4 v3 follow-up: cancel any open orders the agent
